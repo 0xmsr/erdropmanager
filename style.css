@@ -1,0 +1,337 @@
+/* style.css */
+
+/* --- GENERAL STYLES & TYPOGRAPHY --- */
+body {
+    background-color: #000000;
+    color: #ffffff;
+    font-family: 'Courier New', Courier, monospace;
+    line-height: 1.6;
+    margin: 0;
+    padding: 20px;
+    text-shadow: 0 0 2px #ffffff;
+}
+
+h1, h2 {
+    color: #ffffff;
+    text-align: center;
+    border-bottom: 2px solid #ffffff;
+    padding-bottom: 5px;
+    margin-bottom: 20px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+.app-container {
+    max-width: 1200px;
+    margin: auto;
+    padding: 20px;
+    background-color: #1a1a1a;
+    border: 2px solid #ffffff;
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
+}
+
+/* --- FORM & BUTTONS --- */
+.form-container, .filter-container {
+    background-color: transparent;
+    padding: 25px;
+    border: 1px solid #ffffff;
+    margin-bottom: 20px;
+}
+
+.form-container form {
+    display: grid;
+    grid-template-columns: 2fr 2fr 2fr 1fr 1fr 1.5fr;
+    gap: 15px;
+    align-items: center;
+}
+
+input, select, button {
+    padding: 10px;
+    border-radius: 0;
+    border: 1px solid #ffffff;
+    background-color: #111111;
+    color: #ffffff;
+    font-size: 15px;
+    font-family: 'Courier New', Courier, monospace;
+}
+
+input::placeholder {
+    color: #ffffff;
+}
+
+input:focus, select:focus {
+    outline: none;
+    border-color: #ffffff;
+    box-shadow: 0 0 10px rgba(0, 7, 2, 0.5);
+}
+
+button {
+    cursor: pointer;
+    background-color: #ffffff;
+    color: #0d0d0d;
+    font-weight: bold;
+    border: 1px solid #ffffff;
+    text-transform: uppercase;
+    transition: background-color 0.3s, color 0.3s;
+}
+
+button:hover {
+    background-color: #111111;
+    color: #ffffff;
+}
+
+/* Retro Computer Button Styles */
+
+.open-link {
+    /* Style the link to look like a button */
+    display: inline-block;
+    padding: 6px 10px;
+    background-color: #000000;
+    color: #ffffff; /* Bright green text */
+    font-family: 'Courier New', Courier, monospace;
+    font-weight: bold;
+    text-decoration: none;
+    text-transform: uppercase;
+    border: 2px solid #ffffff;
+    border-radius: 0;
+    cursor: pointer;
+    box-shadow: 
+        -2px -2px 0 0 #ffffff,
+        -4px -4px 0 0 #9c9c9c,
+        -6px -6px 0 0 #313131;
+    transition: all 0.1s ease-in-out;
+}
+
+.open-link:hover {
+    color: #ffffff;
+    background-color: #313131;
+    border-color: #969696;
+    text-shadow: 0 0 5px #ffffff;
+}
+
+.open-link:active {
+    background-color: #5348e7;
+    box-shadow: 
+        -1px -1px 0 0 #000000,
+        -2px -2px 0 0 #313131,
+        -3px -3px 0 0 #151a15;
+    transform: translate(3px, 3px);
+}
+
+#reset-btn {
+    background-color: transparent;
+    color: #ffffff;
+    border: 1px solid #ffffff;
+}
+
+#reset-btn:hover {
+    background-color: #ffffff;
+    color: #0d0d0d;
+}
+
+.form-buttons {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.filter-container {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    flex-wrap: wrap;
+}
+
+#search-input {
+    flex-grow: 1;
+    min-width: 150px;
+}
+
+.table-container {
+    width: 100%;
+    overflow-x: auto;
+    background-color: #1a1a1a;
+    border: 2px solid #ffffff;
+    padding: 15px;
+    box-shadow: 0 0 10px rgba(0, 255, 65, 0.2);
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    min-width: 800px;
+}
+
+th, td {
+    padding: 12px;
+    text-align: left;
+    border: 1px solid #424442;
+}
+
+th {
+    background-color: #000000;
+    font-weight: bold;
+    text-transform: uppercase;
+    color: #ffffff;
+}
+
+.open-link {
+    color: #ffffff;
+    text-decoration: underline;
+    font-weight: bold;
+}
+
+.open-link:hover {
+    color: #ffffff;
+    text-shadow: 0 0 5px #ffffff;
+}
+
+.status {
+    padding: 4px 8px;
+    border: 1px solid #ffffff;
+    background-color: #000000;
+    color: #ffffff;
+    font-size: 0.9em;
+    font-weight: bold;
+    text-transform: uppercase;
+    border-radius: 0;
+}
+
+.status.ongoing {
+    background-color: #c99507;
+}
+.status.end {
+    background-color: #ff0000;
+    color: #ffffff;
+}
+.status.nunggu-info {
+    background-color: #01a2ff;
+    color: #ffffff;
+}
+
+.action-btn {
+    font-size: 0.9em;
+    padding: 8px 12px;
+    border-radius: 0;
+    border: 1px solid #ffffff;
+    color: #0d0d0d;
+    background-color: #ffffff;
+}
+
+.action-btn:hover {
+    background-color: #111;
+    color: #ffffff;
+}
+
+.delete-btn {
+    background-color: transparent;
+    color: #ff3333;
+    border-color: #ff3333;
+}
+
+.delete-btn:hover {
+    background-color: #ff3333;
+    color: #0d0d0d;
+}
+
+.today-btn {
+    padding: 5px 10px;
+    border: 1px solid;
+    color: white;
+    border-radius: 0;
+    cursor: pointer;
+    width: 110px;
+    text-align: center;
+    font-weight: bold;
+    text-transform: uppercase;
+    transition: background-color 0.2s, color 0.2s;
+    font-family: 'Courier New', Courier, monospace;
+}
+
+.today-btn.selesai { 
+    background-color: #008000; 
+    border-color: #ffffff;
+    color: #ffffff;
+}
+
+.today-btn.selesai:hover {
+    background-color: #ffffff;
+    color: #0d0d0d;
+}
+
+.today-btn.belum { 
+    background-color: #8b0000;
+    border-color: #ff3333;
+    color: #ffffff;
+}
+
+.today-btn.belum:hover {
+    background-color: #ff3333;
+    color: #0d0d0d;
+}
+
+@media (max-width: 768px) {
+    body {
+        padding: 10px;
+    }
+
+    .app-container {
+        padding: 10px;
+        box-shadow: none;
+    }
+
+    .form-container, .filter-container, .table-container {
+        box-shadow: none;
+    }
+
+    .form-container form {
+        grid-template-columns: 1fr;
+    }
+
+    .form-buttons {
+        flex-direction: column;
+    }
+
+    .filter-container {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    
+    #search-input, #filter-status {
+        width: 100%;
+    }
+
+    .table-container {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    table {
+        min-width: 700px;
+        font-size: 0.9em;
+    }
+
+    th, td {
+        padding: 8px 5px;
+    }
+}
+
+@media (max-width: 480px) {
+    h1 {
+        font-size: 1.5em;
+    }
+    h2 {
+        font-size: 1.2em;
+    }
+    input, button, select {
+        font-size: 12px;
+        padding: 8px;
+    }
+    .today-btn, .action-btn {
+        padding: 4px 6px;
+        font-size: 0.8em;
+    }
+    table {
+        min-width: 600px;
+    }
+}

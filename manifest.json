@@ -1,0 +1,21 @@
+{
+  "name": "IAC Community Airdrop Manager",
+  "short_name": "Erdrop Manager",
+  "description": "Aplikasi manajemen airdrop by IAC Community.",
+  "start_url": "index.html",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#00ff00",
+  "icons": [
+    {
+      "src": "icons/iconsiac.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    },
+    {
+      "src": "icons/iconsiac-192x192.png", 
+      "sizes": "192x192",
+      "type": "image/png"
+    }
+  ]
+}
