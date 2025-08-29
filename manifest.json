@@ -5,7 +5,7 @@
   "start_url": "index.html",
   "id": "/?source=pwa",
   "background_color": "#000000",
-  "theme_color": "#ffffff",
+  "theme_color": "#00ff00",
   "orientation": "any",
   "display_override": [
     "window-controls-overlay"
@@ -39,4 +39,5 @@
     }
   ]
 }
+
 
