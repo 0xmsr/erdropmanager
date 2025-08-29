@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Info Faucet | IAC Community</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" type="image/x-icon" sizes="152x152" href="iconsiac.png">
+    <meta name="theme-color" content="#00ff00">
+    <style>
+        /* Additional styles specific to the faucet page */
+        .faucet-container {
+            padding: 25px;
+            border: 1px solid #ffffff;
+            margin-bottom: 20px;
+        }
+        
+        .faucet-search-container {
+            margin-bottom: 20px;
+        }
+
+        #search-faucet {
+            width: 100%;
+            box-sizing: border-box; /* Ensures padding doesn't affect final width */
+        }
+
+        .faucet-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+            min-height: 100px; /* Ensures container is visible during loading */
+        }
+
+        .faucet-item {
+            border: 1px solid #ffffff;
+            padding: 20px;
+            background-color: #111111;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .faucet-item h3 {
+            margin-top: 0;
+            color: #ffffff;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            border-bottom: 1px solid #ffffff;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+        }
+
+        .faucet-item p {
+            margin-bottom: 15px;
+            flex-grow: 1; /* Allows the description to take up available space */
+        }
+
+        .faucet-item a.open-link {
+            text-align: center; /* Center the text inside the link-button */
+        }
+        
+        .navigation-buttons {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="app-container">
+        <header>
+            <h1><img src="iconsiac.png" width="70px"> IAC Community</h1>
+        </header>
+
+        <div class="faucet-container">
+            <h2>Informasi Faucet Testnet</h2>
+
+            <div class="faucet-search-container">
+                <input type="search" id="search-faucet" placeholder="Cari faucet berdasarkan nama atau jaringan...">
+            </div>
+
+            <div class="faucet-list" id="faucet-list">
+                </div>
+        </div>
+        
+        <div class="navigation-buttons">
+            <a href="index.html"><button>Kembali ke Halaman Utama</button></a>
+        </div>
+        
+    </div>
+
+    <script src="faucet.js"></script>
+</body>
+</html>
