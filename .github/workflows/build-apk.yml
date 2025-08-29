@@ -3,14 +3,14 @@ name: Build Android APK
 on:
   push:
     tags:
-      - "v*"   # contoh: v1.0.0
+      - 'v*'     # dijalankan setiap push tag versi, misalnya v1.0.0
   workflow_dispatch:
 
 jobs:
-  build:
+  build_apk:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Node.js
@@ -18,18 +18,25 @@ jobs:
         with:
           node-version: 20
 
-      - name: Install Bubblewrap
+      - name: Install Bubblewrap CLI
         run: npm install -g @bubblewrap/cli
 
-      - name: Init Bubblewrap project
+      - name: Build APK using Bubblewrap
         run: |
-          bubblewrap init --manifest=https://erdrop.vercel.app/manifest.json --skipPwaValidation --skipSigning
+          bubblewrap init --manifest=https://erdropmanager.vercel.app/manifest.json --skipPwaValidation --skipSigning
           bubblewrap build --skipSigning
 
-      - name: Upload APK to GitHub Release
+      - name: Create GitHub Release
+        id: create_release
         uses: softprops/action-gh-release@v2
         with:
-          files: |
-            ./app-release-signed.apk
+          tag_name: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload APK to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app-release-unsigned.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
