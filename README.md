@@ -26,7 +26,7 @@ Aplikasi ini **tidak memerlukan login**, sehingga data pengguna tetap privat dan
 - Data pengguna tetap privat, tidak diunggah ke server manapun.
 
 ## Unduh Aplikasi
-- **[Download APK Android](https://github.com/0xmsr/erdropmanager/releases/tag/v1.1)**
+- **[Download APK Android](https://github.com/0xmsr/erdropmanager/releases/download/v1.1/Erdrop.Manager.apk)**
 
 ## Preview Aplikasi
 > Preview tampilan dan fitur dapat dilihat langsung di halaman release.
