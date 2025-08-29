@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="style.css">
     <link rel="icon" type="image/x-icon" sizes="152x152" href="iconsiac.png" border-radius="50px">
     <link rel="manifest" href="/manifest.json">
-    <meta name="theme-color" content="#00ff00">
+    <meta name="theme-color" content="#000000">
 </head>
 <body>
 
@@ -65,13 +65,48 @@
                     </tbody>
             </table>
         </div>
-        <p>Note: Garapan akan otomatis teriset saat jam 07:00 WIB</p>
 
-        <button>Info Faucet</button>
+        <div class="data-management-container">
+            <button id="export-btn">Simpan di .txt</button>
+            <button id="import-btn">Impor dari .txt</button>
+            <input type="file" id="import-file" accept=".txt" style="display: none;">
+        </div>
+
+        <div id="pagination-container"></div>
+        <p>Note: Garapan "Hari ini" akan otomatis teriset saat jam 07:00 WIB</p>
+
+        <a href="https://t.me/airdropiac"><button>Join Channel Telegram</button></a>
+
+        <a href="https://x.com/iaccommunity_"><button>Follow X</button></a>
+
+
+
+        <a href="faucet.html"><button>Info Faucet</button></a>
+        
+    </div>
+
+    <div id="custom-alert-overlay" class="custom-modal-hidden">
+        <div class="custom-modal-box">
+            <div class="custom-modal-title">Erdrop Manager</div>
+            <div class="custom-modal-message" id="custom-alert-message"></div>
+            <div class="custom-modal-buttons">
+                <button id="custom-alert-ok-btn">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="custom-confirm-overlay" class="custom-modal-hidden">
+        <div class="custom-modal-box">
+            <div class="custom-modal-title">Erdrop Manager</div>
+            <div class="custom-modal-message" id="custom-confirm-message"></div>
+            <div class="custom-modal-buttons">
+                <button id="custom-confirm-yes-btn">Ya</button>
+                <button id="custom-confirm-no-btn" class="cancel-btn">Tidak</button>
+            </div>
+        </div>
     </div>
 
      <script>
-      // Daftarkan Service Worker
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
           navigator.serviceWorker.register('/service-worker.js')
