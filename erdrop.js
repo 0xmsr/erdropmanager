@@ -11,10 +11,52 @@ const banyakAkunInput = document.getElementById('banyak-akun');
 const keteranganInput = document.getElementById('keterangan');
 const searchInput = document.getElementById('search-input');
 const filterStatus = document.getElementById('filter-status');
-
-
+const exportBtn = document.getElementById('export-btn');
+const importBtn = document.getElementById('import-btn');
+const importFileInput = document.getElementById('import-file');
+const customAlertOverlay = document.getElementById('custom-alert-overlay');
+const customAlertMessage = document.getElementById('custom-alert-message');
+const customAlertOkBtn = document.getElementById('custom-alert-ok-btn');
+const customConfirmOverlay = document.getElementById('custom-confirm-overlay');
+const customConfirmMessage = document.getElementById('custom-confirm-message');
+const customConfirmYesBtn = document.getElementById('custom-confirm-yes-btn');
+const customConfirmNoBtn = document.getElementById('custom-confirm-no-btn');
+let confirmResolver;
 let tasks = JSON.parse(localStorage.getItem('airdropTasks')) || [];
 let isEditMode = false;
+let currentPage = 1;
+const rowsPerPage = 10;
+
+function showAlert(message) {
+    customAlertMessage.textContent = message;
+    customAlertOverlay.classList.remove('custom-modal-hidden');
+}
+
+customAlertOkBtn.addEventListener('click', () => {
+    customAlertOverlay.classList.add('custom-modal-hidden');
+});
+
+function showConfirm(message) {
+    customConfirmMessage.textContent = message;
+    customConfirmOverlay.classList.remove('custom-modal-hidden');
+    return new Promise(resolve => {
+        confirmResolver = resolve;
+    });
+}
+
+customConfirmYesBtn.addEventListener('click', () => {
+    if (confirmResolver) {
+        customConfirmOverlay.classList.add('custom-modal-hidden');
+        confirmResolver(true);
+    }
+});
+
+customConfirmNoBtn.addEventListener('click', () => {
+    if (confirmResolver) {
+        customConfirmOverlay.classList.add('custom-modal-hidden');
+        confirmResolver(false);
+    }
+});
 
 function saveTasks() {
     localStorage.setItem('airdropTasks', JSON.stringify(tasks));
@@ -32,7 +74,11 @@ function renderTasks() {
         return matchesSearch && matchesStatus;
     });
 
-    filteredTasks.forEach(task => {
+    const startIndex = (currentPage - 1) * rowsPerPage;
+    const endIndex = startIndex + rowsPerPage;
+    const paginatedTasks = filteredTasks.slice(startIndex, endIndex);
+
+    paginatedTasks.forEach(task => {
         const row = document.createElement('tr');
         const isSelesai = task.selesaiHariIni ? 'selesai' : 'belum';
         const statusText = task.selesaiHariIni ? '✓ Selesai' : 'X Belum';
@@ -65,7 +111,44 @@ function renderTasks() {
         `;
         taskList.appendChild(row);
     });
+
+    setupPagination(filteredTasks.length);
 }
+
+function setupPagination(totalItems) {
+    const paginationContainer = document.getElementById('pagination-container');
+    paginationContainer.innerHTML = '';
+    const pageCount = Math.ceil(totalItems / rowsPerPage);
+
+    if (pageCount > 1) {
+        const prevButton = document.createElement('button');
+        prevButton.innerText = 'Prev';
+        prevButton.disabled = currentPage === 1;
+        prevButton.addEventListener('click', () => {
+            if (currentPage > 1) {
+                currentPage--;
+                renderTasks();
+            }
+        });
+        paginationContainer.appendChild(prevButton);
+
+        const pageInfo = document.createElement('span');
+        pageInfo.innerText = `Page ${currentPage} of ${pageCount}`;
+        paginationContainer.appendChild(pageInfo);
+
+        const nextButton = document.createElement('button');
+        nextButton.innerText = 'Next';
+        nextButton.disabled = currentPage === pageCount;
+        nextButton.addEventListener('click', () => {
+            if (currentPage < pageCount) {
+                currentPage++;
+                renderTasks();
+            }
+        });
+        paginationContainer.appendChild(nextButton);
+    }
+}
+
 
 function handleFormSubmit(e) {
     e.preventDefault();
@@ -92,18 +175,21 @@ function handleFormSubmit(e) {
     }
     
     saveTasks();
+    currentPage = 1;
     renderTasks();
     resetForm();
 }
 
-function handleTableClick(e) {
+async function handleTableClick(e) {
     const target = e.target;
     const id = parseInt(target.dataset.id);
 
     if (target.classList.contains('delete-btn')) {
-        if (confirm('Apakah Anda yakin ingin menghapus task ini?')) {
+        const confirmed = await showConfirm('Apakah Anda yakin ingin menghapus task ini?');
+        if (confirmed) {
             tasks = tasks.filter(task => task.id !== id);
             saveTasks();
+            currentPage = 1;
             renderTasks();
         }
     } else if (target.classList.contains('edit-btn')) {
@@ -168,11 +254,69 @@ function checkAndResetDailyStatus() {
     }
 }
 
+function exportTasksToTxt() {
+    if (tasks.length === 0) {
+        showAlert('Tidak ada data untuk diekspor!');
+        return;
+    }
+    const dataStr = JSON.stringify(tasks, null, 2);
+    const dataBlob = new Blob([dataStr], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(dataBlob);
+    const link = document.createElement('a');
+    const timestamp = new Date().toISOString().slice(0, 10);
+    link.download = `iac-airdrops-backup-${timestamp}.txt`;
+    link.href = url;
+    link.click();
+    URL.revokeObjectURL(url);
+}
+
+async function handleImport(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const confirmed = await showConfirm('Ini akan menimpa semua data saat ini. Lanjutkan?');
+    if (!confirmed) {
+        event.target.value = null;
+        return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const importedData = JSON.parse(e.target.result);
+            if (Array.isArray(importedData)) {
+                tasks = importedData;
+                saveTasks();
+                currentPage = 1;
+                renderTasks();
+                showAlert('Data berhasil diimpor!');
+            } else {
+                throw new Error('Format data di dalam file tidak valid.');
+            }
+        } catch (error) {
+            showAlert(`Gagal mengimpor file: ${error.message}`);
+        } finally {
+            event.target.value = null;
+        }
+    };
+    reader.readAsText(file);
+}
+
 taskForm.addEventListener('submit', handleFormSubmit);
 taskList.addEventListener('click', handleTableClick);
 resetBtn.addEventListener('click', resetForm);
-searchInput.addEventListener('input', renderTasks);
-filterStatus.addEventListener('change', renderTasks);
+searchInput.addEventListener('input', () => {
+    currentPage = 1;
+    renderTasks();
+});
+filterStatus.addEventListener('change', () => {
+    currentPage = 1;
+    renderTasks();
+});
+exportBtn.addEventListener('click', exportTasksToTxt);
+importBtn.addEventListener('click', () => importFileInput.click());
+importFileInput.addEventListener('change', handleImport);
+
 
 checkAndResetDailyStatus();
 renderTasks();
