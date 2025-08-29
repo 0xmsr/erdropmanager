@@ -18,7 +18,6 @@ jobs:
         with:
           node-version: 20
 
-      # Tidak perlu npm ci, langsung install Bubblewrap
       - name: Install Bubblewrap CLI
         run: npm install -g @bubblewrap/cli
 
@@ -27,14 +26,7 @@ jobs:
           bubblewrap init --manifest=https://erdropmanager.vercel.app/manifest.json --skipPwaValidation --skipSigning
           bubblewrap build --skipSigning
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Upload APK to Release
+      - name: Upload APK to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: app-release-unsigned.apk
