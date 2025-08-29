@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IAC Community | Erdrop Manager</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" type="image/x-icon" sizes="152x152" href="iconsiac.png" border-radius="50px">
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#00ff00">
+</head>
+<body>
+
+    <div class="app-container">
+        <header>
+            <h1><img src="iconsiac.png" width="70px">IAC Community</h1>
+        </header>
+
+        <div class="form-container">
+            <h2 id="form-title">Tambah Garapan Baru</h2>
+            <form id="task-form">
+                <input type="hidden" id="task-id">
+                
+                <input type="text" id="nama-garapan" placeholder="Contoh: Walrus" required>
+                <input type="text" id="tugas-garapan" placeholder="Stake - Swap - Bridge" required>
+                <input type="text" id="link" placeholder="https://..." required>
+                <input type="number" id="banyak-akun" min="1" placeholder="Banyak akun" required>
+                <select id="keterangan">
+                    <option value="Ongoing">Ongoing</option>
+                    <option value="END">END</option>
+                    <option value="Nunggu Info">Nunggu Info</option>
+                </select>
+                <div class="form-buttons">
+                    <button type="submit" id="submit-btn">Tambah</button>
+                    <button type="button" id="reset-btn">Reset</button>
+                </div>
+            </form>
+        </div>
+        
+        <div class="filter-container">
+            <input type="search" id="search-input" placeholder="Cari nama atau tugas...">
+            <select id="filter-status">
+                <option value="Semua">Semua Status</option>
+                <option value="Ongoing">Ongoing</option>
+                <option value="END">END</option>
+                <option value="Nunggu Info">Nunggu Info</option>
+            </select>
+        </div>
+
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Nama Garapan</th>
+                        <th>Tugas Garapan</th>
+                        <th>Link</th>
+                        <th>Banyak Akun</th>
+                        <th>Keterangan</th>
+                        <th>Hari Ini</th>
+                        <th>Tanggal Ditambahkan</th>
+                        <th>Aksi</th>
+                    </tr>
+                </thead>
+                <tbody id="task-list">
+                    </tbody>
+            </table>
+        </div>
+        <p>Note: Garapan akan otomatis teriset saat jam 07:00 WIB</p>
+    </div>
+
+     <script>
+  if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('service-worker.js')
+        .then(reg => console.log('SW terdaftar', reg))
+        .catch(err => console.log('Gagal register SW', err));
+    });
+  }
+</script>
+    <script src="erdrop.js"></script>
+</body>
+</html>
