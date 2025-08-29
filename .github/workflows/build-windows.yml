@@ -2,28 +2,33 @@ name: Build Windows EXE
 
 on:
   push:
-    branches: [ "main", "setup/electron-capacitor" ]
+    tags:
+      - 'v*'
   workflow_dispatch:
 
 jobs:
-  build-windows:
+  build_windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Use Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      
+          node-version: 20
+
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
-      - name: Build Windows EXE
-        run: npm run build:win
+      - name: Build Windows app
+        run: |
+          npm install -g electron-packager
+          electron-packager . ErdropManager --platform=win32 --arch=x64 --out=dist --overwrite
 
-      - name: Upload artifact (dist/)
-        uses: actions/upload-artifact@v4
+      - name: Upload EXE to Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: erdrop-windows-exe
-          path: dist
+          files: dist/ErdropManager-win32-x64/ErdropManager.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
