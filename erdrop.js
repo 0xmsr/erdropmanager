@@ -14,6 +14,8 @@ const filterStatus = document.getElementById('filter-status');
 const exportBtn = document.getElementById('export-btn');
 const importBtn = document.getElementById('import-btn');
 const importFileInput = document.getElementById('import-file');
+
+// Custom Modal Elements
 const customAlertOverlay = document.getElementById('custom-alert-overlay');
 const customAlertMessage = document.getElementById('custom-alert-message');
 const customAlertOkBtn = document.getElementById('custom-alert-ok-btn');
@@ -22,11 +24,55 @@ const customConfirmMessage = document.getElementById('custom-confirm-message');
 const customConfirmYesBtn = document.getElementById('custom-confirm-yes-btn');
 const customConfirmNoBtn = document.getElementById('custom-confirm-no-btn');
 let confirmResolver;
+
+// --- FUNGSI NOTIFIKASI BARU ---
+
+// 1. Fungsi untuk meminta izin notifikasi kepada pengguna
+function requestNotificationPermission() {
+    if ('Notification' in window) {
+        // Cek jika izin belum diberikan atau ditolak
+        if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
+            Notification.requestPermission().then(permission => {
+                if (permission === 'granted') {
+                    console.log('Izin notifikasi diberikan.');
+                }
+            });
+        }
+    }
+}
+
+// 2. Fungsi untuk menampilkan notifikasi harian
+function showDailyNotification() {
+    if (!('Notification' in window)) {
+        showAlert('Browser ini tidak mendukung notifikasi.');
+        return;
+    }
+
+    if (Notification.permission === 'granted') {
+        const notificationOptions = {
+            body: 'Jangan lupa kerjakan tugas airdrop Anda untuk hari ini.',
+            icon: 'iconsiac.png' // Pastikan path ini sesuai dengan lokasi ikon Anda
+        };
+
+        // Menggunakan service worker untuk menampilkan notifikasi (lebih andal)
+        if ('serviceWorker' in navigator && navigator.serviceWorker.ready) {
+             navigator.serviceWorker.ready.then(reg => {
+                reg.showNotification('Waktunya Cek Garapan Harian!', notificationOptions);
+             });
+        } else {
+            // Fallback jika service worker tidak siap
+            new Notification('Waktunya Cek Garapan Harian!', notificationOptions);
+        }
+    }
+}
+// --- AKHIR FUNGSI NOTIFIKASI BARU ---
+
 let tasks = JSON.parse(localStorage.getItem('airdropTasks')) || [];
 let isEditMode = false;
 let currentPage = 1;
 const rowsPerPage = 10;
 
+// --- CUSTOM MODAL FUNCTIONS ---
 function showAlert(message) {
     customAlertMessage.textContent = message;
     customAlertOverlay.classList.remove('custom-modal-hidden');
@@ -57,6 +103,8 @@ customConfirmNoBtn.addEventListener('click', () => {
         confirmResolver(false);
     }
 });
+// --- END CUSTOM MODAL FUNCTIONS ---
+
 
 function saveTasks() {
     localStorage.setItem('airdropTasks', JSON.stringify(tasks));
@@ -230,9 +278,11 @@ function resetForm() {
     submitBtn.textContent = "Tambah";
 }
 
+// erdrop.js
+
 function checkAndResetDailyStatus() {
     const RESET_HOUR_WIB = 7;
-    
+
     const nextResetTimestamp = localStorage.getItem('nextResetTimestamp');
     const now = new Date();
 
@@ -241,6 +291,9 @@ function checkAndResetDailyStatus() {
 
         tasks = tasks.map(task => ({ ...task, selesaiHariIni: false }));
         saveTasks();
+
+        // TAMBAHKAN BARIS INI UNTUK MENAMPILKAN NOTIFIKASI
+        showDailyNotification(); 
 
         const nextResetDate = new Date();
         nextResetDate.setHours(RESET_HOUR_WIB, 0, 0, 0);
@@ -317,6 +370,6 @@ exportBtn.addEventListener('click', exportTasksToTxt);
 importBtn.addEventListener('click', () => importFileInput.click());
 importFileInput.addEventListener('change', handleImport);
 
-
 checkAndResetDailyStatus();
 renderTasks();
+requestNotificationPermission();
