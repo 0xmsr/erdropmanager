@@ -3,7 +3,7 @@
   "short_name": "Erdrop Manager",
   "description": "Aplikasi manajemen airdrop by IAC Community.",
   "start_url": "index.html",
-  "display": "fullscreen",
+  "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#ffffff",
   "icons": [
@@ -31,9 +31,12 @@
       "type": "image/png",
       "purpose": "maskable"
     }
+  ],
+  "shortcuts": [
+    {
+      "name": "Faucet",
+      "url": "https://erdropmanager.vercel.app/faucet.html",
+      "description": "Faucet Testnet"
+    }
   ]
 }
-
-
-
-
