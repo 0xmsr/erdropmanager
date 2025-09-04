@@ -3,8 +3,8 @@
   "short_name": "Erdrop Manager",
   "description": "Aplikasi manajemen airdrop by IAC Community.",
   "start_url": "index.html",
-  "display": "standalone",
-  "background_color": "#ffffff",
+  "display": "fullscreen",
+  "background_color": "#000000",
   "theme_color": "#ffffff",
   "icons": [
     {
@@ -40,3 +40,4 @@
     }
   ]
 }
+
