@@ -6,8 +6,8 @@ document.addEventListener('DOMContentLoaded', () => {
         {
             name: 'Giwa Sepolia',
             description: 'Dapatkan ETH testnet di jaringan Giwa Sepolia',
-            url: 'https://faucet.paradigm.xyz/',
-            urlText: 'Kunjungi faucet.giwa.io'
+            url: 'https://faucet.giwa.io',
+            urlText: 'Kunjungi '
         },
         {
             name: 'Multi-Chain Faucet (Paradigm)',
@@ -101,3 +101,4 @@ document.addEventListener('DOMContentLoaded', () => {
     renderFaucets(faucets);
 
 });
+
