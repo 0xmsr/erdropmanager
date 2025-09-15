@@ -11,6 +11,7 @@
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
 </head>
 <body>
 
@@ -20,7 +21,7 @@
         </header>
 
         <div class="form-container">
-            <h2 id="form-title">Tambah Garapan Baru</h2>
+            <h2 id="form-title" style="text-align: center;">Tambah Garapan Baru</h2>
             <form id="task-form">
                 <input type="hidden" id="task-id">
                 
@@ -68,24 +69,20 @@
                     </tbody>
             </table>
         </div>
-
+        
+        <div id="pagination-container"></div>
+        <p>Note: Garapan "Hari ini" akan otomatis teriset saat jam 07:00 WIB</p>
+        
         <div class="data-management-container">
             <button id="export-btn">Simpan di .txt</button>
             <button id="import-btn">Impor dari .txt</button>
             <input type="file" id="import-file" accept=".txt" style="display: none;">
         </div>
-
-        <div id="pagination-container"></div>
-        <p>Note: Garapan "Hari ini" akan otomatis teriset saat jam 07:00 WIB</p>
-
-        <a href="https://t.me/airdropiac"><button>Join Channel Telegram</button></a>
-
-        <a href="https://x.com/iaccommunity_"><button>Follow X</button></a>
-
-
-
-        <a href="faucet.html"><button>Info Faucet</button></a>
         
+        <a href="https://t.me/airdropiac"><button>Join Channel Telegram</button></a>
+        <a href="https://x.com/iaccommunity_"><button>Follow X</button></a>
+        <a href="faucet.html"><button>Info Faucet</button></a>
+        <a href="finance.html"><button>Pendapatan&Pengeluaran</button></a>
     </div>
 
     <div id="custom-alert-overlay" class="custom-modal-hidden">
@@ -109,6 +106,20 @@
         </div>
     </div>
 
+    <div id="custom-prompt-overlay" class="custom-modal-hidden">
+        <div class="custom-modal-box">
+            <div class="custom-modal-title">Password Protection</div>
+            <div class="custom-modal-message" id="custom-prompt-message"></div>
+            <div class="custom-modal-input-container">
+                <input type="password" id="custom-prompt-input" placeholder="Masukkan kata sandi...">
+            </div>
+            <div class="custom-modal-buttons">
+                <button id="custom-prompt-ok-btn">OK</button>
+                <button id="custom-prompt-cancel-btn" class="cancel-btn">Batal</button>
+            </div>
+        </div>
+    </div>
+
      <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
@@ -126,5 +137,3 @@
 </body>
 
 </html>
-
-
