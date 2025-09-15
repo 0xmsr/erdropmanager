@@ -14,8 +14,6 @@ const filterStatus = document.getElementById('filter-status');
 const exportBtn = document.getElementById('export-btn');
 const importBtn = document.getElementById('import-btn');
 const importFileInput = document.getElementById('import-file');
-
-// Custom Modal Elements
 const customAlertOverlay = document.getElementById('custom-alert-overlay');
 const customAlertMessage = document.getElementById('custom-alert-message');
 const customAlertOkBtn = document.getElementById('custom-alert-ok-btn');
@@ -24,13 +22,16 @@ const customConfirmMessage = document.getElementById('custom-confirm-message');
 const customConfirmYesBtn = document.getElementById('custom-confirm-yes-btn');
 const customConfirmNoBtn = document.getElementById('custom-confirm-no-btn');
 let confirmResolver;
+const customPromptOverlay = document.getElementById('custom-prompt-overlay');
+const customPromptMessage = document.getElementById('custom-prompt-message');
+const customPromptInput = document.getElementById('custom-prompt-input');
+const customPromptOkBtn = document.getElementById('custom-prompt-ok-btn');
+const customPromptCancelBtn = document.getElementById('custom-prompt-cancel-btn');
+let promptResolver;
 
-// --- FUNGSI NOTIFIKASI BARU ---
 
-// 1. Fungsi untuk meminta izin notifikasi kepada pengguna
 function requestNotificationPermission() {
     if ('Notification' in window) {
-        // Cek jika izin belum diberikan atau ditolak
         if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
             Notification.requestPermission().then(permission => {
                 if (permission === 'granted') {
@@ -41,7 +42,6 @@ function requestNotificationPermission() {
     }
 }
 
-// 2. Fungsi untuk menampilkan notifikasi harian
 function showDailyNotification() {
     if (!('Notification' in window)) {
         showAlert('Browser ini tidak mendukung notifikasi.');
@@ -51,28 +51,24 @@ function showDailyNotification() {
     if (Notification.permission === 'granted') {
         const notificationOptions = {
             body: 'Jangan lupa kerjakan tugas airdrop Anda untuk hari ini.',
-            icon: 'iconsiac.png' // Pastikan path ini sesuai dengan lokasi ikon Anda
+            icon: 'iconsiac.png'
         };
 
-        // Menggunakan service worker untuk menampilkan notifikasi (lebih andal)
         if ('serviceWorker' in navigator && navigator.serviceWorker.ready) {
              navigator.serviceWorker.ready.then(reg => {
                 reg.showNotification('Waktunya Cek Garapan Harian!', notificationOptions);
              });
         } else {
-            // Fallback jika service worker tidak siap
             new Notification('Waktunya Cek Garapan Harian!', notificationOptions);
         }
     }
 }
-// --- AKHIR FUNGSI NOTIFIKASI BARU ---
 
 let tasks = JSON.parse(localStorage.getItem('airdropTasks')) || [];
 let isEditMode = false;
 let currentPage = 1;
 const rowsPerPage = 10;
 
-// --- CUSTOM MODAL FUNCTIONS ---
 function showAlert(message) {
     customAlertMessage.textContent = message;
     customAlertOverlay.classList.remove('custom-modal-hidden');
@@ -90,6 +86,16 @@ function showConfirm(message) {
     });
 }
 
+function showPrompt(message) {
+    customPromptMessage.textContent = message;
+    customPromptInput.value = '';
+    customPromptOverlay.classList.remove('custom-modal-hidden');
+    customPromptInput.focus();
+    return new Promise(resolve => {
+        promptResolver = resolve;
+    });
+}
+
 customConfirmYesBtn.addEventListener('click', () => {
     if (confirmResolver) {
         customConfirmOverlay.classList.add('custom-modal-hidden');
@@ -103,7 +109,20 @@ customConfirmNoBtn.addEventListener('click', () => {
         confirmResolver(false);
     }
 });
-// --- END CUSTOM MODAL FUNCTIONS ---
+
+customPromptOkBtn.addEventListener('click', () => {
+    if (promptResolver) {
+        customPromptOverlay.classList.add('custom-modal-hidden');
+        promptResolver(customPromptInput.value);
+    }
+});
+
+customPromptCancelBtn.addEventListener('click', () => {
+    if (promptResolver) {
+        customPromptOverlay.classList.add('custom-modal-hidden');
+        promptResolver(null);
+    }
+});
 
 
 function saveTasks() {
@@ -126,39 +145,48 @@ function renderTasks() {
     const endIndex = startIndex + rowsPerPage;
     const paginatedTasks = filteredTasks.slice(startIndex, endIndex);
 
-    paginatedTasks.forEach(task => {
-        const row = document.createElement('tr');
-        const isSelesai = task.selesaiHariIni ? 'selesai' : 'belum';
-        const statusText = task.selesaiHariIni ? '✓ Selesai' : 'X Belum';
+    if (paginatedTasks.length === 0 && filteredTasks.length > 0) {
+        currentPage = Math.ceil(filteredTasks.length / rowsPerPage);
+        renderTasks();
+        return;
+    }
+    
+    if (paginatedTasks.length === 0) {
+        taskList.innerHTML = `<tr><td colspan="8" style="text-align: center;">Belum ada garapan</td></tr>`;
+    } else {
+        paginatedTasks.forEach(task => {
+            const row = document.createElement('tr');
+            const isSelesai = task.selesaiHariIni ? 'selesai' : 'belum';
+            const statusText = task.selesaiHariIni ? '✓ Selesai' : 'X Belum';
 
-        row.innerHTML = `
-            <td>${task.nama}</td>
-            <td>${task.tugas}</td>
-            <td>
-                <a href="${task.link}" 
-                   target="_blank" 
-                   rel="noopener noreferrer" 
-                   class="open-link" 
-                   data-id="${task.id}"
-                >Open</a>
-            </td>
-            <td>${task.akun}</td>
-            <td><span class="status ${task.status.toLowerCase().replace(' ', '-')}">${task.status}</span></td>
-            <td>
-                <button class="today-btn ${isSelesai}" 
-                        data-id="${task.id}"
-                        ${task.selesaiHariIni ? 'disabled' : ''}
-                >${statusText}</button>
-            </td>
-            <td>${task.tanggalDitambahkan}</td>
-            <td>
-                <button class="action-btn end-btn" data-id="${task.id}">End</button>
-                <button class="action-btn edit-btn" data-id="${task.id}">Edit</button>
-                <button class="action-btn delete-btn" data-id="${task.id}">Hapus</button>
-            </td>
-        `;
-        taskList.appendChild(row);
-    });
+            row.innerHTML = `
+                <td>${task.nama}</td>
+                <td>${task.tugas}</td>
+                <td>
+                    <a href="${task.link}" 
+                       target="_blank" 
+                       rel="noopener noreferrer" 
+                       class="open-link" 
+                       data-id="${task.id}"
+                    >Open</a>
+                </td>
+                <td>${task.akun}</td>
+                <td><span class="status ${task.status.toLowerCase().replace(' ', '-')}">${task.status}</span></td>
+                <td>
+                    <button class="today-btn ${isSelesai}" 
+                            data-id="${task.id}"
+                    >${statusText}</button>
+                </td>
+                <td>${task.tanggalDitambahkan}</td>
+                <td>
+                    <button class="action-btn end-btn" data-id="${task.id}">End</button>
+                    <button class="action-btn edit-btn" data-id="${task.id}">Edit</button>
+                    <button class="action-btn delete-btn" data-id="${task.id}">Hapus</button>
+                </td>
+            `;
+            taskList.appendChild(row);
+        });
+    }
 
     setupPagination(filteredTasks.length);
 }
@@ -197,39 +225,46 @@ function setupPagination(totalItems) {
     }
 }
 
-
 function handleFormSubmit(e) {
     e.preventDefault();
+    
+    const id = taskIdInput.value ? parseInt(taskIdInput.value) : Date.now();
+    const taskIndex = tasks.findIndex(task => task.id === id);
 
-    const now = new Date();
-    const formattedDate = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    let tanggalDitambahkan;
+    if (isEditMode && taskIndex > -1) {
+        tanggalDitambahkan = tasks[taskIndex].tanggalDitambahkan;
+    } else {
+        const now = new Date();
+        tanggalDitambahkan = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
+    }
 
-    const newTask = {
-        id: isEditMode ? parseInt(taskIdInput.value) : Date.now(),
+    const taskData = {
+        id: id,
         nama: namaGarapanInput.value.trim(),
         tugas: tugasGarapanInput.value.trim(),
         link: linkInput.value.trim(),
         akun: parseInt(banyakAkunInput.value),
         status: keteranganInput.value,
-        selesaiHariIni: false,
-        tanggalDitambahkan: formattedDate
+        selesaiHariIni: isEditMode && taskIndex > -1 ? tasks[taskIndex].selesaiHariIni : false,
+        tanggalDitambahkan: tanggalDitambahkan
     };
 
-    if (isEditMode) {
-        tasks = tasks.map(task => task.id === newTask.id ? { ...newTask, tanggalDitambahkan: task.tanggalDitambahkan } : task);
-        isEditMode = false;
+    if (isEditMode && taskIndex > -1) {
+        tasks[taskIndex] = taskData;
     } else {
-        tasks.push(newTask);
+        tasks.push(taskData);
     }
     
     saveTasks();
-    currentPage = 1;
     renderTasks();
     resetForm();
 }
 
 async function handleTableClick(e) {
     const target = e.target;
+    if (!target.dataset.id) return;
+    
     const id = parseInt(target.dataset.id);
 
     if (target.classList.contains('delete-btn')) {
@@ -237,7 +272,6 @@ async function handleTableClick(e) {
         if (confirmed) {
             tasks = tasks.filter(task => task.id !== id);
             saveTasks();
-            currentPage = 1;
             renderTasks();
         }
     } else if (target.classList.contains('edit-btn')) {
@@ -260,10 +294,14 @@ async function handleTableClick(e) {
         );
         saveTasks();
         renderTasks();
-    } else if (target.classList.contains('open-link')) {
+    } else if (target.classList.contains('today-btn') || target.classList.contains('open-link')) {
         const taskToUpdate = tasks.find(task => task.id === id);
         if (taskToUpdate) {
-            taskToUpdate.selesaiHariIni = true;
+            if (target.classList.contains('today-btn')) {
+                 taskToUpdate.selesaiHariIni = !taskToUpdate.selesaiHariIni;
+            } else {
+                 taskToUpdate.selesaiHariIni = true;
+            }
             saveTasks();
             renderTasks();
         }
@@ -278,42 +316,59 @@ function resetForm() {
     submitBtn.textContent = "Tambah";
 }
 
-// erdrop.js
-
 function checkAndResetDailyStatus() {
     const RESET_HOUR_WIB = 7;
-
-    const nextResetTimestamp = localStorage.getItem('nextResetTimestamp');
+    const lastReset = localStorage.getItem('lastReset');
     const now = new Date();
+    
+    const todayResetTime = new Date();
+    todayResetTime.setHours(RESET_HOUR_WIB, 0, 0, 0);
 
-    if (!nextResetTimestamp || now.getTime() >= parseInt(nextResetTimestamp)) {
-        console.log('Waktu reset terlewati! Mereset status harian...');
-
-        tasks = tasks.map(task => ({ ...task, selesaiHariIni: false }));
-        saveTasks();
-
-        // TAMBAHKAN BARIS INI UNTUK MENAMPILKAN NOTIFIKASI
-        showDailyNotification(); 
-
-        const nextResetDate = new Date();
-        nextResetDate.setHours(RESET_HOUR_WIB, 0, 0, 0);
-
-        if (now.getTime() >= nextResetDate.getTime()) {
-            nextResetDate.setDate(nextResetDate.getDate() + 1);
+    if (!lastReset || new Date(parseInt(lastReset)) < todayResetTime) {
+        if (now.getHours() >= RESET_HOUR_WIB) {
+            console.log('Waktu reset terlewati! Mereset status harian...');
+            tasks = tasks.map(task => ({ ...task, selesaiHariIni: false }));
+            saveTasks();
+            renderTasks();
+            localStorage.setItem('lastReset', now.getTime());
+            showDailyNotification();
         }
-
-        localStorage.setItem('nextResetTimestamp', nextResetDate.getTime());
-        console.log(`Reset berikutnya dijadwalkan pada: ${nextResetDate}`);
     }
 }
 
-function exportTasksToTxt() {
-    if (tasks.length === 0) {
+async function exportDataToTxt() {
+    const transactionsForExport = JSON.parse(localStorage.getItem('transactions')) || [];
+    if (tasks.length === 0 && transactionsForExport.length === 0) {
         showAlert('Tidak ada data untuk diekspor!');
         return;
     }
-    const dataStr = JSON.stringify(tasks, null, 2);
-    const dataBlob = new Blob([dataStr], { type: 'text/plain;charset=utf-8' });
+
+    const usePassword = await showConfirm('Apakah Anda ingin melindungi file ini dengan kata sandi?');
+    let password = null;
+    if (usePassword) {
+        password = await showPrompt('Masukkan kata sandi untuk enkripsi:');
+        if (!password) {
+            showAlert('Ekspor dibatalkan. Tidak ada kata sandi yang diberikan.');
+            return;
+        }
+    }
+    
+    const dataToExport = {
+        airdropTasks: tasks,
+        financeTransactions: transactionsForExport
+    };
+
+    let dataStr = JSON.stringify(dataToExport, null, 2);
+    let finalData;
+
+    if (password) {
+        const encrypted = CryptoJS.AES.encrypt(dataStr, password).toString();
+        finalData = JSON.stringify({ encryptedData: encrypted });
+    } else {
+        finalData = dataStr;
+    }
+
+    const dataBlob = new Blob([finalData], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(dataBlob);
     const link = document.createElement('a');
     const timestamp = new Date().toISOString().slice(0, 10);
@@ -334,18 +389,57 @@ async function handleImport(event) {
     }
 
     const reader = new FileReader();
-    reader.onload = function(e) {
+    reader.onload = async function(e) {
         try {
-            const importedData = JSON.parse(e.target.result);
-            if (Array.isArray(importedData)) {
+            const fileContent = e.target.result;
+            let importedData;
+            try {
+                importedData = JSON.parse(fileContent);
+            } catch (error) {
+                showAlert('Gagal mem-parsing file. Pastikan file tersebut adalah file backup yang valid.');
+                return;
+            }
+
+            if (importedData && importedData.encryptedData) {
+                const password = await showPrompt('File ini dienkripsi. Masukkan kata sandi:');
+                if (password === null) {
+                    showAlert('Impor dibatalkan.');
+                    return;
+                }
+                try {
+                    const decryptedBytes = CryptoJS.AES.decrypt(importedData.encryptedData, password);
+                    const decryptedText = decryptedBytes.toString(CryptoJS.enc.Utf8);
+                    if (!decryptedText) {
+                        throw new Error('Kata sandi salah atau data rusak.');
+                    }
+                    importedData = JSON.parse(decryptedText);
+                } catch (err) {
+                    showAlert('Gagal mendekripsi data. Kata sandi salah.');
+                    return;
+                }
+            }
+            
+            const hasAirdropData = importedData && Array.isArray(importedData.airdropTasks);
+            const hasFinanceData = importedData && Array.isArray(importedData.financeTransactions);
+            const isOldFormat = Array.isArray(importedData);
+
+            if (hasAirdropData || hasFinanceData) {
+                tasks = hasAirdropData ? importedData.airdropTasks : [];
+                const transactionsData = hasFinanceData ? importedData.financeTransactions : [];
+                localStorage.setItem('transactions', JSON.stringify(transactionsData));
+                showAlert('Data garapan berhasil diimpor!');
+            } else if (isOldFormat) {
                 tasks = importedData;
-                saveTasks();
-                currentPage = 1;
-                renderTasks();
-                showAlert('Data berhasil diimpor!');
+                localStorage.setItem('transactions', JSON.stringify([]));
+                showAlert('Backup format lama berhasil diimpor. Data garapan telah dipulihkan.');
             } else {
                 throw new Error('Format data di dalam file tidak valid.');
             }
+
+            saveTasks();
+            currentPage = 1;
+            renderTasks();
+
         } catch (error) {
             showAlert(`Gagal mengimpor file: ${error.message}`);
         } finally {
@@ -366,7 +460,7 @@ filterStatus.addEventListener('change', () => {
     currentPage = 1;
     renderTasks();
 });
-exportBtn.addEventListener('click', exportTasksToTxt);
+exportBtn.addEventListener('click', exportDataToTxt);
 importBtn.addEventListener('click', () => importFileInput.click());
 importFileInput.addEventListener('change', handleImport);
 
