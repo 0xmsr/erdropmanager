@@ -1,16 +1,15 @@
-body {
-    background-color: #000000;
-    color: #ffffff;
-    font-family: 'Courier New', Courier, monospace;
-    line-height: 1.6;
-    margin: 0;
-    padding: 20px;
-    text-shadow: 0 0 2px #ffffff;
-}
-
-h1, h2 {
+h1 {
     color: #ffffff;
     text-align: center;
+    border-bottom: 2px solid #ffffff;
+    padding-bottom: 5px;
+    margin-bottom: 20px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+}
+
+h2 {
+    color: #ffffff;
     border-bottom: 2px solid #ffffff;
     padding-bottom: 5px;
     margin-bottom: 20px;
@@ -27,7 +26,6 @@ h1, h2 {
     box-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
 }
 
-/* --- FORM & BUTTONS --- */
 .form-container, .filter-container, .data-management-container {
     background-color: transparent;
     padding: 25px;
@@ -77,14 +75,11 @@ button:hover {
     color: #ffffff;
 }
 
-/* Retro Computer Button Styles */
-
 .open-link {
-    /* Style the link to look like a button */
     display: inline-block;
     padding: 6px 10px;
     background-color: #000000;
-    color: #ffffff; /* Bright green text */
+    color: #ffffff;
     font-family: 'Courier New', Courier, monospace;
     font-weight: bold;
     text-decoration: none;
@@ -267,7 +262,6 @@ th {
     color: #0d0d0d;
 }
 
-/* --- PAGINATION STYLES --- */
 .pagination-container {
     display: flex;
     justify-content: center;
@@ -293,7 +287,6 @@ th {
     color: #ffffff;
 }
 
-/* --- CUSTOM MODAL (ALERT/CONFIRM) STYLES --- */
 .custom-modal-hidden {
     display: none !important;
 }
@@ -426,4 +419,92 @@ th {
     table {
         min-width: 600px;
     }
+}
+
+.finance-container {
+    background-color: transparent;
+    padding: 25px;
+    border: 1px solid #ffffff;
+    margin-top: 30px;
+    margin-bottom: 20px;
+}
+
+.summary-container {
+    display: flex;
+    justify-content: space-around;
+    flex-wrap: wrap;
+    gap: 15px;
+    background-color: #000000;
+    border: 1px solid #ffffff;
+    padding: 15px;
+    margin-bottom: 25px;
+    font-size: 1.1em;
+    text-transform: uppercase;
+}
+
+.summary-container div {
+    text-align: center;
+}
+
+#total-income {
+    color: #33ff33;
+    font-weight: bold;
+}
+
+#total-expense {
+    color: #ff3333;
+    font-weight: bold;
+}
+
+#net-balance {
+    color: #01a2ff;
+    font-weight: bold;
+}
+
+#transaction-form {
+    display: grid;
+    grid-template-columns: 3fr 1fr 1fr 1fr;
+    gap: 15px;
+    margin-bottom: 25px;
+    align-items: center;
+}
+
+#transaction-table .income-row td:nth-child(4) {
+    color: #33ff33;
+    font-weight: bold;
+}
+
+#transaction-table .expense-row td:nth-child(4) {
+    color: #ff3333;
+    font-weight: bold;
+}
+
+@media (max-width: 768px) {
+    #transaction-form {
+        grid-template-columns: 1fr;
+    }
+    
+    .summary-container {
+        flex-direction: column;
+        align-items: center;
+        font-size: 1em;
+    }
+}
+
+#transaction-form {
+    display: grid;
+    grid-template-columns: 3fr 1.5fr 1fr 1fr 1.5fr;
+    gap: 15px;
+    margin-bottom: 25px;
+    align-items: center;
+}
+
+body {
+    background-color: #000000;
+    color: #ffffff;
+    font-family: 'Courier New', Courier, monospace;
+    line-height: 1.6;
+    margin: 0;
+    padding: 20px;
+    text-shadow: 0 0 2px #ffffff;
 }
