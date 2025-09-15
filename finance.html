@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IAC Community</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" type="image/x-icon" sizes="152x152" href="iconsiac.png">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.2.0/crypto-js.min.js"></script>
+</head>
+<body>
+
+    <div class="app-container">
+        <header>
+            <h1><img src="iconsiac.png" width="70px">IAC Community</h1>
+        </header>
+
+        <div class="finance-container">
+            <h2>Hitung Pendapatan & Pengeluaran mu</h2>
+
+            <div class="summary-container">
+                <div>Total Pendapatan: <span id="total-income">$0.00</span></div>
+                <div>Total Pengeluaran: <span id="total-expense">$0.00</span></div>
+                <div>Saldo Bersih: <span id="net-balance">$0.00</span></div>
+            </div>
+
+            <form id="transaction-form">
+                <input type="text" id="transaction-desc" placeholder="Deskripsi (mis: Gas Fee, Airdrop Zk)" required>
+                <input type="text" id="transaction-network" placeholder="Network (mis: Base)" required>
+                <input type="number" id="transaction-amount" placeholder="Jumlah ($)" min="0" step="0.01" required>
+                <select id="transaction-type">
+                    <option value="income">Pendapatan</option>
+                    <option value="expense">Pengeluaran</option>
+                </select>
+                <button type="submit">Tambah Transaksi</button>
+            </form>
+
+            <div class="table-container">
+                <table id="transaction-table">
+                    <thead>
+                        <tr>
+                            <th>Tanggal</th>
+                            <th>Deskripsi</th>
+                            <th>Network</th>
+                            <th>Tipe</th>
+                            <th>Jumlah</th>
+                            <th>Aksi</th>
+                        </tr>
+                    </thead>
+                    <tbody id="transaction-list">
+                        </tbody>
+                </table>
+            </div>
+        </div>
+
+        <a href="index.html"><button>Kembali ke Garapan</button></a>
+    </div>
+
+    <div id="custom-alert-overlay" class="custom-modal-hidden">
+        <div class="custom-modal-box">
+            <div class="custom-modal-title">Finance Manager</div>
+            <div class="custom-modal-message" id="custom-alert-message"></div>
+            <div class="custom-modal-buttons">
+                <button id="custom-alert-ok-btn">OK</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="custom-confirm-overlay" class="custom-modal-hidden">
+        <div class="custom-modal-box">
+            <div class="custom-modal-title">Finance Manager</div>
+            <div class="custom-modal-message" id="custom-confirm-message"></div>
+            <div class="custom-modal-buttons">
+                <button id="custom-confirm-yes-btn">Ya</button>
+                <button id="custom-confirm-no-btn" class="cancel-btn">Tidak</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="finance.js"></script>
+</body>
+</html>
