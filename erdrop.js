@@ -160,9 +160,9 @@ function renderTasks() {
             const statusText = task.selesaiHariIni ? '✓ Selesai' : 'X Belum';
 
             row.innerHTML = `
-                <td>${task.nama}</td>
-                <td>${task.tugas}</td>
-                <td>
+                <td data-label="Nama Garapan">${task.nama}</td>
+                <td data-label="Tugas Garapan">${task.tugas}</td>
+                <td data-label="Link">
                     <a href="${task.link}" 
                        target="_blank" 
                        rel="noopener noreferrer" 
@@ -170,15 +170,15 @@ function renderTasks() {
                        data-id="${task.id}"
                     >Open</a>
                 </td>
-                <td>${task.akun}</td>
-                <td><span class="status ${task.status.toLowerCase().replace(' ', '-')}">${task.status}</span></td>
-                <td>
+                <td data-label="Banyak Akun">${task.akun}</td>
+                <td data-label="Keterangan"><span class="status ${task.status.toLowerCase().replace(' ', '-')}">${task.status}</span></td>
+                <td data-label="Hari Ini">
                     <button class="today-btn ${isSelesai}" 
                             data-id="${task.id}"
                     >${statusText}</button>
                 </td>
-                <td>${task.tanggalDitambahkan}</td>
-                <td>
+                <td data-label="Tanggal Ditambahkan">${task.tanggalDitambahkan}</td>
+                <td data-label="Aksi">
                     <button class="action-btn end-btn" data-id="${task.id}">End</button>
                     <button class="action-btn edit-btn" data-id="${task.id}">Edit</button>
                     <button class="action-btn delete-btn" data-id="${task.id}">Hapus</button>
