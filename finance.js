@@ -75,12 +75,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 const rowTypeClass = transaction.type === 'income' ? 'income-row' : 'expense-row';
                 row.classList.add(rowTypeClass);
                 row.innerHTML = `
-                    <td>${transaction.date}</td>
-                    <td>${transaction.desc}</td>
-                    <td>${transaction.network || '-'}</td>
-                    <td>${transaction.type === 'income' ? 'Pendapatan' : 'Pengeluaran'}</td>
-                    <td>$${transaction.amount.toFixed(2)}</td>
-                    <td>
+                    <td data-label="Tanggal">${transaction.date}</td>
+                    <td data-label="Deskripsi">${transaction.desc}</td>
+                    <td data-label="Network">${transaction.network || '-'}</td>
+                    <td data-label="Tipe">${transaction.type === 'income' ? 'Pendapatan' : 'Pengeluaran'}</td>
+                    <td data-label="Jumlah">$${transaction.amount.toFixed(2)}</td>
+                    <td data-label="Aksi">
                         <button class="action-btn delete-btn delete-transaction-btn" data-id="${transaction.id}">Hapus</button>
                     </td>
                 `;
