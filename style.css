@@ -33,14 +33,34 @@ h2 {
     margin-bottom: 20px;
 }
 
-.form-container form {
+.form-container form, #transaction-form {
     display: grid;
-    grid-template-columns: 2fr 2fr 2fr 1fr 1fr 1.5fr;
     gap: 15px;
     align-items: center;
 }
 
-input, select, button {
+.form-container form {
+    grid-template-columns: 2fr 2fr 2fr 1fr 1fr 1.5fr;
+}
+
+#transaction-form {
+    grid-template-columns: 3fr 2fr 1fr 1fr 1.5fr;
+    margin-bottom: 20px;
+}
+
+input, select {
+    padding: 10px;
+    border-radius: 0;
+    border: 1px solid #ffffff;
+    background-color: #111111;
+    color: #ffffff;
+    font-size: 15px;
+    font-family: 'Courier New', Courier, monospace;
+    width: 100%;
+    box-sizing: border-box;
+}
+
+button {
     padding: 10px;
     border-radius: 0;
     border: 1px solid #ffffff;
@@ -151,7 +171,7 @@ button:hover {
 table {
     width: 100%;
     border-collapse: collapse;
-    min-width: 800px;
+    min-width: unset;
 }
 
 th, td {
@@ -354,149 +374,49 @@ th {
     color: #0d0d0d;
 }
 
-
 @media (max-width: 768px) {
-    body {
-        padding: 10px;
-    }
-
-    .app-container {
-        padding: 10px;
-        box-shadow: none;
-    }
-
-    .form-container, .filter-container, .table-container {
-        box-shadow: none;
-    }
-
-    .form-container form {
-        grid-template-columns: 1fr;
-    }
-
-    .form-buttons {
-        flex-direction: column;
-    }
-
-    .filter-container {
-        flex-direction: column;
-        align-items: stretch;
-    }
-    
-    #search-input, #filter-status {
+    .table-container table,
+    .table-container table thead,
+    .table-container table tbody,
+    .table-container table th,
+    .table-container table td,
+    .table-container table tr {
+        display: block;
         width: 100%;
     }
 
-    .table-container {
-        overflow-x: auto;
-        -webkit-overflow-scrolling: touch;
+    .table-container table thead {
+        display: none;
     }
 
-    table {
-        min-width: 700px;
-        font-size: 0.9em;
+    .table-container table tr {
+        margin-bottom: 15px;
+        border: 1px solid #444;
+        padding: 10px;
+        background-color: #111;
     }
 
-    th, td {
-        padding: 8px 5px;
-    }
-}
-
-@media (max-width: 480px) {
-    h1 {
-        font-size: 1.5em;
-    }
-    h2 {
-        font-size: 1.2em;
-    }
-    input, button, select {
-        font-size: 12px;
+    .table-container table td {
         padding: 8px;
+        text-align: left;
+        border: none;
+        border-bottom: 1px solid #333;
+        position: relative;
+        font-size: 14px;
     }
-    .today-btn, .action-btn {
-        padding: 4px 6px;
-        font-size: 0.8em;
+
+    .table-container table td:last-child {
+        border-bottom: none;
     }
-    table {
-        min-width: 600px;
+
+    .table-container table td::before {
+        content: attr(data-label);
+        font-weight: bold;
+        text-transform: uppercase;
+        color: #01a2ff;
+        display: block;
+        margin-bottom: 3px;
     }
-}
-
-.finance-container {
-    background-color: transparent;
-    padding: 25px;
-    border: 1px solid #ffffff;
-    margin-top: 30px;
-    margin-bottom: 20px;
-}
-
-.summary-container {
-    display: flex;
-    justify-content: space-around;
-    flex-wrap: wrap;
-    gap: 15px;
-    background-color: #000000;
-    border: 1px solid #ffffff;
-    padding: 15px;
-    margin-bottom: 25px;
-    font-size: 1.1em;
-    text-transform: uppercase;
-}
-
-.summary-container div {
-    text-align: center;
-}
-
-#total-income {
-    color: #33ff33;
-    font-weight: bold;
-}
-
-#total-expense {
-    color: #ff3333;
-    font-weight: bold;
-}
-
-#net-balance {
-    color: #01a2ff;
-    font-weight: bold;
-}
-
-#transaction-form {
-    display: grid;
-    grid-template-columns: 3fr 1fr 1fr 1fr;
-    gap: 15px;
-    margin-bottom: 25px;
-    align-items: center;
-}
-
-#transaction-table .income-row td:nth-child(4) {
-    color: #33ff33;
-    font-weight: bold;
-}
-
-#transaction-table .expense-row td:nth-child(4) {
-    color: #ff3333;
-    font-weight: bold;
-}
-
-@media (max-width: 768px) {
-    #transaction-form {
-        grid-template-columns: 1fr;
-    }
-    
-    .summary-container {
-        flex-direction: column;
-        align-items: center;
-        font-size: 1em;
-    }
-}
-
-#transaction-form {
-    display: grid;
-    grid-template-columns: 3fr 1.5fr 1fr 1fr 1.5fr;
-    gap: 15px;
-    margin-bottom: 25px;
-    align-items: center;
 }
 
 body {
