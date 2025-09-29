@@ -4,6 +4,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const faucets = [
         {
+            id: 'mawari',
+            name: 'Mawari Network Testnet',
+            description: 'Dapatkan Faucet Native Token [MAWARI] di jaringan Mawari Network Testnet',
+            url: 'https://hub.testnet.mawari.net/',
+            urlText: 'Kunjungi hub.testnet.mawari.net'
+        },
+        {
             id: 'giwa',
             name: 'Giwa Sepolia',
             description: 'Dapatkan ETH di jaringan Giwa Sepolia',
@@ -163,3 +170,4 @@ document.addEventListener('DOMContentLoaded', () => {
     window.addEventListener('hashchange', applyHashFilter);
     applyHashFilter();
 });
+
