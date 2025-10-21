@@ -29,6 +29,10 @@ const customPromptOkBtn = document.getElementById('custom-prompt-ok-btn');
 const customPromptCancelBtn = document.getElementById('custom-prompt-cancel-btn');
 let promptResolver;
 
+const dinoPopup = document.getElementById('dino-popup');
+const dinoMessage = document.getElementById('dino-message');
+let dinoTimer;
+
 
 function requestNotificationPermission() {
     if ('Notification' in window) {
@@ -452,6 +456,28 @@ async function handleImport(event) {
 taskForm.addEventListener('submit', handleFormSubmit);
 taskList.addEventListener('click', handleTableClick);
 resetBtn.addEventListener('click', resetForm);
+
+dinoMessage.addEventListener('click', (e) => {
+    if (e.target.classList.contains('dino-task-link')) {
+        e.preventDefault();
+        
+        const id = parseInt(e.target.dataset.id);
+        const linkUrl = e.target.href;
+        const taskToUpdate = tasks.find(task => task.id === id);
+        
+        if (taskToUpdate) {
+            taskToUpdate.selesaiHariIni = true;
+            saveTasks();
+            renderTasks();
+            window.open(linkUrl, '_blank');
+            dinoPopup.classList.remove('dino-visible');
+            if (dinoTimer) {
+                clearTimeout(dinoTimer);
+            }
+        }
+    }
+});
+
 searchInput.addEventListener('input', () => {
     currentPage = 1;
     renderTasks();
@@ -467,3 +493,46 @@ importFileInput.addEventListener('change', handleImport);
 checkAndResetDailyStatus();
 renderTasks();
 requestNotificationPermission();
+
+function showDinoPopup() {
+    const uncompletedTasks = tasks.filter(task => !task.selesaiHariIni);
+    let messageHtml = '';
+
+    if (uncompletedTasks.length === 0) {
+        if (tasks.length > 0) {
+            messageHtml = `
+                <p><strong>Repzz [Kang Reminder]</strong></p>
+                <p style="color: #00ff00; font-weight: bold; margin-top: 5px;">Selamat garapan hari ini sudah kelar semua🎉🎉🎉</p>
+            `;
+        } else {
+            return;
+        }
+    } else {
+        const randomIndex = Math.floor(Math.random() * uncompletedTasks.length);
+        const randomTask = uncompletedTasks[randomIndex];
+        messageHtml = `
+            <p><strong>Repzz [Kang Reminder]</strong></p>
+            <p class="dino-task-name">Jangan lupa: ${randomTask.nama}</p>
+            <a href="${randomTask.link}" 
+               target="_blank" 
+               rel="noopener noreferrer" 
+               class="dino-task-link"
+               data-id="${randomTask.id}" 
+            >
+                Buka Task
+            </a>
+        `;
+    }
+    dinoMessage.innerHTML = messageHtml;
+    dinoPopup.classList.add('dino-visible');
+
+    if (dinoTimer) {
+        clearTimeout(dinoTimer);
+    }
+
+    dinoTimer = setTimeout(() => {
+        dinoPopup.classList.remove('dino-visible');
+    }, 5000); 
+}
+
+setInterval(showDinoPopup, 10000);
