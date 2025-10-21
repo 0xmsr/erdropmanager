@@ -187,7 +187,7 @@ th {
     color: #ffffff;
 }
 
-.open-link {
+.open-link { 
     color: #ffffff;
     text-decoration: underline;
     font-weight: bold;
@@ -417,6 +417,15 @@ th {
         display: block;
         margin-bottom: 3px;
     }
+    .form-container form {
+        grid-template-columns: 1fr 1fr;
+    }
+    .form-container form #nama-garapan,
+    .form-container form #tugas-garapan,
+    .form-container form #link,
+    .form-container form .form-buttons {
+        grid-column: 1 / -1;
+    }
 }
 
 body {
@@ -427,4 +436,70 @@ body {
     margin: 0;
     padding: 20px;
     text-shadow: 0 0 2px #ffffff;
+}
+
+#dino-popup {
+    position: fixed;
+    bottom: 25px;
+    right: -400px;
+    width: 350px;
+    background-color: #1a1a1a;
+    border: 2px solid #ffffff;
+    padding: 15px;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    z-index: 999;
+    font-family: 'Courier New', Courier, monospace;
+    color: #ffffff;
+    box-shadow: 0 0 15px rgba(255, 255, 255, 0.3);
+    transition: right 0.5s ease-in-out;
+}
+
+#dino-popup.dino-visible {
+    right: 25px;
+}
+
+#dino-popup img {
+    width: 60px;
+    height: 60px;
+    flex-shrink: 0;
+}
+
+#dino-message p {
+    margin: 0;
+    line-height: 1.4;
+}
+
+#dino-message #dino-task-name {
+    font-size: 0.9em;
+    color: #01a2ff;
+    margin-top: 5px;
+    font-weight: bold;
+}
+
+#dino-message p.dino-task-name {
+    font-size: 0.9em;
+    color: #01a2ff;
+    margin-top: 5px;
+    font-weight: bold;
+}
+
+#dino-message a.dino-task-link {
+    display: inline-block;
+    margin-top: 8px;
+    padding: 4px 8px;
+    background-color: #ffffff;
+    color: #0d0d0d;
+    font-weight: bold;
+    text-decoration: none;
+    text-transform: uppercase;
+    font-size: 0.9em;
+    border: 1px solid #ffffff;
+    transition: background-color 0.3s, color 0.3s;
+}
+
+#dino-message a.dino-task-link:hover {
+    background-color: #111111;
+    color: #ffffff;
 }
