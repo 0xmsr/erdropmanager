@@ -3,6 +3,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const searchInput = document.getElementById('search-faucet');
 
     const faucets = [
+       {
+            id: 'pharos_atlantic',
+            name: 'Pharos Atlantic Testnet',
+            description: 'Dapatkan PHRS di jaringan Pharos Atlantic Testnet',
+            links: [
+                { url: 'https://testnet.pharosnetwork.xyz/', text: 'Kunjungi testnet.pharosnetwork.xyz' },
+                { url: 'https://zan.top/faucet/pharos', text: 'Kunjungi zan.top' },
+                { url: 'https://faroswap.xyz/faucet', text: 'Kunjungi faroswap.xyz' },
+            ]
+        },
         {
             id: 'mawari',
             name: 'Mawari Network Testnet',
