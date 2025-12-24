@@ -65,7 +65,7 @@ export const Home: React.FC = () => {
   }, [tasks]);
 
   useEffect(() => {
-    const checkDailyReset = () => {
+    const checkDailyReset = (notify: boolean = true) => {
       const RESET_HOUR_WIB = 7;
       const lastReset = localStorage.getItem('lastReset');
       const now = new Date();
@@ -76,13 +76,14 @@ export const Home: React.FC = () => {
         if (now.getHours() >= RESET_HOUR_WIB) {
           setTasks(prev => prev.map(t => ({ ...t, selesaiHariIni: false })));
           localStorage.setItem('lastReset', now.getTime().toString());
-          showAlert("Waktunya Cek Garapan Harian! Status telah direset.", 'info');
+          if (notify) {
+            showAlert("Waktunya Cek Garapan Harian! Status telah direset.", 'info');
+          }
         }
       }
     };
-    
-    checkDailyReset();
-    const interval = setInterval(checkDailyReset, 60000);
+    checkDailyReset(false); 
+    const interval = setInterval(() => checkDailyReset(true), 60000);
     return () => clearInterval(interval);
   }, []);
 
@@ -415,9 +416,16 @@ export const Home: React.FC = () => {
 
       <hr></hr>
       
-      <a href=''><button>| Join Channel Telegram |</button></a>
+      <a 
+      href='https://t.me/airdropiac'
+      target='_blank'><button>| Join Channel Telegram |</button></a>
       
-      <a href=''><button>| Follow X |</button></a>
+      <a 
+      href='https://twitter.com/intent/follow?screen_name=iaccommunity_' 
+      target="_blank" 
+      rel="noreferrer">
+  <button>| Follow X |</button>
+</a>
 
       <footer className="app-footer">
           Powered by IAC Community
