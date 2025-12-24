@@ -169,7 +169,6 @@ button:hover {
 }
 
 .table-container {
-    width: 100%;
     overflow-x: auto;
     background-color: #1a1a1a;
     border: 2px solid #ffffff;
