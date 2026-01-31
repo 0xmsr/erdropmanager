@@ -4,9 +4,13 @@ export interface Task {
   tugas: string;
   link: string;
   akun: number;
-  status: 'Ongoing' | 'END' | 'Nunggu Info';
+  status: 'Ongoing' | 'END' | 'Nunggu Info' | 'Waitlist';
   selesaiHariIni: boolean;
   tanggalDitambahkan: string;
+  emailUsed?: string;
+  xUsed?: string;
+  discordUsed?: string;
+  walletAddress?: string;
 }
 
 export interface Transaction {
