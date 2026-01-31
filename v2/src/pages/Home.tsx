@@ -74,7 +74,10 @@ export const Home: React.FC = () => {
 
       if (!lastReset || new Date(parseInt(lastReset)) < todayResetTime) {
         if (now.getHours() >= RESET_HOUR_WIB) {
-          setTasks(prev => prev.map(t => ({ ...t, selesaiHariIni: false })));
+          setTasks(prev => prev.map(t => {
+            if (t.status === 'Waitlist') return t;
+            return { ...t, selesaiHariIni: false };
+          }));
           localStorage.setItem('lastReset', now.getTime().toString());
           if (notify) {
             showAlert("Waktunya Cek Garapan Harian! Status telah direset.", 'info');
@@ -91,11 +94,25 @@ export const Home: React.FC = () => {
     e.preventDefault();
     if (!formData.nama) return;
 
+    let formattedLink = formData.link || "";
+    if (formattedLink.trim() !== "") {
+      if (!/^https?:\/\//i.test(formattedLink)) {
+        formattedLink = `https://${formattedLink.trim()}`;
+      }
+    }
+
     const now = new Date();
     const timestamp = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
 
+    const isWaitlist = formData.status === 'Waitlist';
+
     if (isEditMode && formData.id) {
-      setTasks(tasks.map(t => t.id === formData.id ? { ...t, ...formData } as Task : t));
+      setTasks(tasks.map(t => t.id === formData.id ? { 
+        ...t, 
+        ...formData, 
+        link: formattedLink,
+        selesaiHariIni: isWaitlist ? true : t.selesaiHariIni
+      } as Task : t));
       setIsEditMode(false);
       showAlert('Data berhasil diperbarui!', 'success');
     } else {
@@ -103,15 +120,16 @@ export const Home: React.FC = () => {
         id: Date.now(),
         nama: formData.nama!,
         tugas: formData.tugas || '',
-        link: formData.link || '',
+        link: formattedLink,
         akun: Number(formData.akun) || 1,
-        status: formData.status as any || 'Ongoing',
-        selesaiHariIni: false,
+        status: (formData.status as any) || 'Ongoing',
+        selesaiHariIni: isWaitlist ? true : false,
         tanggalDitambahkan: timestamp
       };
       setTasks([...tasks, newTask]);
       showAlert('Garapan baru berhasil ditambahkan!', 'success');
     }
+    
     setFormData({ nama: '', tugas: '', link: '', akun: 1, status: 'Ongoing' });
   };
 
@@ -133,7 +151,13 @@ export const Home: React.FC = () => {
   };
 
   const toggleToday = (id: number) => {
-    setTasks(tasks.map(t => t.id === id ? { ...t, selesaiHariIni: !t.selesaiHariIni } : t));
+    setTasks(tasks.map(t => {
+      if (t.id === id) {
+        if (t.status === 'Waitlist') return { ...t, selesaiHariIni: true };
+        return { ...t, selesaiHariIni: !t.selesaiHariIni };
+      }
+      return t;
+    }));
   };
 
   const handleExport = () => {
@@ -313,6 +337,7 @@ export const Home: React.FC = () => {
             onChange={e => setFormData({...formData, status: e.target.value as any})}
           >
             <option value="Ongoing">Ongoing</option>
+            <option value="Waitlist">Waitlist</option>
             <option value="END">END</option>
             <option value="Nunggu Info">Nunggu Info</option>
           </select>
@@ -336,6 +361,7 @@ export const Home: React.FC = () => {
         <select onChange={e => setFilter(e.target.value)}>
           <option value="Semua">Semua Status</option>
           <option value="Ongoing">Ongoing</option>
+          <option value="Waitlist">Waitlist</option>
           <option value="END">END</option>
           <option value="Nunggu Info">Nunggu Info</option>
         </select>
@@ -413,7 +439,6 @@ export const Home: React.FC = () => {
         <button disabled={paginatedTasks.length < rowsPerPage} onClick={() => setCurrentPage(c => c + 1)}>Next</button>
       </div>
 
-
       <hr></hr>
       
       <a 
@@ -424,8 +449,8 @@ export const Home: React.FC = () => {
       href='https://twitter.com/intent/follow?screen_name=iaccommunity_' 
       target="_blank" 
       rel="noreferrer">
-  <button>| Follow X |</button>
-</a>
+        <button>| Follow X |</button>
+        </a>
 
       <footer className="app-footer">
           Powered by IAC Community
