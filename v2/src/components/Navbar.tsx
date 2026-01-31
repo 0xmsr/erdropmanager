@@ -10,3 +10,5 @@ export const Navbar = () => {
     </div>
   );
 };
+
+// fix error
