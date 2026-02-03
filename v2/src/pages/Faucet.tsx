@@ -3,7 +3,15 @@ import { Navbar } from '../components/Navbar';
 import { type FaucetItem } from '../types';
 
 const FAUCET_DATA: FaucetItem[] = [
-  {
+
+        {
+            id: 'republicai',
+            name: 'Republic AI Testnet',
+            description: 'Connect Wallet dan Claim token RAI untuk pengujian di Republic AI Testnet',
+            url: 'https://points.republicai.io/faucet',
+            urlText: 'Kunjungi points.republicai.io'
+        },
+        {
             id: 'mawari',
             name: 'Mawari Network Testnet',
             description: 'Dapatkan Faucet Native Token [MAWARI] di jaringan Mawari Network Testnet',
@@ -145,4 +153,5 @@ export const Faucet: React.FC = () => {
 
     </div>
   );
+
 };
