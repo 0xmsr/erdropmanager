@@ -205,7 +205,7 @@ export const Waitlist: React.FC = () => {
             <tr>
               <th>Project</th>
               <th>Info Akun</th>
-              <th>Action</th>
+              <th>Aksi</th>
             </tr>
           </thead>
           <tbody>
@@ -244,4 +244,5 @@ export const Waitlist: React.FC = () => {
       </div>
     </div>
   );
+
 };
