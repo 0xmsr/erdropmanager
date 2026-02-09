@@ -1,8 +1,21 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import CryptoJS from 'crypto-js';
 import { type Task, type ExportData } from '../types';
 import { Navbar } from '../components/Navbar';
 import { CustomAlert, CustomConfirm, CustomPrompt } from '../components/CustomModals';
+
+import { 
+  FaEdit, 
+  FaTrash, 
+  FaExternalLinkAlt, 
+  FaCheck, 
+  FaTimes, 
+  FaSearch, 
+  FaFileImport, 
+  FaFileExport, 
+  FaPlus,
+  FaUndo
+} from 'react-icons/fa';
 
 export const Home: React.FC = () => {
   const [tasks, setTasks] = useState<Task[]>(() => {
@@ -19,6 +32,9 @@ export const Home: React.FC = () => {
   const [search, setSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const rowsPerPage = 10;
+  
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [alertData, setAlertData] = useState<{ isOpen: boolean; msg: string; type: 'success' | 'error' | 'hapus' | 'info' }>({
     isOpen: false, msg: '', type: 'info'
   });
@@ -65,6 +81,10 @@ export const Home: React.FC = () => {
   }, [tasks]);
 
   useEffect(() => {
+    setCurrentPage(1);
+  }, [filter, search]);
+
+  useEffect(() => {
     const checkDailyReset = (notify: boolean = true) => {
       const RESET_HOUR_WIB = 7;
       const lastReset = localStorage.getItem('lastReset');
@@ -75,7 +95,7 @@ export const Home: React.FC = () => {
       if (!lastReset || new Date(parseInt(lastReset)) < todayResetTime) {
         if (now.getHours() >= RESET_HOUR_WIB) {
           setTasks(prev => prev.map(t => {
-            if (t.status === 'Waitlist') return t;
+            if (t.status === 'Waitlist' || t.status === 'END') return t;
             return { ...t, selesaiHariIni: false };
           }));
           localStorage.setItem('lastReset', now.getTime().toString());
@@ -85,6 +105,7 @@ export const Home: React.FC = () => {
         }
       }
     };
+    
     checkDailyReset(false); 
     const interval = setInterval(() => checkDailyReset(true), 60000);
     return () => clearInterval(interval);
@@ -103,7 +124,6 @@ export const Home: React.FC = () => {
 
     const now = new Date();
     const timestamp = `${now.getDate().toString().padStart(2, '0')}/${(now.getMonth() + 1).toString().padStart(2, '0')}/${now.getFullYear()} ${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}`;
-
     const isWaitlist = formData.status === 'Waitlist';
 
     if (isEditMode && formData.id) {
@@ -147,7 +167,7 @@ export const Home: React.FC = () => {
   const handleEdit = (task: Task) => {
     setFormData(task);
     setIsEditMode(true);
-    window.scrollTo(0, 0);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const toggleToday = (id: number) => {
@@ -190,12 +210,16 @@ export const Home: React.FC = () => {
         link.href = url;
         link.download = `airdrop-backup-${new Date().toISOString().split('T')[0]}.txt`;
         link.click();
-
+        setTimeout(() => URL.revokeObjectURL(url), 100);
         setPromptData(prev => ({ ...prev, isOpen: false }));
         showAlert('Data berhasil di-export!', 'success');
       },
       true
     );
+  };
+
+  const handleImportClick = () => {
+    if (fileInputRef.current) fileInputRef.current.click();
   };
 
   const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -205,7 +229,14 @@ export const Home: React.FC = () => {
     const reader = new FileReader();
     reader.onload = async (event) => {
       try {
-        let parsed = JSON.parse(event.target?.result as string);
+        const resultString = event.target?.result as string;
+        let parsed;
+        try {
+            parsed = JSON.parse(resultString);
+        } catch (jsonError) {
+             showAlert('File rusak atau bukan format JSON yang valid.', 'error');
+             return;
+        }
         
         const performRestore = (data: any) => {
            if (data.airdropTasks) {
@@ -218,10 +249,12 @@ export const Home: React.FC = () => {
                   localStorage.setItem('transactions', JSON.stringify(data.financeTransactions));
                 }
                 showAlert('Data berhasil dimuat ulang!', 'success');
+                if (fileInputRef.current) fileInputRef.current.value = '';
               }
             );
           } else {
-            showAlert('Format file tidak dikenali.', 'error');
+            showAlert('Format data di dalam file tidak dikenali.', 'error');
+            if (fileInputRef.current) fileInputRef.current.value = '';
           }
         };
 
@@ -232,23 +265,20 @@ export const Home: React.FC = () => {
             (password) => {
               if (!password) {
                  showAlert('Password diperlukan untuk membuka file ini.', 'error');
+                 if (fileInputRef.current) fileInputRef.current.value = '';
                  setPromptData(prev => ({ ...prev, isOpen: false }));
                  return;
               }
-              
               try {
                 const bytes = CryptoJS.AES.decrypt(parsed.encryptedData, password);
                 const decryptedString = bytes.toString(CryptoJS.enc.Utf8);
-                
-                if (!decryptedString) {
-                   throw new Error("Password salah");
-                }
-                
+                if (!decryptedString) throw new Error("Password salah");
                 const decryptedData = JSON.parse(decryptedString);
                 setPromptData(prev => ({ ...prev, isOpen: false }));
                 performRestore(decryptedData);
               } catch (err) {
                 showAlert('Password salah atau file rusak.', 'error');
+                if (fileInputRef.current) fileInputRef.current.value = '';
               }
             },
             true
@@ -257,11 +287,11 @@ export const Home: React.FC = () => {
           performRestore(parsed);
         }
       } catch (err) {
-        showAlert('Gagal memuat file. Format rusak atau bukan JSON valid.', 'error');
+        showAlert('Terjadi kesalahan saat membaca file.', 'error');
+        if (fileInputRef.current) fileInputRef.current.value = '';
       }
     };
     reader.readAsText(file);
-    e.target.value = ''; 
   };
 
   const filteredTasks = tasks.filter(t => {
@@ -270,7 +300,9 @@ export const Home: React.FC = () => {
     return matchSearch && matchFilter;
   });
 
-  const paginatedTasks = filteredTasks.slice((currentPage - 1) * rowsPerPage, currentPage * rowsPerPage);
+  const totalPages = Math.ceil(filteredTasks.length / rowsPerPage);
+  const validCurrentPage = Math.max(1, Math.min(currentPage, totalPages || 1));
+  const paginatedTasks = filteredTasks.slice((validCurrentPage - 1) * rowsPerPage, validCurrentPage * rowsPerPage);
 
   return (
     <div className="app-container">
@@ -280,7 +312,6 @@ export const Home: React.FC = () => {
         type={alertData.type}
         onClose={() => setAlertData({ ...alertData, isOpen: false })}
       />
-      
       <CustomConfirm
         isOpen={confirmData.isOpen}
         title={confirmData.title}
@@ -291,7 +322,6 @@ export const Home: React.FC = () => {
           setConfirmData({ ...confirmData, isOpen: false });
         }}
       />
-
       <CustomPrompt
         isOpen={promptData.isOpen}
         title={promptData.title}
@@ -309,7 +339,9 @@ export const Home: React.FC = () => {
       <Navbar />
 
       <div className="form-container">
-        <h2 style={{ textAlign: 'center' }}>{isEditMode ? 'Edit Garapan' : 'Tambah Garapan Baru'}</h2>
+        <h2 style={{ textAlign: 'center' }}>
+            {isEditMode ? <><FaEdit /> Edit Garapan</> : <><FaPlus /> Tambah Garapan</>}
+        </h2>
         <form onSubmit={handleSubmit}>
           <input 
             value={formData.nama || ''} 
@@ -319,18 +351,19 @@ export const Home: React.FC = () => {
           <input 
             value={formData.tugas || ''} 
             onChange={e => setFormData({...formData, tugas: e.target.value})} 
-            placeholder="Tugas" 
+            placeholder="Tugas (Daily)" required
           />
           <input 
             value={formData.link || ''} 
             onChange={e => setFormData({...formData, link: e.target.value})} 
-            placeholder="Link" 
+            placeholder="Link (https://)" required
           />
           <input 
             type="number" 
             value={formData.akun || 1} 
             onChange={e => setFormData({...formData, akun: parseInt(e.target.value)})} 
             placeholder="Jumlah Akun" 
+            min="1"
           />
           <select 
             value={formData.status || 'Ongoing'} 
@@ -342,23 +375,31 @@ export const Home: React.FC = () => {
             <option value="Nunggu Info">Nunggu Info</option>
           </select>
           <div className="form-buttons">
-            <button type="submit">{isEditMode ? 'Update' : 'Tambah'}</button>
+            <button type="submit">
+                {isEditMode ? <><FaCheck /> Update</> : <><FaPlus /> Tambah</>}
+            </button>
             <button type="button" onClick={() => {
               setIsEditMode(false);
               setFormData({ nama: '', tugas: '', link: '', akun: 1, status: 'Ongoing' });
-            }}>Reset</button>
+            }}>
+                <FaUndo /> Reset
+            </button>
           </div>
         </form>
       </div>
 
-      <div className="filter-container">
-        <input 
-          type="search" 
-          id="search-input" 
-          placeholder="Cari..." 
-          onChange={e => setSearch(e.target.value)} 
-        />
-        <select onChange={e => setFilter(e.target.value)}>
+      <div className="filter-container search-filter-bar">
+        <div className="search-input-wrapper">
+             <FaSearch className="search-icon" />
+             <input 
+              type="search" 
+              placeholder="Cari garapan..." 
+              value={search}
+              onChange={e => setSearch(e.target.value)} 
+            />
+        </div>
+        
+        <select onChange={e => setFilter(e.target.value)} value={filter} className="status-filter">
           <option value="Semua">Semua Status</option>
           <option value="Ongoing">Ongoing</option>
           <option value="Waitlist">Waitlist</option>
@@ -368,22 +409,21 @@ export const Home: React.FC = () => {
       </div>
 
       <div className="data-management-container">
-        <button 
-          onClick={handleExport} 
-          disabled={tasks.length === 0}
-          style={{ 
-            opacity: tasks.length === 0 ? 0.5 : 1, 
-            cursor: tasks.length === 0 ? 'not-allowed' : 'pointer' 
-          }}
-        >
-          Backup Data (Export)
-        </button>
-        
-        <label htmlFor="import-file" className="open-link" style={{cursor: 'pointer', display:'inline-block', textAlign:'center', paddingTop:'10px'}}>
-            Load Data (Import)
-        </label>
-        <input type="file" id="import-file" accept=".txt" style={{ display: 'none' }} onChange={handleImport} />
-      </div>
+        <button onClick={handleExport} disabled={tasks.length === 0}className="btn-manage btn-export"style={{ opacity: tasks.length === 0 ? 0.5 : 1 }}
+  ><FaFileExport /> <span>Export Backup</span></button>
+  
+        <button onClick={handleImportClick} className="btn-manage btn-import"
+  ><FaFileImport /> <span>Import Data</span>
+  </button>
+  
+  <input 
+    type="file" 
+    ref={fileInputRef} 
+    accept=".txt" 
+    style={{ display: 'none' }} 
+    onChange={handleImport} 
+  />
+</div>
 
       <div className="table-container">
         <table>
@@ -400,16 +440,21 @@ export const Home: React.FC = () => {
           </thead>
           <tbody>
             {paginatedTasks.length === 0 ? (
-              <tr><td colSpan={7} style={{textAlign: 'center'}}>Tidak ada data</td></tr>
+              <tr><td colSpan={7} style={{textAlign: 'center', padding: '20px', color: '#888'}}>
+                {search || filter !== 'Semua' ? 'Tidak ditemukan data yang cocok.' : 'Belum ada garapan.'}
+              </td></tr>
             ) : paginatedTasks.map(task => (
               <tr key={task.id}>
-                <td data-label="Nama">{task.nama}</td>
-                <td data-label="Tugas">{task.tugas}</td>
+                <td data-label="Nama"><strong>{task.nama}</strong></td>
+                <td data-label="Tugas">{task.tugas || '-'}</td>
                 <td data-label="Link">
-                  <a href={task.link} target="_blank" rel="noreferrer" className="open-link" 
-                     onClick={() => {
-                        if(!task.selesaiHariIni) toggleToday(task.id);
-                     }}>Open</a>
+                    {task.link ? (
+                        <a href={task.link} target="_blank" rel="noreferrer" className="open-link" 
+                           title="Buka Link"
+                           onClick={() => { if(!task.selesaiHariIni) toggleToday(task.id); }}>
+                            <FaExternalLinkAlt /> Open
+                        </a>
+                    ) : '-'}
                 </td>
                 <td data-label="Akun">{task.akun}</td>
                 <td data-label="Status">
@@ -419,13 +464,20 @@ export const Home: React.FC = () => {
                   <button 
                     className={`today-btn ${task.selesaiHariIni ? 'selesai' : 'belum'}`}
                     onClick={() => toggleToday(task.id)}
+                    title={task.selesaiHariIni ? 'Tandai belum selesai' : 'Tandai selesai'}
                   >
-                    {task.selesaiHariIni ? '✓ Selesai' : 'X Belum'}
+                    {task.selesaiHariIni ? <FaCheck /> : <FaTimes />}
                   </button>
                 </td>
                 <td data-label="Aksi">
-                  <button className="action-btn edit-btn" onClick={() => handleEdit(task)}>Edit</button>
-                  <button className="action-btn delete-btn" onClick={() => handleDelete(task.id)}>Hapus</button>
+                  <div className="action-buttons-wrapper">
+                    <button className="action-btn edit-btn" onClick={() => handleEdit(task)} title="Edit">
+                        <FaEdit />
+                    </button>
+                    <button className="action-btn delete-btn" onClick={() => handleDelete(task.id)} title="Hapus">
+                        <FaTrash />
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -433,28 +485,25 @@ export const Home: React.FC = () => {
         </table>
       </div>
 
-      <div className="pagination-container">
-        <button disabled={currentPage === 1} onClick={() => setCurrentPage(c => c - 1)}>Prev</button>
-        <span>Page {currentPage}</span>
-        <button disabled={paginatedTasks.length < rowsPerPage} onClick={() => setCurrentPage(c => c + 1)}>Next</button>
-      </div>
+      {totalPages > 1 && (
+        <div className="pagination-container">
+            <button disabled={validCurrentPage === 1} onClick={() => setCurrentPage(c => Math.max(1, c - 1))}>Prev</button>
+            <span>Page {validCurrentPage} of {totalPages}</span>
+            <button disabled={validCurrentPage >= totalPages} onClick={() => setCurrentPage(c => Math.min(totalPages, c + 1))}>Next</button>
+        </div>
+      )}
 
       <hr></hr>
-      
-      <a 
-      href='https://t.me/airdropiac'
-      target='_blank'><button>| Join Channel Telegram |</button></a>
-      
-      <a 
-      href='https://twitter.com/intent/follow?screen_name=iaccommunity_' 
-      target="_blank" 
-      rel="noreferrer">
-        <button>| Follow X |</button>
+      <div style={{textAlign:'center', marginTop:'20px'}}>
+        <a href='https://t.me/airdropiac' target='_blank' style={{marginRight: '10px'}}>
+            <button>| Join Channel Telegram |</button>
         </a>
+        <a href='https://twitter.com/intent/follow?screen_name=iaccommunity_' target="_blank" rel="noreferrer">
+            <button>| Follow X |</button>
+        </a>
+      </div>
 
-      <footer className="app-footer">
-          Powered by IAC Community
-      </footer>
+      <footer className="app-footer">Powered by IAC Community</footer>
     </div>
   );
 };
