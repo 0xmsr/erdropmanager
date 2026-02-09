@@ -34,6 +34,7 @@ export interface FaucetItem {
   url?: string;
   urlText?: string;
   links?: FaucetLink[];
+  color?: string;
 }
 
 export interface ExportData {
