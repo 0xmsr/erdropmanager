@@ -23,12 +23,19 @@ interface PromptProps extends BaseModalProps {
   inputType?: 'text' | 'password';
 }
 
+interface ModalProps {
+  isOpen: boolean;
+  onClose: () => void;
+  title: string;
+  children: React.ReactNode;
+}
+
 export const CustomAlert: React.FC<AlertProps> = ({ isOpen, onClose, title, message, type = 'info' }) => {
   if (!isOpen) return null;
 
   return (
-    <div className="custom-modal-overlay">
-      <div className="custom-modal-box">
+    <div className="custom-modal-overlay" onClick={onClose}>
+      <div className="custom-modal-box" onClick={(e) => e.stopPropagation()}>
         <div className={`custom-modal-title ${type}`}>
           {title || (type === 'error' ? 'ERROR' : type === 'hapus' ? 'DIHAPUS' : type === 'success' ? 'SUKSES' : 'INFO')}
         </div>
@@ -57,7 +64,7 @@ export const CustomConfirm: React.FC<ConfirmProps> = ({ isOpen, onConfirm, onCan
         </div>
         <div className="custom-modal-buttons">
           <button onClick={onCancel} className="cancel-btn">Batal</button>
-          <button onClick={onConfirm} className="action-btn">Ya, Lanjutkan</button>
+          <button onClick={onConfirm} className="ya-btn">Ya, Lanjutkan</button>
         </div>
       </div>
     </div>
@@ -100,7 +107,7 @@ export const CustomPrompt: React.FC<PromptProps> = ({ isOpen, onConfirm, onCance
               value={inputValue}
               onChange={(e) => setInputValue(e.target.value)}
               placeholder={placeholder || ''}
-              style={{ width: '100%' }}
+              style={{ width: '100%', boxSizing: 'border-box' }}
             />
           </div>
           <div className="custom-modal-buttons">
@@ -112,13 +119,6 @@ export const CustomPrompt: React.FC<PromptProps> = ({ isOpen, onConfirm, onCance
     </div>
   );
 };
-
-interface ModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  title: string;
-  children: React.ReactNode;
-}
 
 export const Modal: React.FC<ModalProps> = ({ isOpen, onClose, title, children }) => {
   if (!isOpen) return null;
