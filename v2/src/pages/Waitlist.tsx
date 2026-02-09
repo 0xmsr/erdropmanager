@@ -3,6 +3,17 @@ import { Link } from 'react-router-dom';
 import { type Task } from '../types';
 import { Navbar } from '../components/Navbar';
 import { CustomAlert } from '../components/CustomModals';
+import { 
+    FaEdit, 
+    FaExternalLinkAlt, 
+    FaEnvelope, 
+    FaDiscord, 
+    FaTwitter, 
+    FaWallet, 
+    FaSave, 
+    FaUndo, 
+    FaListAlt
+} from 'react-icons/fa';
 
 export const Waitlist: React.FC = () => {
   const [tasks, setTasks] = useState<Task[]>(() => {
@@ -100,12 +111,12 @@ export const Waitlist: React.FC = () => {
         onClose={() => setAlertData({ ...alertData, isOpen: false })}
       />
 
-      <header><h1>Waitlist Explorer</h1></header>
+      <header><h1><FaListAlt style={{marginRight: '10px'}}/>Waitlist Explorer</h1></header>
       <Navbar />
 
       <div className="form-container">
         <h2 style={{ textAlign: 'center', marginBottom: '10px' }}>
-          {isEditMode ? '📝 Edit Data' : 'Tambah Waitlist Baru'}
+          {isEditMode ? <><FaEdit /> Edit Data</> : <><FaListAlt /> Tambah Waitlist Baru</>}
         </h2>
         
         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
@@ -117,80 +128,100 @@ export const Waitlist: React.FC = () => {
               required
             />
             <input 
-              placeholder="Link (e.g. https://platform.arkhamintelligence.com/waitlist" 
+              placeholder="Link Waitlist" 
               value={formData.link} 
               onChange={e => setFormData({...formData, link: e.target.value})} 
               required
             />
           </div>
 
-          <p style={{ fontSize: '12px', color: '#ffffff', textAlign: 'center', marginTop: '15px' }}>
-           Sosmed yang digunakan (Opsional):
+          <p style={{ fontSize: '12px', color: '#ffffff', textAlign: 'center', marginTop: '10px' }}>
+           Sosmed yang digunakan (Centang untuk menampilkan input):
         </p>
           <div style={{ 
             display: 'flex', 
-            justifyContent: 'space-around', 
+            justifyContent: 'center', 
             padding: '12px', 
             border: '1px dashed #555', 
-            borderRadius: '8px',
-            backgroundColor: 'rgba(255,255,255,0.03)',
             flexWrap: 'wrap',
-            gap: '10px'
+            gap: '15px'
           }}>
-            {['email', 'discord', 'x', 'address'].map((key) => (
-              <label key={key} style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
-                <input 
-                  type="checkbox" 
-                  checked={(showFields as any)[key]} 
-                  onChange={() => setShowFields({ ...showFields, [key]: !(showFields as any)[key] })} 
-                />
-                {key === 'address' ? 'WALLET' : key.toUpperCase()}
-              </label>
-            ))}
+            <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+               <input type="checkbox" checked={showFields.email} onChange={() => setShowFields({ ...showFields, email: !showFields.email })} /> 
+               <FaEnvelope /> Email
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+               <input type="checkbox" checked={showFields.discord} onChange={() => setShowFields({ ...showFields, discord: !showFields.discord })} /> 
+               <FaDiscord /> Discord
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+               <input type="checkbox" checked={showFields.x} onChange={() => setShowFields({ ...showFields, x: !showFields.x })} /> 
+               <FaTwitter /> X / Twitter
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px' }}>
+               <input type="checkbox" checked={showFields.address} onChange={() => setShowFields({ ...showFields, address: !showFields.address })} /> 
+               <FaWallet /> Wallet
+            </label>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '10px' }}>
             {showFields.email && (
-              <input 
-                placeholder="Email Address" 
-                value={formData.email} 
-                onChange={e => setFormData({...formData, email: e.target.value})} 
-                style={{ borderLeft: '3px solid #01a2ff' }}
-              />
+              <div className="search-input-wrapper">
+                <FaEnvelope className="search-icon" style={{left: '10px'}}/>
+                <input 
+                    placeholder="Email Address" 
+                    value={formData.email} 
+                    onChange={e => setFormData({...formData, email: e.target.value})} 
+                    style={{ paddingLeft: '35px', borderLeft: '3px solid #01a2ff' }}
+                />
+              </div>
             )}
             {showFields.discord && (
-              <input 
-                placeholder="Discord Username" 
-                value={formData.discord} 
-                onChange={e => setFormData({...formData, discord: e.target.value})} 
-                style={{ borderLeft: '3px solid #5865F2' }}
-              />
+               <div className="search-input-wrapper">
+                <FaDiscord className="search-icon" style={{left: '10px'}}/>
+                <input 
+                    placeholder="Discord Username" 
+                    value={formData.discord} 
+                    onChange={e => setFormData({...formData, discord: e.target.value})} 
+                    style={{ paddingLeft: '35px', borderLeft: '3px solid #5865F2' }}
+                />
+              </div>
             )}
             {showFields.x && (
-              <input 
-                placeholder="X / Twitter Handle" 
-                value={formData.x} 
-                onChange={e => setFormData({...formData, x: e.target.value})} 
-                style={{ borderLeft: '3px solid #ffffff' }}
-              />
+               <div className="search-input-wrapper">
+                <FaTwitter className="search-icon" style={{left: '10px'}}/>
+                <input 
+                    placeholder="X / Twitter Handle" 
+                    value={formData.x} 
+                    onChange={e => setFormData({...formData, x: e.target.value})} 
+                    style={{ paddingLeft: '35px', borderLeft: '3px solid #ffffff' }}
+                />
+               </div>
             )}
             {showFields.address && (
-              <input 
-                placeholder="Wallet Address (EVM/Solana/etc)" 
-                value={formData.address} 
-                onChange={e => setFormData({...formData, address: e.target.value})} 
-                style={{ borderLeft: '3px solid #f3ba2f' }}
-              />
+               <div className="search-input-wrapper">
+                <FaWallet className="search-icon" style={{left: '10px'}}/>
+                <input 
+                    placeholder="Wallet Address" 
+                    value={formData.address} 
+                    onChange={e => setFormData({...formData, address: e.target.value})} 
+                    style={{ paddingLeft: '35px', borderLeft: '3px solid #f3ba2f' }}
+                />
+               </div>
             )}
           </div>
           
           <div className="form-buttons" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
-            <button type="submit" className="action-btn">{isEditMode ? 'Update' : 'Tambah'}</button>
+            <button type="submit" className="btn-manage btn-import">
+    <FaSave /> <span>{isEditMode ? 'Update Data' : 'Tambah Waitlist'}</span>
+  </button>
             <button type="button" className="cancel-btn" onClick={() => {
               setIsEditMode(false);
               setFormData({ nama: '', link: '', email: '', x: '', discord: '', address: '' });
               setShowFields({ email: false, x: false, discord: false, address: false });
-            }}>Reset</button>
+            }}>
+                <FaUndo /> Reset
+            </button>
           </div>
         </form>
 
@@ -205,35 +236,39 @@ export const Waitlist: React.FC = () => {
             <tr>
               <th>Project</th>
               <th>Info Akun</th>
-              <th>Aksi</th>
+              <th>Action</th>
             </tr>
           </thead>
           <tbody>
             {waitlistTasks.length === 0 ? (
-              <tr><td colSpan={3} style={{ textAlign: 'center', padding: '20px' }}>Belum ada data.</td></tr>
+              <tr><td colSpan={3} style={{ textAlign: 'center', padding: '20px' }}>Belum ada data waitlist.</td></tr>
             ) : (
               waitlistTasks.map(item => (
                 <tr key={item.id}>
-                  <td style={{ verticalAlign: 'middle' }}>
+                  <td data-label="Project" style={{ verticalAlign: 'middle' }}>
                     <strong>{item.nama}</strong>
                   </td>
-                  <td>
-                    <div style={{ fontSize: '12px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                      {item.emailUsed && <span>Email: {item.emailUsed}</span>}
-                      {item.discordUsed && <span>Discord: {item.discordUsed}</span>}
-                      {item.xUsed && <span>X: {item.xUsed}</span>}
+                  <td data-label="Info Akun">
+                    <div style={{ fontSize: '12px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                      {item.emailUsed && <span style={{display:'flex', alignItems:'center', gap:'5px'}}><FaEnvelope color="#01a2ff"/> {item.emailUsed}</span>}
+                      {item.discordUsed && <span style={{display:'flex', alignItems:'center', gap:'5px'}}><FaDiscord color="#5865F2"/> {item.discordUsed}</span>}
+                      {item.xUsed && <span style={{display:'flex', alignItems:'center', gap:'5px'}}><FaTwitter color="#fff"/> {item.xUsed}</span>}
                       {(item as any).walletAddress && (
-                        <span style={{ color: '#f3ba2f', wordBreak: 'break-all' }}>
-                          Wallet Address {(item as any).walletAddress}
+                        <span style={{ color: '#f3ba2f', wordBreak: 'break-all', display:'flex', alignItems:'center', gap:'5px' }}>
+                          <FaWallet /> {(item as any).walletAddress}
                         </span>
                       )}
-                      {!item.emailUsed && !item.discordUsed && !item.xUsed && !(item as any).walletAddress && <span style={{color: '#444'}}>No Details</span>}
+                      {!item.emailUsed && !item.discordUsed && !item.xUsed && !(item as any).walletAddress && <span style={{color: '#444'}}>- No Details -</span>}
                     </div>
                   </td>
-                  <td style={{ textAlign: 'center' }}>
-                    <div style={{ display: 'flex', gap: '5px', justifyContent: 'center' }}>
-                      <a href={item.link} target="_blank" rel="noreferrer" className="open-link">LINK</a>
-                      <button className="edit-btn" onClick={() => handleEdit(item)}>EDIT</button>
+                  <td data-label="Action" style={{ textAlign: 'center' }}>
+                    <div style={{ display: 'flex', gap: '5px', justifyContent: 'flex-end' }}>
+                      <a href={item.link} target="_blank" rel="noreferrer" className="open-link" title="Buka Link">
+                          <FaExternalLinkAlt />
+                      </a>
+                      <button className="action-btn edit-btn" onClick={() => handleEdit(item)} title="Edit Data">
+                          <FaEdit />
+                      </button>
                     </div>
                   </td>
                 </tr>
@@ -244,5 +279,4 @@ export const Waitlist: React.FC = () => {
       </div>
     </div>
   );
-
 };
