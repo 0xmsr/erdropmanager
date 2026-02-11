@@ -17,9 +17,14 @@ import {
 
 export const Waitlist: React.FC = () => {
   const [tasks, setTasks] = useState<Task[]>(() => {
+  try {
     const saved = localStorage.getItem('airdropTasks');
     return saved ? JSON.parse(saved) : [];
-  });
+  } catch (err) {
+    console.error("Gagal memuat data:", err);
+    return [];
+  }
+});
 
   const [formData, setFormData] = useState({ nama: '', link: '', email: '', x: '', discord: '', address: '' });
   const [showFields, setShowFields] = useState({ email: false, x: false, discord: false, address: false });
@@ -40,45 +45,53 @@ export const Waitlist: React.FC = () => {
   }, [tasks]);
 
   const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!formData.nama || !formData.link) return;
+  e.preventDefault();
+  if (!formData.nama || !formData.link) return;
 
-    let formattedLink = formData.link.trim();
-    if (!/^https?:\/\//i.test(formattedLink)) {
-      formattedLink = `https://${formattedLink}`;
-    }
+  let formattedLink = formData.link.trim();
+  if (!/^https?:\/\//i.test(formattedLink)) {
+    formattedLink = `https://${formattedLink}`;
+  }
 
-    const taskPayload = {
-      nama: formData.nama,
-      link: formattedLink,
-      emailUsed: showFields.email ? formData.email : '',
-      xUsed: showFields.x ? formData.x : '',
-      discordUsed: showFields.discord ? formData.discord : '',
-      walletAddress: showFields.address ? formData.address : ''
-    };
-
-    if (isEditMode && editId) {
-      setTasks(tasks.map(t => t.id === editId ? { ...t, ...taskPayload } : t));
-      setIsEditMode(false);
-      setEditId(null);
-      showAlert('Berhasil diperbarui!', 'success');
-    } else {
-      const newTask: Task = {
-        id: Date.now(),
-        ...taskPayload,
-        tugas: 'Waitlist',
-        akun: 1,
-        status: 'Waitlist',
-        selesaiHariIni: true,
-        tanggalDitambahkan: new Date().toLocaleDateString(),
-      } as Task;
-      setTasks([...tasks, newTask]);
-      showAlert('Berhasil ditambahkan!', 'success');
-    }
-
-    setFormData({ nama: '', link: '', email: '', x: '', discord: '', address: '' });
-    setShowFields({ email: false, x: false, discord: false, address: false });
+  const taskPayload = {
+    nama: formData.nama,
+    link: formattedLink,
+    emailUsed: showFields.email ? formData.email : '',
+    xUsed: showFields.x ? formData.x : '',
+    discordUsed: showFields.discord ? formData.discord : '',
+    walletAddress: showFields.address ? formData.address : ''
   };
+
+  let updatedTasks: Task[];
+
+  if (isEditMode && editId) {
+    updatedTasks = tasks.map(t => t.id === editId ? { ...t, ...taskPayload } : t);
+    setTasks(updatedTasks);
+    setIsEditMode(false);
+    setEditId(null);
+    showAlert('Berhasil diperbarui!', 'success');
+  } else {
+    const newTask: Task = {
+      id: Date.now(),
+      ...taskPayload,
+      tugas: 'Waitlist Registration',
+      akun: 1,
+      status: 'Waitlist',
+      selesaiHariIni: true,
+      tanggalDitambahkan: new Date().toLocaleDateString(),
+      kategori: 'Waitlist',
+      detailAkun: []
+    } as Task;
+    
+    updatedTasks = [...tasks, newTask];
+    setTasks(updatedTasks);
+    showAlert('Berhasil ditambahkan!', 'success');
+  }
+
+  localStorage.setItem('airdropTasks', JSON.stringify(updatedTasks));
+  setFormData({ nama: '', link: '', email: '', x: '', discord: '', address: '' });
+  setShowFields({ email: false, x: false, discord: false, address: false });
+};
 
   const handleEdit = (item: any) => {
     setIsEditMode(true);
