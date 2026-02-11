@@ -7,6 +7,8 @@ export interface Task {
   status: 'Ongoing' | 'END' | 'Nunggu Info' | 'Waitlist';
   selesaiHariIni: boolean;
   tanggalDitambahkan: string;
+  kategori: string;
+  detailAkun: string[]
   emailUsed?: string;
   xUsed?: string;
   discordUsed?: string;
