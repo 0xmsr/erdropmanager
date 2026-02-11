@@ -89,6 +89,7 @@ export const Finance: React.FC = () => {
 
   const [form, setForm] = useState({ desc: '', amount: '', type: 'income', network: '' });
   const [networkFilter, setNetworkFilter] = useState('');
+  const [allocationMode, setAllocationMode] = useState<'net' | 'volume'>('net');
   
   const [currencyConfig, setCurrencyConfig] = useState<CurrencyConfigType>(DEFAULT_CURRENCY_CONFIG);
   const [currency, setCurrency] = useState<'USD' | 'IDR' | 'BTC' | 'ETH'>('USD');
@@ -222,27 +223,34 @@ useEffect(() => {
   const currentRate = currencyConfig[currency].rate;
 
   const doughnutData = useMemo(() => {
-    const networkVolumes: Record<string, number> = {};
+    const networkData: Record<string, number> = {};
+    
     transactions.forEach(t => {
         const net = t.network.toUpperCase();
-        networkVolumes[net] = (networkVolumes[net] || 0) + (t.amount * currentRate);
+        const value = t.amount * currentRate;
+        
+        if (allocationMode === 'net') {
+            const modifier = t.type === 'income' ? 1 : -1;
+            networkData[net] = (networkData[net] || 0) + (value * modifier);
+        } else {
+            networkData[net] = (networkData[net] || 0) + value;
+        }
     });
-
-    const labels = Object.keys(networkVolumes);
-    const dataValues = Object.values(networkVolumes);
+    const labels = Object.keys(networkData).filter(label => networkData[label] > 0);
+    const dataValues = labels.map(label => networkData[label]);
     const bgColors = labels.map(label => getNetworkColor(label));
     
     return {
         labels,
         datasets: [{
-            label: `Volume (${currency})`,
+            label: allocationMode === 'net' ? `Assets (${currency})` : `Volume (${currency})`,
             data: dataValues,
             backgroundColor: bgColors,
             borderColor: '#111',
             borderWidth: 2,
         }]
     };
-  }, [transactions, currentRate, currency]);
+  }, [transactions, currentRate, currency, allocationMode]);
 
   const lineChartData = useMemo(() => {
     const sortedTx = [...transactions].sort((a, b) => a.id - b.id);
@@ -290,7 +298,7 @@ useEffect(() => {
       plugins: {
           legend: {
               position: 'right' as const,
-              labels: { color: '#ccc', font: { family: 'monospace' }, boxWidth: 10 }
+              labels: { color: '#ccc', font: { family: 'monospace', size: 10 }, boxWidth: 10 }
           },
           tooltip: {
             callbacks: {
@@ -359,7 +367,7 @@ useEffect(() => {
                         return '₿ ' + parseFloat(value).toFixed(4);
                     }
                     if (currency === 'ETH') {
-                        return '♦ ' + parseFloat(value).toFixed(18);
+                        return '♦ ' + parseFloat(value).toFixed(4);
                     }
                     return '$' + value;
                 }
@@ -565,7 +573,7 @@ useEffect(() => {
           <div style={{ textAlign: 'center', marginTop: '20px', fontWeight: 'bold', fontSize: '1.8em', color: netBalance >= 0 ? '#33ff33' : '#ff3333', textShadow: '0 0 10px rgba(0,0,0,0.5)', transition: 'color 0.3s' }}>
              {netBalance >= 0 ? '+' : ''} <AnimatedMoney value={netBalance} currency={currency} config={currencyConfig} />
           </div>
-          <p style={{textAlign: 'center', fontSize: '0.8em', color: '#888', marginTop: '-5px'}}>NET BALANCE</p>
+          <p style={{textAlign: 'center', fontSize: '0.8em', color: '#888', marginTop: '-5px'}}>SALDO BERSIH</p>
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px', marginBottom: '20px' }}>
           <div className="summary-card" style={{ border: '1px solid #444', padding: '15px', background: '#111', textAlign: 'center' }}>
@@ -605,13 +613,52 @@ useEffect(() => {
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
-                    minHeight: '300px'
+                    minHeight: '350px'
                 }}>
-                    <h3 style={{color: '#fff', fontSize: '1em', marginBottom: '15px', display: 'flex', alignItems: 'center', gap: '8px'}}>
-                        <FaChartPie style={{color: '#F3BA2F'}}/> ASSET ALLOCATION
-                    </h3>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center', marginBottom: '15px' }}>
+                        <h3 style={{color: '#fff', fontSize: '1em', margin: 0, display: 'flex', alignItems: 'center', gap: '8px'}}>
+                            <FaChartPie style={{color: '#F3BA2F'}}/> 
+                            {allocationMode === 'net' ? 'ASET BERSIH' : 'TOTAL VOLUME'}
+                        </h3>
+                        
+                        <div style={{ display: 'flex', background: '#222', borderRadius: '5px', padding: '2px' }}>
+                            <button 
+                                onClick={() => setAllocationMode('net')}
+                                style={{
+                                    padding: '4px 8px',
+                                    fontSize: '0.7em',
+                                    border: 'none',
+                                    background: allocationMode === 'net' ? '#444' : 'transparent',
+                                    color: '#fff',
+                                    cursor: 'pointer',
+                                    borderRadius: '3px',
+                                    fontWeight: 'bold'
+                                }}
+                            >ASSETS</button>
+                            <button 
+                                onClick={() => setAllocationMode('volume')}
+                                style={{
+                                    padding: '4px 8px',
+                                    fontSize: '0.7em',
+                                    border: 'none',
+                                    background: allocationMode === 'volume' ? '#444' : 'transparent',
+                                    color: '#fff',
+                                    cursor: 'pointer',
+                                    borderRadius: '3px',
+                                    fontWeight: 'bold'
+                                }}
+                            >RIWAYAT</button>
+                        </div>
+                    </div>
+                    
                     <div style={{ flex: 1, width: '100%', position: 'relative' }}>
-                        <Doughnut data={doughnutData} options={doughnutOptions} />
+                        {doughnutData.labels.length > 0 ? (
+                            <Doughnut data={doughnutData} options={doughnutOptions} />
+                        ) : (
+                            <div style={{ height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#666', fontSize: '0.8em' }}>
+                                Tidak ada data aset positif
+                            </div>
+                        )}
                     </div>
                 </div>
                 <div style={{
@@ -621,10 +668,10 @@ useEffect(() => {
                     display: 'flex',
                     flexDirection: 'column',
                     alignItems: 'center',
-                    minHeight: '300px'
+                    minHeight: '350px'
                 }}>
-                    <h3 style={{color: '#fff', fontSize: '1em', marginBottom: '15px', display: 'flex', alignItems: 'center', gap: '8px'}}>
-                        
+                    <h3 style={{color: '#fff', fontSize: '1em', marginBottom: '15px', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '8px'}}>
+                         <FaChartLine style={{color: '#01a2ff'}}/> GROWTH HISTORY
                     </h3>
                     <div style={{ flex: 1, width: '100%', position: 'relative' }}>
                         <Line data={lineChartData} options={lineOptions} />
