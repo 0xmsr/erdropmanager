@@ -14,29 +14,51 @@ import {
   FaFileImport, 
   FaFileExport, 
   FaPlus,
-  FaUndo
+  FaUndo,
+  FaWallet
 } from 'react-icons/fa';
 
 export const Home: React.FC = () => {
   const [tasks, setTasks] = useState<Task[]>(() => {
+  try {
     const saved = localStorage.getItem('airdropTasks');
+    return saved ? JSON.parse(saved) : [];
+  } catch (err) {
+    console.error("Gagal memuat data:", err);
+    return [];
+  }
+});
+
+  const [masterWallets, setMasterWallets] = useState<{id: string, name: string, address: string}[]>(() => {
+    const saved = localStorage.getItem('masterWallets');
     return saved ? JSON.parse(saved) : [];
   });
   
   const [formData, setFormData] = useState<Partial<Task>>({
-    nama: '', tugas: '', link: '', akun: 1, status: 'Ongoing'
+    nama: '', 
+    tugas: '', 
+    link: '', 
+    akun: 1, 
+    status: 'Ongoing',
+    kategori: '',
+    detailAkun: []
   });
 
   const [isEditMode, setIsEditMode] = useState(false);
+  const [isMasterModalOpen, setIsMasterModalOpen] = useState(false);
   const [filter, setFilter] = useState('Semua');
   const [search, setSearch] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const rowsPerPage = 10;
   
   const fileInputRef = useRef<HTMLInputElement>(null);
-
+  const [sortBy, setSortBy] = useState<'terbaru' | 'terlama' | 'nama' | 'status'>('terbaru');
   const [alertData, setAlertData] = useState<{ isOpen: boolean; msg: string; type: 'success' | 'error' | 'hapus' | 'info' }>({
     isOpen: false, msg: '', type: 'info'
+  });
+
+  const [accountModal, setAccountModal] = useState<{isOpen: boolean, taskId: number | null, details: string[]}>({
+    isOpen: false, taskId: null, details: []
   });
 
   const [confirmData, setConfirmData] = useState<{ 
@@ -81,6 +103,10 @@ export const Home: React.FC = () => {
   }, [tasks]);
 
   useEffect(() => {
+    localStorage.setItem('masterWallets', JSON.stringify(masterWallets));
+  }, [masterWallets]);
+
+  useEffect(() => {
     setCurrentPage(1);
   }, [filter, search]);
 
@@ -110,6 +136,31 @@ export const Home: React.FC = () => {
     const interval = setInterval(() => checkDailyReset(true), 60000);
     return () => clearInterval(interval);
   }, []);
+
+  const addMasterWallet = () => {
+    showPrompt(
+      "NAMA WALLET",
+      "Masukkan Nama Wallet (Contoh: Akun 1 / Metamask):",
+      (name) => {
+        if (!name) return;
+        setPromptData(prev => ({ ...prev, isOpen: false }));
+        
+        setTimeout(() => {
+          showPrompt(
+            "WALLET ADDRESS",
+            `Masukkan Wallet Address untuk ${name}:`,
+            (address) => {
+              if (address) {
+                setMasterWallets(prev => [...prev, { id: Date.now().toString(), name, address }]);
+                showAlert("Wallet berhasil ditambahkan!", "success");
+              }
+              setPromptData(prev => ({ ...prev, isOpen: false }));
+            }
+          );
+        }, 300);
+      }
+    );
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -143,14 +194,16 @@ export const Home: React.FC = () => {
         link: formattedLink,
         akun: Number(formData.akun) || 1,
         status: (formData.status as any) || 'Ongoing',
-        selesaiHariIni: isWaitlist ? true : false,
+        kategori: formData.kategori || '',
+        detailAkun: Array(Number(formData.akun) || 1).fill(''),
+        selesaiHariIni: formData.status === 'Waitlist',
         tanggalDitambahkan: timestamp
       };
       setTasks([...tasks, newTask]);
       showAlert('Garapan baru berhasil ditambahkan!', 'success');
     }
     
-    setFormData({ nama: '', tugas: '', link: '', akun: 1, status: 'Ongoing' });
+    setFormData({ nama: '', tugas: '', link: '', akun: 1, status: 'Ongoing', kategori: '' });
   };
 
   const handleDelete = (id: number) => {
@@ -294,15 +347,44 @@ export const Home: React.FC = () => {
     reader.readAsText(file);
   };
 
-  const filteredTasks = tasks.filter(t => {
-    const matchSearch = t.nama.toLowerCase().includes(search.toLowerCase()) || t.tugas.toLowerCase().includes(search.toLowerCase());
-    const matchFilter = filter === 'Semua' || t.status === filter;
-    return matchSearch && matchFilter;
+  const sortedTasks = [...tasks].sort((a, b) => {
+    if (sortBy === 'nama') return a.nama.localeCompare(b.nama);
+    if (sortBy === 'status') return a.status.localeCompare(b.status);
+    if (sortBy === 'terlama') return a.id - b.id;
+    return b.id - a.id;
   });
+
+  const filteredTasks = sortedTasks.filter(t => {
+    const matchSearch = 
+        t.nama.toLowerCase().includes(search.toLowerCase()) || 
+        t.tugas.toLowerCase().includes(search.toLowerCase()) ||
+        (t.walletAddress && t.walletAddress.toLowerCase().includes(search.toLowerCase())); // Tambahkan ini
+
+    const matchFilter = filter === 'Semua' || t.status === filter || t.kategori === filter;
+    
+    return matchSearch && matchFilter;
+});
 
   const totalPages = Math.ceil(filteredTasks.length / rowsPerPage);
   const validCurrentPage = Math.max(1, Math.min(currentPage, totalPages || 1));
   const paginatedTasks = filteredTasks.slice((validCurrentPage - 1) * rowsPerPage, validCurrentPage * rowsPerPage);
+
+  const completedCount = tasks.filter(t => t.selesaiHariIni).length;
+  const totalTasks = tasks.length;
+  const progressPercentage = totalTasks > 0 ? (completedCount / totalTasks) * 100 : 0;
+  
+  const getWalletStatus = (task: Task) => {
+  const filledDetails = task.detailAkun?.filter(d => d.trim() !== '').length || 0;
+  
+  if (filledDetails > 0) {
+    return `${filledDetails}/${task.akun} Wallet`;
+  }
+  if (task.walletAddress && task.walletAddress.trim() !== '') {
+    return "1 Wallet (Waitlist)";
+  }
+
+  return "No Wallet";
+};
 
   return (
     <div className="app-container">
@@ -333,6 +415,104 @@ export const Home: React.FC = () => {
         }}
       />
 
+      {isMasterModalOpen && (
+        <div className="modal-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100 }}>
+          <div className="modal-content" style={{ background: '#1a1a1a', padding: '20px', borderRadius: '12px', width: '95%', maxWidth: '500px', border: '1px solid #333' }}>
+            <h3 style={{ margin: '0 0 15px 0' }}><FaWallet /> Wallet Profile</h3>
+            <button onClick={addMasterWallet} style={{ width: '100%', padding: '10px', background: '#646cff', color: 'white', border: 'none', borderRadius: '6px', marginBottom: '15px', cursor: 'pointer' }}>
+              + Tambah Profile Baru
+            </button>
+            <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+              {masterWallets.length === 0 ? <p style={{ textAlign: 'center', color: '#666' }}>Belum ada wallet terdaftar.</p> : 
+                masterWallets.map(mw => (
+                  <div key={mw.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#252525', padding: '10px', borderRadius: '6px', marginBottom: '8px' }}>
+                    <div style={{ overflow: 'hidden' }}>
+                      <div style={{ fontWeight: 'bold', fontSize: '14px' }}>{mw.name}</div>
+                      <div style={{ fontSize: '11px', color: '#888', textOverflow: 'ellipsis', overflow: 'hidden' }}>{mw.address}</div>
+                    </div>
+                    <button onClick={() => setMasterWallets(masterWallets.filter(m => m.id !== mw.id))} style={{ background: 'none', border: 'none', color: '#f44336', cursor: 'pointer', padding: '5px' }}>
+                      <FaTrash size={14} />
+                    </button>
+                  </div>
+                ))
+              }
+            </div>
+            <button onClick={() => setIsMasterModalOpen(false)} style={{ width: '100%', marginTop: '15px', padding: '10px', background: '#333', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>Tutup</button>
+          </div>
+        </div>
+      )}
+
+      {accountModal.isOpen && (
+        <div className="modal-overlay" style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+          <div className="modal-content" style={{ background: '#1a1a1a', padding: '20px', borderRadius: '12px', width: '90%', maxWidth: '400px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px' }}>
+              <h3 style={{ margin: 0 }}><FaWallet /> Detail Akun</h3>
+              <button 
+                onClick={() => {
+                  const allWallets = accountModal.details.filter(d => d.trim() !== "").join('\n');
+                  if (allWallets) {
+                    navigator.clipboard.writeText(allWallets);
+                    showAlert("Semua alamat berhasil disalin!", "success");
+                  } else {
+                    showAlert("Tidak ada alamat untuk disalin", "error");
+                  }
+                }}
+                style={{ fontSize: '11px', padding: '4px 8px', background: '#444', color: '#fff', border: '1px solid #666', borderRadius: '4px', cursor: 'pointer' }}
+              >
+                Copy All
+              </button>
+            </div>
+            
+            <div style={{ maxHeight: '300px', overflowY: 'auto', margin: '15px 0', paddingRight: '5px' }}>
+              {accountModal.details.map((detail, idx) => (
+                <div key={idx} style={{ marginBottom: '15px', paddingBottom: '10px', borderBottom: '1px solid #333' }}>
+                  <label style={{ fontSize: '11px', color: '#888', display: 'block', marginBottom: '5px' }}>Akun {idx + 1}</label>
+                  
+                  <select 
+                    style={{ width: '100%', background: '#222', color: 'white', border: '1px solid #444', padding: '5px', borderRadius: '4px', marginBottom: '5px', fontSize: '12px' }}
+                    onChange={(e) => {
+                      const selected = masterWallets.find(mw => mw.address === e.target.value);
+                      if (selected) {
+                        const newDetails = [...accountModal.details];
+                        newDetails[idx] = selected.address;
+                        setAccountModal({ ...accountModal, details: newDetails });
+                      }
+                    }}
+                  >
+                    <option value="">-- Pilih dari Wallet Profile --</option>
+                    {masterWallets.map(mw => (
+                      <option key={mw.id} value={mw.address}>{mw.name}</option>
+                    ))}
+                  </select>
+
+                  <input 
+                    style={{ width: '100%', background: '#2d2d2d', border: '1px solid #444', color: 'white', padding: '8px', borderRadius: '4px', boxSizing: 'border-box' }}
+                    value={detail}
+                    onChange={(e) => {
+                      const newDetails = [...accountModal.details];
+                      newDetails[idx] = e.target.value;
+                      setAccountModal({ ...accountModal, details: newDetails });
+                    }}
+                    placeholder="Alamat Wallet / Profil"
+                  />
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button style={{ flex: 1, background: '#4CAF50', color: 'white', border: 'none', padding: '10px', borderRadius: '6px' }} onClick={() => {
+                if (accountModal.taskId) {
+                  setTasks(tasks.map(t => t.id === accountModal.taskId ? { ...t, detailAkun: accountModal.details } : t));
+                  setAccountModal({ isOpen: false, taskId: null, details: [] });
+                  showAlert("Detail disimpan!", "success");
+                }
+              }}>Simpan</button>
+              <button style={{ flex: 1, background: '#f44336', color: 'white', border: 'none', padding: '10px', borderRadius: '6px' }} onClick={() => setAccountModal({ isOpen: false, taskId: null, details: [] })}>Batal</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <header>
         <h1>Erdrop Manager</h1>
       </header>
@@ -358,6 +538,17 @@ export const Home: React.FC = () => {
             onChange={e => setFormData({...formData, link: e.target.value})} 
             placeholder="Link (https://)" required
           />
+          <select 
+            value={formData.kategori || ''} 
+            onChange={e => setFormData({...formData, kategori: e.target.value})}
+          >
+            <option>Pilih Kategori (Opsional)</option>
+            <option value="Testnet">Testnet</option>
+            <option value="Mainnet">Mainnet</option>
+            <option value="Telegram Bot">Telegram Bot</option>
+            <option value="Node">Node</option>
+            <option value="Whitelist">Whitelist</option>
+          </select>
           <input 
             type="number" 
             value={formData.akun || 1} 
@@ -370,7 +561,6 @@ export const Home: React.FC = () => {
             onChange={e => setFormData({...formData, status: e.target.value as any})}
           >
             <option value="Ongoing">Ongoing</option>
-            <option value="Waitlist">Waitlist</option>
             <option value="END">END</option>
             <option value="Nunggu Info">Nunggu Info</option>
           </select>
@@ -380,7 +570,7 @@ export const Home: React.FC = () => {
             </button>
             <button type="button" onClick={() => {
               setIsEditMode(false);
-              setFormData({ nama: '', tugas: '', link: '', akun: 1, status: 'Ongoing' });
+              setFormData({ nama: '', tugas: '', link: '', akun: 1, status: 'Ongoing', kategori: 'Testnet' });
             }}>
                 <FaUndo /> Reset
             </button>
@@ -400,30 +590,64 @@ export const Home: React.FC = () => {
         </div>
         
         <select onChange={e => setFilter(e.target.value)} value={filter} className="status-filter">
-          <option value="Semua">Semua Status</option>
-          <option value="Ongoing">Ongoing</option>
-          <option value="Waitlist">Waitlist</option>
-          <option value="END">END</option>
-          <option value="Nunggu Info">Nunggu Info</option>
+          <option value="Semua">Semua Data</option>
+          <optgroup label="Status">
+            <option value="Ongoing">Ongoing</option>
+            <option value="Waitlist">Waitlist</option>
+            <option value="END">END</option>
+          </optgroup>
+          <optgroup label="Kategori">
+            <option value="Testnet">Testnet</option>
+            <option value="Mainnet">Mainnet</option>
+            <option value="Telegram Bot">Telegram Bot</option>
+            <option value="Node">Node</option>
+          </optgroup>
+        </select>
+
+        <select 
+          value={sortBy} 
+          onChange={(e) => setSortBy(e.target.value as any)} 
+          className="sort-filter"
+        >
+          <option value="terbaru">Terbaru</option>
+          <option value="terlama">Terlama</option>
+          <option value="nama">Nama (A-Z)</option>
+          <option value="status">Status</option>
         </select>
       </div>
 
       <div className="data-management-container">
-        <button onClick={handleExport} disabled={tasks.length === 0}className="btn-manage btn-export"style={{ opacity: tasks.length === 0 ? 0.5 : 1 }}
-  ><FaFileExport /> <span>Export Backup</span></button>
-  
-        <button onClick={handleImportClick} className="btn-manage btn-import"
-  ><FaFileImport /> <span>Import Data</span>
-  </button>
-  
-  <input 
-    type="file" 
-    ref={fileInputRef} 
-    accept=".txt" 
-    style={{ display: 'none' }} 
-    onChange={handleImport} 
-  />
-</div>
+        <button onClick={handleExport} disabled={tasks.length === 0} className="btn-manage btn-export" style={{ opacity: tasks.length === 0 ? 0.5 : 1 }}>
+          <FaFileExport /> <span>Export</span>
+        </button>
+        <button onClick={handleImportClick} className="btn-manage btn-import">
+          <FaFileImport /> <span>Import</span>
+        </button>
+        <button onClick={() => setIsMasterModalOpen(true)} className="btn-manage" style={{ background: '#673ab7', color: 'white' }}>
+          <FaWallet /> <span>Wallet</span>
+        </button>
+        <input type="file" ref={fileInputRef} accept=".txt" style={{ display: 'none' }} onChange={handleImport} />
+      </div>
+
+      <div className="progress-wrapper" style={{ width: '100%', margin: '15px 0' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+          <span style={{ fontSize: '12px', color: '#aaa', fontWeight: 500 }}>Progress Garapan</span>
+          <span style={{ fontSize: '12px', color: '#ffffff', fontWeight: 'bold' }}>
+            {progressPercentage.toFixed(1)}%
+          </span>
+        </div>
+        <div className="progress-container" style={{ width: '100%', background: '#222', borderRadius: '10px', height: '12px', border: '1px solid #333', overflow: 'hidden' }}>
+          <div style={{
+            width: `${progressPercentage}%`, 
+            height: '100%', 
+            background: 'linear-gradient(90deg, #646cff, #646cff15)', 
+            transition: 'width 0.5s ease'
+          }}></div>
+        </div>
+        <p style={{ fontSize: '11px', textAlign: 'right', color: '#888', marginTop: '6px' }}>
+          <strong>{completedCount}</strong> dari <strong>{tasks.length}</strong> tugas selesai
+        </p>
+      </div>
 
       <div className="table-container">
         <table>
@@ -440,23 +664,61 @@ export const Home: React.FC = () => {
           </thead>
           <tbody>
             {paginatedTasks.length === 0 ? (
-              <tr><td colSpan={7} style={{textAlign: 'center', padding: '20px', color: '#888'}}>
-                {search || filter !== 'Semua' ? 'Tidak ditemukan data yang cocok.' : 'Belum ada garapan.'}
-              </td></tr>
+              <tr>
+                <td colSpan={7} style={{textAlign: 'center', padding: '20px', color: '#888'}}>
+                  {search || filter !== 'Semua' ? 'Tidak ditemukan data.' : 'Belum ada garapan.'}
+                </td>
+              </tr>
             ) : paginatedTasks.map(task => (
               <tr key={task.id}>
-                <td data-label="Nama"><strong>{task.nama}</strong></td>
+                <td data-label="Nama">
+                  <div style={{ display: 'flex', flexDirection: 'column' }}>
+                    <strong>{task.nama}</strong>
+                    {task.kategori && (
+                      <span style={{ fontSize: '10px', background: '#333', padding: '2px 6px', borderRadius: '4px', color: '#aaa', width: 'fit-content', marginTop: '4px' }}>
+                        {task.kategori}
+                      </span>
+                    )}
+                  </div>
+                </td>
                 <td data-label="Tugas">{task.tugas || '-'}</td>
                 <td data-label="Link">
-                    {task.link ? (
-                        <a href={task.link} target="_blank" rel="noreferrer" className="open-link" 
-                           title="Buka Link"
-                           onClick={() => { if(!task.selesaiHariIni) toggleToday(task.id); }}>
-                            <FaExternalLinkAlt /> Open
-                        </a>
-                    ) : '-'}
+                  {task.link ? (
+                    <a href={task.link} target="_blank" rel="noreferrer" className="open-link" 
+                       onClick={() => { if(!task.selesaiHariIni) toggleToday(task.id); }}>
+                      <FaExternalLinkAlt /> Open
+                    </a>
+                  ) : '-'}
                 </td>
-                <td data-label="Akun">{task.akun}</td>
+                <td data-label="Akun">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column' }}>
+                      <span>{task.akun} Akun</span>
+                      <small style={{ 
+                        fontSize: '10px', 
+                        color: task.walletAddress ? '#646cff' : '#888'
+                        }}>
+                          ({getWalletStatus(task)})
+                          </small>
+                          </div>
+                      <button 
+                        type="button"
+                        onClick={() => setAccountModal({
+                        isOpen: true,
+                        taskId: task.id,
+                        details: task.detailAkun && task.detailAkun.length > 0 ? task.detailAkun : (task.walletAddress ? [task.walletAddress, ...Array(task.akun - 1).fill('')] : Array(task.akun).fill(''))
+                      })}
+                      style={{ 
+                        padding: '4px 6px', 
+                        background: task.walletAddress ? '#f3ba2f' : '#2196F3',
+                        borderRadius: '4px', 
+                        border: 'none', 
+                        cursor: 'pointer', 
+                        color: task.walletAddress ? '#000' : 'white' 
+                      }} title={task.walletAddress ? `Terdeteksi: ${task.walletAddress}` : "Input Wallet"} ><FaWallet size={12} />
+                      </button>
+                      </div>
+                </td>
                 <td data-label="Status">
                   <span className={`status ${task.status.toLowerCase().replace(' ', '-')}`}>{task.status}</span>
                 </td>
@@ -464,19 +726,14 @@ export const Home: React.FC = () => {
                   <button 
                     className={`today-btn ${task.selesaiHariIni ? 'selesai' : 'belum'}`}
                     onClick={() => toggleToday(task.id)}
-                    title={task.selesaiHariIni ? 'Tandai belum selesai' : 'Tandai selesai'}
                   >
                     {task.selesaiHariIni ? <FaCheck /> : <FaTimes />}
                   </button>
                 </td>
                 <td data-label="Aksi">
                   <div className="action-buttons-wrapper">
-                    <button className="action-btn edit-btn" onClick={() => handleEdit(task)} title="Edit">
-                        <FaEdit />
-                    </button>
-                    <button className="action-btn delete-btn" onClick={() => handleDelete(task.id)} title="Hapus">
-                        <FaTrash />
-                    </button>
+                    <button className="action-btn edit-btn" onClick={() => handleEdit(task)}><FaEdit /></button>
+                    <button className="action-btn delete-btn" onClick={() => handleDelete(task.id)}><FaTrash /></button>
                   </div>
                 </td>
               </tr>
@@ -488,12 +745,12 @@ export const Home: React.FC = () => {
       {totalPages > 1 && (
         <div className="pagination-container">
             <button disabled={validCurrentPage === 1} onClick={() => setCurrentPage(c => Math.max(1, c - 1))}>Prev</button>
-            <span>Page {validCurrentPage} of {totalPages}</span>
+            <span>{validCurrentPage} / {totalPages}</span>
             <button disabled={validCurrentPage >= totalPages} onClick={() => setCurrentPage(c => Math.min(totalPages, c + 1))}>Next</button>
         </div>
       )}
 
-      <hr></hr>
+      <hr />
       <div style={{textAlign:'center', marginTop:'20px'}}>
         <a href='https://t.me/airdropiac' target='_blank' style={{marginRight: '10px'}}>
             <button>| Join Channel Telegram |</button>
@@ -502,7 +759,6 @@ export const Home: React.FC = () => {
             <button>| Follow X |</button>
         </a>
       </div>
-
       <footer className="app-footer">Powered by IAC Community</footer>
     </div>
   );
