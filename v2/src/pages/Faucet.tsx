@@ -5,34 +5,70 @@ import { FaSearch, FaTint, FaExternalLinkAlt, FaLink } from 'react-icons/fa';
 
 const FAUCET_DATA: FaucetItem[] = [
   {
+    id: 'robinhood',
+    name: 'Robinhood Chain Testnet',
+    icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/robinhood.png',
+    description: 'Dapatkan Faucet ETH dan Tokens TSLA, AMZN, PLTR, NFLX, AMD, di jaringan Robinhood Chain Testnet',
+    url: 'https://faucet.testnet.chain.robinhood.com/',
+    urlText: 'Drip Robinhood ETH',
+    color: 'rgb(209, 255, 0)'
+  },
+  {
+    id: 'aptos',
+    icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/aptos.png',
+    name: 'Aptos Testnet',
+    description: 'Dapatkan APT di jaringan Aptos Testnet',
+    url: 'https://aptos.dev/network/faucet',
+    urlText: 'Drip APT',
+    color: 'rgb(209, 255, 204))'
+  },
+  {
+      id: 'sui',
+      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/sui.jpg',
+      name: 'Sui Testnet',
+      description: 'Dapatkan SUI di jaringan Sui Testnet',
+      color: 'rgb(30, 136, 245)',
+      links: [
+          { url: 'https://sdk.mystenlabs.com/sui/faucet', text: 'Mysten Labs' },
+          { url: 'https://faucet.sui.io/', text: 'Sui Faucet' },
+          { url: 'https://faucet.suilearn.io/', text: 'Suilearn' },
+          { url: 'https://faucet.n1stake.com/', text: 'N1Stake' },
+          { url: 'https://faucet.blockbolt.io/', text: 'Blockbolt' },
+      ]
+  },
+  {
     id: 'republicai',
+    icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/republicai.jpg',
     name: 'Republic AI Testnet',
     description: 'Connect Wallet dan Claim token RAI untuk pengujian di Republic AI Testnet',
     url: 'https://points.republicai.io/faucet',
-    urlText: 'Request RAI',
-    color: '#D9E9EF'
+    urlText: 'Drip RAI',
+    color: 'rgb(217, 233, 239)'
   },
   {
       id: 'mawari',
+      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/mawari.png',
       name: 'Mawari Network Testnet',
       description: 'Dapatkan Faucet Native Token [MAWARI] di jaringan Mawari Network Testnet',
       url: 'https://hub.testnet.mawari.net/',
       urlText: 'Drip Mawari',
-      color: '#01a2ff'
+      color: 'rgb(1, 162, 255)'
   },
   {
       id: 'giwa',
+      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/giwaTestnet.png',
       name: 'Giwa Sepolia',
       description: 'Dapatkan ETH di jaringan Giwa Sepolia',
       url: 'https://faucet.giwa.io',
-      urlText: 'Get Giwa ETH',
-      color: '#2640a7'
+      urlText: 'Drip Giwa ETH',
+      color: 'rgb(38, 64, 167)'
   },
   {
       id: 'pharos',
+      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/pharos.png',
       name: 'Pharos Testnet',
       description: 'Dapatkan PHRS di jaringan Pharos Testnet dari Zan, Bitget wallet & Okx wallet',
-      color: '#1000f0',
+      color: 'rgb(16, 0, 240)',
       links: [
           { url: 'https://testnet.pharosnetwork.xyz/', text: 'Pharos Main Hub' },
           { url: 'https://zan.top/faucet/pharos', text: 'Zan Faucet' },
@@ -42,6 +78,7 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'monad',
+      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/monad.jpg',
       name: 'Monad Testnet',
       description: 'Dapatkan MON di jaringan Monad Testnet',
       color: '#836efd',
@@ -54,6 +91,7 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'sepolia',
+      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/sepolia.png',
       name: 'Sepolia ETH',
       description: 'Dapatkan ETH testnet di jaringan ETH Sepolia',
       color: '#9e9e9e',
@@ -66,6 +104,7 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'holesky',
+      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/sepolia.png',
       name: 'Holesky ETH',
       description: 'Dapatkan ETH testnet di jaringan Holesky Testnet',
       url: 'https://holeskyfaucet.io/',
@@ -74,6 +113,7 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'bnb',
+      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/bnb.jpg',
       name: 'BNB Testnet',
       description: 'Dapatkan BNB testnet di jaringan BNB Testnet',
       color: '#F3BA2F',
@@ -84,6 +124,7 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'mumbai',
+      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/polygon.jpg',
       name: 'Mumbai (Polygon)',
       description: 'Dapatkan MATIC testnet untuk jaringan Mumbai (Polygon).',
       url: 'https://faucet.polygon.technology/',
@@ -92,6 +133,7 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'base',
+      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/sepolia.png',
       name: 'Base Goerli',
       description: 'Dapatkan ETH testnet di jaringan Base Goerli',
       url: 'https://faucet.quicknode.com/base/goerli',
@@ -100,6 +142,7 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'arbitrum',
+      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/sepolia.png',
       name: 'Arbitrum Sepolia',
       description: 'Dapatkan ETH testnet di jaringan Arbitrum Sepolia.',
       url: 'https://faucet.triangleplatform.com/arbitrum/sepolia',
@@ -154,8 +197,17 @@ export const Faucet: React.FC = () => {
                 transition: 'transform 0.2s'
             }}>
               <div>
+                
                 <h3 style={{marginTop: 0, fontSize: '1.2em',display: 'inline-block',padding: '4px 12px',backgroundColor: `${f.color}22`,
-                color: f.color || '#01a2ff',borderLeft: `3px solid ${f.color || '#01a2ff'}`,borderRadius: '4px',marginBottom: '10px'}}>{f.name}</h3>
+                color: f.color || '#01a2ff',borderLeft: `3px solid ${f.color || '#01a2ff'}`,borderRadius: '4px',marginBottom: '10px'}}>{f.icon && (
+                  <img 
+                  src={f.icon} 
+                  alt={f.name} 
+                  style={{ width: '23px', height: '23px', borderRadius: '40px' }} 
+                  />
+                  )} {f.name}
+                </h3>
+                
                 <p style={{fontSize: '0.9em', color: '#bbb', lineHeight: '1.5', minHeight: '45px'}}>
                     {f.description}
                 </p>
@@ -218,5 +270,3 @@ export const Faucet: React.FC = () => {
     </div>
   );
 };
-
-//fix
