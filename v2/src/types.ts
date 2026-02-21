@@ -43,5 +43,12 @@ export interface FaucetItem {
 export interface ExportData {
   airdropTasks: Task[];
   financeTransactions: Transaction[];
+  masterWallets?: MasterWallet[];
   encryptedData?: string;
+}
+
+export interface MasterWallet {
+  id: string;
+  name: string;
+  address: string;
 }
