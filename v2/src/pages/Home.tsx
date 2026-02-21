@@ -178,12 +178,27 @@ export const Home: React.FC = () => {
     const isWaitlist = formData.status === 'Waitlist';
 
     if (isEditMode && formData.id) {
-      setTasks(tasks.map(t => t.id === formData.id ? { 
-        ...t, 
-        ...formData, 
-        link: formattedLink,
-        selesaiHariIni: isWaitlist ? true : t.selesaiHariIni
-      } as Task : t));
+      setTasks(tasks.map(t => {
+        if (t.id === formData.id) {
+          let updatedDetailAkun = [...(t.detailAkun || [])];
+          const newAkunCount = Number(formData.akun) || 1;
+          if (newAkunCount > updatedDetailAkun.length) {
+            const diff = newAkunCount - updatedDetailAkun.length;
+            updatedDetailAkun = [...updatedDetailAkun, ...Array(diff).fill('')];
+          } else if (newAkunCount < updatedDetailAkun.length) {
+            updatedDetailAkun = updatedDetailAkun.slice(0, newAkunCount);
+          }
+
+          return { 
+            ...t, 
+            ...formData, 
+            link: formattedLink,
+            detailAkun: updatedDetailAkun,
+            selesaiHariIni: isWaitlist ? true : t.selesaiHariIni
+          } as Task;
+        }
+        return t;
+      }));
       setIsEditMode(false);
       showAlert('Data berhasil diperbarui!', 'success');
     } else {
@@ -244,7 +259,7 @@ export const Home: React.FC = () => {
       'PASSWORD ENKRIPSI',
       'Masukkan password untuk mengamankan file backup (kosongkan jika tidak ingin dienkripsi):',
       (password) => {
-        const data: ExportData = { airdropTasks: tasks, financeTransactions: transactions };
+        const data: ExportData = { airdropTasks: tasks, financeTransactions: transactions, masterWallets: masterWallets };
         let content = JSON.stringify(data, null, 2);
 
         if (password) {
@@ -291,25 +306,30 @@ export const Home: React.FC = () => {
              return;
         }
         
-        const performRestore = (data: any) => {
-           if (data.airdropTasks) {
+        const performRestore = (data: ExportData) => {
+          if (data.airdropTasks) {
             showConfirm(
               'TIMPA DATA?',
               'Import data akan menggabungkan/menimpa data yang ada sekarang. Lanjutkan?',
-              () => {
-                setTasks(data.airdropTasks);
-                if (data.financeTransactions) {
-                  localStorage.setItem('transactions', JSON.stringify(data.financeTransactions));
-                }
-                showAlert('Data berhasil dimuat ulang!', 'success');
-                if (fileInputRef.current) fileInputRef.current.value = '';
-              }
-            );
-          } else {
-            showAlert('Format data di dalam file tidak dikenali.', 'error');
-            if (fileInputRef.current) fileInputRef.current.value = '';
-          }
-        };
+              () => { setTasks(data.airdropTasks);
+        
+        if (data.financeTransactions) {
+          localStorage.setItem('transactions', JSON.stringify(data.financeTransactions));
+        }
+
+        if (data.masterWallets) {
+          setMasterWallets(data.masterWallets);
+        }
+
+        showAlert('Data berhasil dimuat ulang!', 'success');
+        if (fileInputRef.current) fileInputRef.current.value = '';
+      }
+    );
+  } else {
+    showAlert('Format data di dalam file tidak dikenali.', 'error');
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }
+};
 
         if (parsed.encryptedData) {
           showPrompt(
