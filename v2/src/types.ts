@@ -8,11 +8,15 @@ export interface Task {
   selesaiHariIni: boolean;
   tanggalDitambahkan: string;
   kategori: string;
-  detailAkun: string[]
+  detailAkun: string[];
   emailUsed?: string;
   xUsed?: string;
   discordUsed?: string;
   walletAddress?: string;
+  notes?: string;
+  deadline?: string;
+  estimasiReward?: number;
+
 }
 
 export interface Transaction {
@@ -51,4 +55,16 @@ export interface MasterWallet {
   id: string;
   name: string;
   address: string;
+}
+
+export interface PortfolioToken {
+  id: string;
+  projectName: string;
+  tokenSymbol: string;
+  jumlahToken: number;
+  hargaPerToken: number;
+  network: string;
+  tanggalDiterima: string;
+  status: 'holding' | 'sold' | 'vesting';
+  catatan?: string;
 }
