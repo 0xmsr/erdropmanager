@@ -43,13 +43,14 @@ ChartJS.register(
 
 const AnimatedMoney = ({ value, currency, config }: { value: number, currency: 'USD' | 'IDR' | 'BTC' | 'ETH', config: CurrencyConfigType }) => {
     const [displayValue, setDisplayValue] = useState(0);
+    const displayValueRef = React.useRef(0);
     const currentConfig = config[currency];
     const targetValue = value * currentConfig.rate;
     
     useEffect(() => {
         let startTimestamp: number | null = null;
         const duration = 1000;
-        const startValue = displayValue;
+        const startValue = displayValueRef.current;
         
         const step = (timestamp: number) => {
             if (!startTimestamp) startTimestamp = timestamp;
@@ -57,6 +58,7 @@ const AnimatedMoney = ({ value, currency, config }: { value: number, currency: '
             const easeProgress = 1 - Math.pow(1 - progress, 4);
             
             const current = startValue + (targetValue - startValue) * easeProgress;
+            displayValueRef.current = current;
             setDisplayValue(current);
             
             if (progress < 1) {
@@ -65,7 +67,7 @@ const AnimatedMoney = ({ value, currency, config }: { value: number, currency: '
         };
         
         window.requestAnimationFrame(step);
-    }, [value, currency, targetValue]);
+    }, [targetValue]);
 
     let formatted = '';
     if (currentConfig.code === 'IDR') {
@@ -387,6 +389,10 @@ useEffect(() => {
     }
 
     const amountVal = parseFloat(form.amount);
+    if (isNaN(amountVal) || amountVal <= 0) {
+      showAlert('Jumlah transaksi harus lebih dari 0!', 'error');
+      return;
+    }
 
     const now = new Date();
     const newTx: Transaction = {
@@ -473,7 +479,7 @@ useEffect(() => {
 
       <header>
           <h1><FaWallet style={{marginRight: '10px'}}/>Keuangan</h1>
-          <div style={{fontSize: '0.6em', marginTop: '5px', color: '#888', display: 'none', alignItems: 'center', justifyContent: 'center', gap: '5px'}}>
+          <div style={{fontSize: '0.6em', marginTop: '5px', color: '#888', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px'}}>1 USD : .
             {isLoadingRate ? (
                 <>
                     <FaSync className="spin-animation" /> Updating Rates...
