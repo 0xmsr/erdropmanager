@@ -41,7 +41,10 @@ export const Home: React.FC = () => {
     akun: 1, 
     status: 'Ongoing',
     kategori: '',
-    detailAkun: []
+    detailAkun: [],
+    notes: '',
+    deadline: '',
+    estimasiReward: undefined,
   });
 
   const [isEditMode, setIsEditMode] = useState(false);
@@ -212,13 +215,16 @@ export const Home: React.FC = () => {
         kategori: formData.kategori || '',
         detailAkun: Array(Number(formData.akun) || 1).fill(''),
         selesaiHariIni: formData.status === 'Waitlist',
-        tanggalDitambahkan: timestamp
+        tanggalDitambahkan: timestamp,
+        notes: formData.notes || '',
+        deadline: formData.deadline || '',
+        estimasiReward: formData.estimasiReward,
       };
       setTasks([...tasks, newTask]);
       showAlert('Garapan baru berhasil ditambahkan!', 'success');
     }
-    
-    setFormData({ nama: '', tugas: '', link: '', akun: 1, status: 'Ongoing', kategori: '' });
+
+    setFormData({ nama: '', tugas: '', link: '', akun: 1, status: 'Ongoing', kategori: '', walletAddress: '', notes: '', deadline: '', estimasiReward: undefined });
   };
 
   const handleDelete = (id: number) => {
@@ -378,7 +384,7 @@ export const Home: React.FC = () => {
     const matchSearch = 
         t.nama.toLowerCase().includes(search.toLowerCase()) || 
         t.tugas.toLowerCase().includes(search.toLowerCase()) ||
-        (t.walletAddress && t.walletAddress.toLowerCase().includes(search.toLowerCase())); // Tambahkan ini
+        (t.walletAddress && t.walletAddress.toLowerCase().includes(search.toLowerCase()));
 
     const matchFilter = filter === 'Semua' || t.status === filter || t.kategori === filter;
     
@@ -556,7 +562,7 @@ export const Home: React.FC = () => {
           <input 
             value={formData.link || ''} 
             onChange={e => setFormData({...formData, link: e.target.value})} 
-            placeholder="Link (https://)" required
+            placeholder="Link (https://)"
           />
           <select 
             value={formData.kategori || ''} 
@@ -584,13 +590,62 @@ export const Home: React.FC = () => {
             <option value="END">END</option>
             <option value="Nunggu Info">Nunggu Info</option>
           </select>
+          <div>
+          <input
+            type="date"
+            value={formData.deadline || ''}
+            onChange={e => setFormData({...formData, deadline: e.target.value})}
+            title="Deadline / Tgl End / Snapshot (opsional)"
+            style={{ colorScheme: 'dark' }}
+          />
+          <text>(O p s i o n a l)</text>
+          </div>
+          <input
+            type="number"
+            placeholder="Est. Rewards (Opsional)"
+            value={formData.estimasiReward ?? ''}
+            onChange={e => setFormData({...formData, estimasiReward: e.target.value ? parseFloat(e.target.value) : undefined})}
+            min="0"
+            step="any"
+            title="Estimasi reward dalam USD (opsional)"
+            style={{
+              gridColumn: '1 / -1',
+              resize: 'vertical',
+              fontFamily: "'Courier New', Courier, monospace",
+              fontSize: '14px',
+              padding: '10px',
+              background: '#111',
+              color: '#fff',
+              border: '1px solid #ffffff',
+              boxSizing: 'border-box',
+              width: '50%',
+            }}
+          />
+          <textarea
+            placeholder="Notes / catatan strategi (opsional)"
+            value={formData.notes || ''}
+            onChange={e => setFormData({...formData, notes: e.target.value})}
+            rows={2}
+            style={{
+              gridColumn: '1 / -1',
+              resize: 'vertical',
+              fontFamily: "'Courier New', Courier, monospace",
+              fontSize: '14px',
+              padding: '10px',
+              background: '#111',
+              color: '#fff',
+              border: '1px solid #ffffff',
+              boxSizing: 'border-box',
+              width: '50%',
+            }}
+          />
           <div className="form-buttons">
             <button type="submit">
                 {isEditMode ? <><FaCheck /> Update</> : <><FaPlus /> Tambah</>}
             </button>
             <button type="button" onClick={() => {
               setIsEditMode(false);
-              setFormData({ nama: '', tugas: '', link: '', akun: 1, status: 'Ongoing', kategori: 'Testnet' });
+              setFormData({ nama: '', tugas: '', link: '', akun: 1, status: 'Ongoing', kategori: '', walletAddress: '', notes: '', deadline: '', estimasiReward: undefined });
             }}>
                 <FaUndo /> Reset
             </button>
@@ -697,6 +752,30 @@ export const Home: React.FC = () => {
                     {task.kategori && (
                       <span style={{ fontSize: '10px', background: '#333', padding: '2px 6px', borderRadius: '4px', color: '#aaa', width: 'fit-content', marginTop: '4px' }}>
                         {task.kategori}
+                      </span>
+                    )}
+                    {task.deadline && (() => {
+                      const today = new Date(); today.setHours(0,0,0,0);
+                      const dl = new Date(task.deadline); dl.setHours(0,0,0,0);
+                      const diff = Math.ceil((dl.getTime() - today.getTime()) / 86400000);
+                      const color = diff < 0 ? '#f44336' : diff === 0 ? '#ff5722' : diff <= 3 ? '#ff9800' : '#4caf50';
+                      const countdown = diff < 0 ? `Terlambat ${Math.abs(diff)}h` : diff === 0 ? 'Hari ini!' : `${diff}h lagi`;
+                      const [yy, mm, dd] = task.deadline!.split('-');
+                      const dateStr = `${dd}/${mm}/${yy}`;
+                      return (
+                        <span style={{ fontSize: '10px', color, border: `1px solid ${color}`, padding: '1px 5px', width: 'fit-content', marginTop: '4px', fontFamily: 'monospace' }}>
+                          Tgl {dateStr} · {countdown}
+                        </span>
+                      );
+                    })()}
+                    {task.estimasiReward ? (
+                      <span style={{ fontSize: '10px', color: '#f3ba2f', marginTop: '2px' }}>
+                        Est. Rewards ${task.estimasiReward}
+                      </span>
+                    ) : null}
+                    {task.notes && (
+                      <span style={{ fontSize: '10px', color: '#666', marginTop: '2px', fontStyle: 'italic', maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={task.notes}>
+                        Notes {task.notes}
                       </span>
                     )}
                   </div>
