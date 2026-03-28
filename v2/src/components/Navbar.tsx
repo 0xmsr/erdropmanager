@@ -21,6 +21,15 @@ export const Navbar = () => {
       <Link to="/faucet">
         <button className={isActive('/faucet')}>Faucet</button>
       </Link>
+      <Link to="/portfolio">
+        <button className={isActive('/portfolio')}>Portfolio</button>
+      </Link>
+      <Link to="/ai">
+        <button className={isActive('/ai')} style={{ background: isActive('/ai') ? '#646cff' : undefined }}>AI</button>
+      </Link>
+      <Link to="/dashboard">
+        <button className={isActive('/dashboard')}>Dashboard</button>
+      </Link>
     </div>
   );
 };
