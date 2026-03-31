@@ -23,7 +23,7 @@ interface ImportedContext {
   type: 'file' | 'url';
 }
 
-const GROQ_API_KEY = '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';
+const GROQ_API_KEY = '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'; // for testing
 
 const GROQ_MODELS = [
   'llama-3.1-8b-instant',
