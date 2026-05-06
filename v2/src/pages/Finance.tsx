@@ -149,6 +149,7 @@ useEffect(() => {
 
   const getNetworkColor = (network: string) => {
     const net = network.toLowerCase();
+    // 0xmsr menggunakan warna kode hex 
     if (net.includes('btc')) return '#F7931A';
     if (net.includes('sol')) return '#9945FF';
     if (net.includes('eth')) return '#627eea';
@@ -162,6 +163,10 @@ useEffect(() => {
     if (net.includes('near')) return '#2ED3B7';
     if (net.includes('linea')) return '#ffffff';
     if (net.includes('mon')) return '#7645D9';
+    if (net.includes('ink')) return '#7037FF';
+    if (net.includes('octra')) return '#0000FF';
+    if (net.includes('avax')) return '#E84142';
+    if (net.includes('pharos')) return '#0000D7'; // King Pharos
     return '#ffffff';
   };
 
@@ -722,7 +727,8 @@ useEffect(() => {
                 {n: 'OP', c: '#FF0420'}, {n: 'BASE', c: '#0052ff'}, {n: 'BSC', c: '#F3BA2F'}, 
                 {n: 'MATIC', c: '#8247e5'}, {n: 'ARB', c: '#28a0f0'}, {n: 'APT', c: '#2ed3b9'}, 
                 {n: 'SUI', c: '#6fbcf0'}, {n: 'NEAR', c: '#2ED3B7'}, {n: 'LINEA', c: '#FFFFFF'},
-                {n: 'MON', c: '#7645D9'},
+                {n: 'MON', c: '#7645D9'}, {n: 'INK', c: '#7037FF'}, {n: 'OCTRA', c: '#0000FF'},
+                {n: 'AVAX', c: '#E84142'}, {n: 'PHAROS', c: '#0000D7'},
               ].map(item => (
               <div key={item.n} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.7em', fontWeight: 'bold' }}>
                 <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: item.c, boxShadow: `0 0 5px ${item.c}` }}></div>
