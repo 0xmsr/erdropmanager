@@ -54,7 +54,7 @@ interface AirdropTask {
   contractAbi?: string;
   contractFunc?: string;
   contractArgs?: string;   // JSON array string e.g. '["0xabc", "1000"]'
-  ethValue?: string;       // ETH value to send with call, default "0"
+  ethValue?: string;       // ETH value to send with call, default "0" 
 }
 
 interface TxQueueItem {
