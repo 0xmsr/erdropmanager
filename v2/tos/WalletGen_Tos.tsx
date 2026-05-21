@@ -72,7 +72,6 @@ export const ToS: React.FC = () => {
 
   const toggle = (i: number) =>
     setChecked(prev => prev.map((v, idx) => idx === i ? !v : v));
-
   const handleAgree = () => {
     if (!allChecked) return;
     localStorage.setItem('tosAgreed', 'true');
