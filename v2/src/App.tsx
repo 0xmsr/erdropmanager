@@ -9,9 +9,8 @@ import { Portfolio } from './pages/Portfolio';
 import { AIAssistant } from './pages/AIAssistant';
 import { WalletGenerator } from './pages/Walletgenerator';
 import { Landing } from './pages/Landing';
-import { ToS } from './tos/WalletGen_Tos.tsx';
+import { ToS } from './tos/WalletGen_Tos';
 import './App.css';
-// hak cipta 0xmsr
 
 function App() {
   return (
