@@ -24,7 +24,7 @@ function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/wallet-gen" element={<WalletGenerator />} />
-        <Route path="/wallet-gen/tos" element={<ToS />} />
+        <Route path="/wallet-gen/tos" element={<Tos />} />
         <Route path="/ai" element={<AIAssistant />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
