@@ -100,7 +100,6 @@ export const ToS: React.FC = () => {
         </span>
       </div>
 
-      {/* Clauses */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '28px' }}>
         {CLAUSES.map((c) => (
           <div key={c.num} style={{
