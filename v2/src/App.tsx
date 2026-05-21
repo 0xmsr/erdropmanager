@@ -9,7 +9,7 @@ import { Portfolio } from './pages/Portfolio';
 import { AIAssistant } from './pages/AIAssistant';
 import { WalletGenerator } from './pages/Walletgenerator';
 import { Landing } from './pages/Landing';
-import { WalletGen_Tos } from '../v2/tos/WalletGen_Tos';
+import { Tos } from './tos/WalletGen_Tos.tsx';
 import './App.css';
 
 function App() {
