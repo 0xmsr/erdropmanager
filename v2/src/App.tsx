@@ -9,7 +9,7 @@ import { Portfolio } from './pages/Portfolio';
 import { AIAssistant } from './pages/AIAssistant';
 import { WalletGenerator } from './pages/Walletgenerator';
 import { Landing } from './pages/Landing';
-import { Tos } from './tos/WalletGen_Tos.tsx';
+import { ToS } from './tos/WalletGen_Tos.tsx';
 import './App.css';
 
 function App() {
@@ -24,7 +24,7 @@ function App() {
         <Route path="/dashboard" element={<Dashboard />} />
         <Route path="/portfolio" element={<Portfolio />} />
         <Route path="/wallet-gen" element={<WalletGenerator />} />
-        <Route path="/wallet-gen/tos" element={<Tos />} />
+        <Route path="/wallet-gen/tos" element={<ToS />} />
         <Route path="/ai" element={<AIAssistant />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
