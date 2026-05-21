@@ -174,7 +174,6 @@ const CodeBlock: React.FC<{ code: string; lang: string }> = ({ code, lang }) => 
   };
   return (
     <div style={{ margin: '6px 0', border: '1px solid #2a2a2a', borderRadius: '4px', overflow: 'hidden' }}>
-      {/* Header bar */}
       <div style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         background: '#1a1a1a', padding: '4px 10px', borderBottom: '1px solid #2a2a2a',
@@ -195,7 +194,6 @@ const CodeBlock: React.FC<{ code: string; lang: string }> = ({ code, lang }) => 
           {copied ? <><FaCheck size={10} /> Copied!</> : <><FaRegCopy size={10} /> Copy</>}
         </button>
       </div>
-      {/* Code content */}
       <pre style={{
         margin: 0, padding: '10px 14px', overflowX: 'auto',
         background: '#0d0d0d', fontFamily: "'Courier New', monospace",
@@ -1625,7 +1623,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
 
   return (
     <div className="app-container">
-      {/* Header */}
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
         <h1 style={{ margin: 0, border: 'none', paddingBottom: 0, display: 'flex', alignItems: 'center', gap: '10px' }}>
           Rekt — AI Assistant
@@ -1654,7 +1651,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
       </header>
       <Navbar />
 
-      {/* Settings Panel */}
       {showSettings && (
         <div style={{ background: '#0d0d1a', border: '1px solid #2a2a5a', padding: '16px', marginBottom: '12px' }}>
           <div style={{ fontSize: '12px', color: '#888', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -1719,7 +1715,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
             </div>
           )}
 
-          {/* Add / Edit Form */}
           <div style={{ background: '#0a1520', border: '1px solid #1a3040', padding: '12px', marginBottom: '14px' }}>
             <div style={{ fontSize: '11px', color: '#06b6d4', marginBottom: '8px' }}>{otakEditId ? '✏️ Edit Memory' : '➕ Tambah Memory Baru'}</div>
             <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
@@ -1756,8 +1751,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
             </div>
             <div style={{ fontSize: '10px', color: '#2a4a5a', marginTop: '5px' }}>Ctrl+Enter untuk simpan cepat</div>
           </div>
-
-          {/* Filter & Search */}
           {otakMemories.length > 0 && (
             <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
               <input value={otakSearch} onChange={e => setOtakSearch(e.target.value)}
@@ -1778,7 +1771,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
             </div>
           )}
 
-          {/* Memory List */}
           {otakMemories.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '24px', color: '#333', fontSize: '13px', border: '1px dashed #1a3a4a' }}>
               <div style={{ fontSize: '32px', marginBottom: '8px' }}>🧠</div>
@@ -1833,7 +1825,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
         </div>
       )}
 
-      {/* API Key Setup */}
       {showApiKeySetup ? (
         <div style={{
           background: '#0d0a00', border: '1px solid #f3ba2f',
@@ -1903,7 +1894,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
         </div>
       )}
 
-      {/* Model Picker */}
       <div style={{ marginBottom: '12px' }}>
         <button
           onClick={() => { setShowModelPicker(p => !p); setShowSettings(false); }}
@@ -1979,7 +1969,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
         )}
       </div>
 
-      {/* Quick Prompts */}
       <div style={{ marginBottom: '12px' }}>
         <div style={{ fontSize: '11px', color: '#555', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '5px' }}>
           <FaLightbulb color="#f3ba2f" size={10} /> Pertanyaan cepat:
@@ -1997,7 +1986,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
         </div>
       </div>
 
-      {/* Garap Airdrop Panel */}
       {(() => {
         const pendingTasks = getPendingTasks();
         const totalOngoing = (() => { try { return (JSON.parse(localStorage.getItem('airdropTasks') || '[]') as Task[]).filter(t => t.status === 'Ongoing').length; } catch { return 0; } })();
@@ -2107,7 +2095,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
         );
       })()}
 
-      {/* ClawHub Skill Store */}
       <div style={{ marginBottom: '12px' }}>
         <button
           onClick={() => setShowSkillStore(p => !p)}
@@ -2137,7 +2124,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
 
         {showSkillStore && (
           <div style={{ background: '#07091a', border: '1px solid #1a1e3a', borderTop: 'none', padding: '14px' }}>
-            {/* Installed Skills */}
             {installedSkills.length > 0 && (
               <div style={{ marginBottom: '14px' }}>
                 <div style={{ fontSize: '11px', color: '#646cff', marginBottom: '8px', display: 'flex', justifyContent: 'space-between' }}>
@@ -2187,7 +2173,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
               </div>
             )}
 
-            {/* Search & Sort Bar */}
             <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
               <div style={{ flex: 1, position: 'relative', minWidth: '180px' }}>
                 <input
@@ -2221,7 +2206,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
               </button>
             </div>
 
-            {/* Skills Grid */}
             {storeError ? (
               <div style={{ padding: '12px', color: '#f88', fontSize: '12px', background: 'rgba(244,67,54,0.08)', border: '1px solid #f44336' }}>
                 ❌ {storeError}
@@ -2306,7 +2290,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
         )}
       </div>
 
-      {/* SKILL.md Preview Modal */}
       {previewSkill && (
         <div style={{
           position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.85)',
@@ -2343,7 +2326,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
         </div>
       )}
 
-      {/* Import Panel Toggle */}
       <div style={{ marginBottom: '12px' }}>
         <button
           onClick={() => setShowImportPanel(p => !p)}
@@ -2435,7 +2417,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
         )}
       </div>
 
-      {/* Chat Window */}
       <div style={{
         background: '#080808', border: '1px solid #1e1e1e', height: '500px',
         overflowY: 'auto', padding: '16px', display: 'flex', flexDirection: 'column', gap: '14px',
@@ -2454,7 +2435,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
                 </div>
               )}
               <div style={{ maxWidth: '80%', display: 'flex', flexDirection: 'column', alignItems: msg.role === 'user' ? 'flex-end' : 'flex-start' }}>
-                {/* Model badge */}
                 {msg.role === 'assistant' && msg.model && msg.model !== 'system' && (
                   <div style={{ fontSize: '10px', color: availableModels.find((m: ModelInfo) => m.id === msg.model)?.color || '#555', marginBottom: '3px', display: 'flex', alignItems: 'center', gap: '4px' }}>
                     <FaMicrochip size={9} /> {availableModels.find((m: ModelInfo) => m.id === msg.model)?.label || msg.model}
@@ -2484,7 +2464,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
               )}
             </div>
 
-            {/* Action Buttons */}
             {msg.actions && msg.actions.length > 0 && (
               <div style={{
                 marginTop: '8px', marginLeft: '38px',
@@ -2540,7 +2519,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
           </div>
         ))}
 
-        {/* Streaming Text */}
         {(isLoading || streamingText) && (
           <div style={{ display: 'flex', gap: '8px' }}>
             <div style={{
@@ -2575,7 +2553,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
         <div ref={bottomRef} />
       </div>
 
-      {/* Input Area */}
       <div style={{ display: 'flex', gap: '8px', marginTop: '10px', alignItems: 'flex-end' }}>
         <textarea
           value={input} onChange={e => setInput(e.target.value)} onKeyDown={handleKeyDown}
@@ -2611,7 +2588,6 @@ Jika tidak ada yang layak diingat, balas hanya: []`;
         </div>
       </div>
 
-      {/* Footer Info Bar */}
       <div style={{
         marginTop: '8px', padding: '7px 12px', background: '#0a0a0a', border: '1px solid #141414',
         fontSize: '11px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '6px',
