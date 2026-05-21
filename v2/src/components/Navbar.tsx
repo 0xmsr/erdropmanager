@@ -1,35 +1,41 @@
 import { Link, useLocation } from 'react-router-dom';
 
+const NAV_ITEMS = [
+  { path: '/intro',      label: '⌂ Intro' },
+  { path: '/',           label: 'Home' },
+  { path: '/waitlist',   label: 'Waitlist' },
+  { path: '/finance',    label: 'Keuangan' },
+  { path: '/faucet',     label: 'Faucet' },
+  { path: '/portfolio',  label: 'Portfolio' },
+  { path: '/ai',         label: '✦ AI' },
+  { path: '/dashboard',  label: 'Dashboard' },
+  { path: '/wallet-gen', label: 'WalletGen' },
+];
+
 export const Navbar = () => {
   const location = useLocation();
 
-  const isActive = (path: string) => {
-    return location.pathname === path ? 'active-nav' : '';
-  };
-
   return (
-    <div className="navigation-buttons" style={{ marginBottom: '20px', display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
-      <Link to="/">
-        <button className={isActive('/')}>Garapan (Home)</button>
-      </Link>
-      <Link to="/waitlist">
-        <button className={isActive('/waitlist')}>Waitlist</button>
-      </Link>
-      <Link to="/finance">
-        <button className={isActive('/finance')}>Keuangan</button>
-      </Link>
-      <Link to="/faucet">
-        <button className={isActive('/faucet')}>Faucet</button>
-      </Link>
-      <Link to="/portfolio">
-        <button className={isActive('/portfolio')}>Portfolio</button>
-      </Link>
-      <Link to="/ai">
-        <button className={isActive('/ai')} style={{ background: isActive('/ai') ? '#646cff' : undefined }}>AI</button>
-      </Link>
-      <Link to="/dashboard">
-        <button className={isActive('/dashboard')}>Dashboard</button>
-      </Link>
-    </div>
+    <nav className="navigation-buttons" aria-label="Main navigation">
+      {NAV_ITEMS.map(({ path, label }) => {
+        const active = location.pathname === path;
+        const isAI = label.startsWith('✦');
+        return (
+          <Link key={path} to={path} style={{ textDecoration: 'none', flexShrink: 0 }}>
+            <button
+              className={active ? 'active-nav' : ''}
+              aria-current={active ? 'page' : undefined}
+              style={
+                isAI && !active
+                  ? { color: '#01a2ff', borderColor: 'rgba(1,162,255,0.35)' }
+                  : undefined
+              }
+            >
+              {label}
+            </button>
+          </Link>
+        );
+      })}
+    </nav>
   );
 };
