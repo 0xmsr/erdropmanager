@@ -12,6 +12,7 @@ import { Landing } from './pages/Landing';
 import { ToS } from './tos/WalletGen_Tos.tsx';
 import './App.css';
 // hak cipta 0xmsr
+
 function App() {
   return (
     <BrowserRouter>
