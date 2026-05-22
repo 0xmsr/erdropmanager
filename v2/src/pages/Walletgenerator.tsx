@@ -2219,15 +2219,24 @@ export const WalletGenerator: React.FC = () => {
   // \u2500\u2500 Batch execution modal state \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
   const [batchModalOpen,   setBatchModalOpen]   = useState(false);
   const [batchNetId,       setBatchNetId]       = useState<string>('sepolia');
-  const [batchWalSel,      setBatchWalSel]      = useState<string>('');
-  const [batchPrivKey,     setBatchPrivKey]     = useState<string>('');
+  // Multi-wallet support
+  const [batchWallets,     setBatchWallets]     = useState<{id:string;label:string;address:string;privateKey:string}[]>([]);
+  const [batchManualPK,    setBatchManualPK]    = useState('');
+  const [batchWalDelay,    setBatchWalDelay]    = useState<number>(3000);
   const [batchGasLimit,    setBatchGasLimit]    = useState<string>('');
   const [batchDelayMs,     setBatchDelayMs]     = useState<number>(2000);
   const [batchRunning,     setBatchRunning]     = useState(false);
   const [batchLog,         setBatchLog]         = useState<{id:string;msg:string;type:'info'|'ok'|'err'|'warn'}[]>([]);
-  const [batchProgress,    setBatchProgress]    = useState<{done:number;total:number;current:string}>({done:0,total:0,current:''});
+  const [batchProgress,    setBatchProgress]    = useState<{walDone:number;walTotal:number;taskDone:number;taskTotal:number;currentWal:string;currentTask:string}>({walDone:0,walTotal:0,taskDone:0,taskTotal:0,currentWal:'',currentTask:''});
   const [batchDone,        setBatchDone]        = useState(false);
   const [batchSelectedIds, setBatchSelectedIds] = useState<Set<string>>(new Set());
+  const [batchLoopEnabled, setBatchLoopEnabled] = useState(false);
+  const [batchLoopMax,     setBatchLoopMax]     = useState(0);       // 0 = infinite
+  const [batchLoopDelay,   setBatchLoopDelay]   = useState(5000);    // ms between rounds
+  const [batchLoopRound,   setBatchLoopRound]   = useState(0);       // current round (1-based)
+  const [batchRetryFailed, setBatchRetryFailed] = useState(false);   // auto-retry gagal
+  const [batchRetryMax,    setBatchRetryMax]    = useState(3);        // max retry per task
+  const [batchRetryDelay,  setBatchRetryDelay]  = useState(2000);     // ms sebelum retry
   const batchStopRef = React.useRef(false);
   const batchLogRef  = React.useRef<HTMLDivElement>(null);
 
@@ -2243,30 +2252,47 @@ export const WalletGenerator: React.FC = () => {
     setTimeout(() => { if (batchLogRef.current) batchLogRef.current.scrollTop = batchLogRef.current.scrollHeight; }, 30);
   };
 
-  const handleBatchWalSel = (val: string) => {
-    setBatchWalSel(val);
-    if (!val || !val.includes(',')) { setBatchPrivKey(''); return; }
+  // helpers for multi-wallet management
+  const addBatchWalletFromBIP39 = (val: string) => {
+    if (!val || !val.includes(',')) return;
     const [wi, ai] = val.split(',').map(Number);
-    const addr = wallets[wi]?.addresses.find(a => a.index === ai);
-    if (addr) setBatchPrivKey(addr.privateKey);
+    const w = wallets[wi];
+    const addr = w?.addresses.find(a => a.index === ai);
+    if (!addr) return;
+    const id = `${wi},${ai}`;
+    if (batchWallets.some(bw => bw.id === id)) return; // already added
+    setBatchWallets(prev => [...prev, { id, label: `[${w.name}] ${addr.address.slice(0,8)}…${addr.address.slice(-4)} (#${addr.index})`, address: addr.address, privateKey: addr.privateKey }]);
   };
 
+  const addBatchWalletManual = () => {
+    const pk = batchManualPK.trim();
+    if (!pk) return;
+    try {
+      const w = new ethers.Wallet(pk);
+      const id = `manual_${w.address}`;
+      if (batchWallets.some(bw => bw.id === id)) { setBatchManualPK(''); return; }
+      setBatchWallets(prev => [...prev, { id, label: `[Manual] ${w.address.slice(0,8)}…${w.address.slice(-4)}`, address: w.address, privateKey: pk }]);
+      setBatchManualPK('');
+    } catch { /* invalid PK */ }
+  };
+
+  const removeBatchWallet = (id: string) => setBatchWallets(prev => prev.filter(bw => bw.id !== id));
+
   const runBatchExec = async (tasks: AirdropTask[]) => {
-    if (!batchPrivKey) { batchAddLog('Pilih wallet / masukkan private key.', 'err'); return; }
+    if (batchWallets.length === 0) { batchAddLog('Tambahkan minimal 1 wallet.', 'err'); return; }
     const net = networks.find(n => n.id === batchNetId);
     if (!net) { batchAddLog('Network tidak valid.', 'err'); return; }
     setBatchRunning(true);
     setBatchDone(false);
     batchStopRef.current = false;
-    setBatchProgress({ done: 0, total: tasks.length, current: '' });
+    setBatchLoopRound(0);
+    setBatchProgress({ walDone:0, walTotal:batchWallets.length, taskDone:0, taskTotal:tasks.length, currentWal:'', currentTask:'' });
 
     batchAddLog(`Menghubungkan ke ${net.name}...`, 'info');
     let provider: ethers.providers.JsonRpcProvider;
-    let wallet: ethers.Wallet;
     try {
       provider = await getProvider(net);
-      wallet = new ethers.Wallet(batchPrivKey, provider);
-      batchAddLog(`Terhubung: ${wallet.address}`, 'ok');
+      batchAddLog(`Terhubung ke ${net.name}`, 'ok');
     } catch (e: any) {
       batchAddLog(`Gagal connect: ${e.message}`, 'err');
       setBatchRunning(false);
@@ -2284,117 +2310,222 @@ export const WalletGenerator: React.FC = () => {
       }
     };
 
-    let successCount = 0;
-    let failCount = 0;
+    let totalSuccess = 0;
+    let totalFail    = 0;
+    let round        = 0;
 
-    for (let i = 0; i < tasks.length; i++) {
-      if (batchStopRef.current) { batchAddLog('⛔ Dihentikan oleh user.', 'warn'); break; }
-      const task = tasks[i];
-      setBatchProgress({ done: i, total: tasks.length, current: task.projectName });
-      batchAddLog(`[${i+1}/${tasks.length}] ${task.projectName}`, 'info');
+    // ── Outer loop (rounds) ──────────────────────────────────────────
+    while (true) {
+      if (batchStopRef.current) break;
 
-      try {
-        let txRequest: ethers.providers.TransactionRequest = {};
-        if (task.contractAddress) {
-          if (task.contractAbi && task.contractFunc) {
-            const iface = new ethers.utils.Interface(JSON.parse(task.contractAbi));
-            const args  = JSON.parse(task.contractArgs || '[]');
-            const data  = iface.encodeFunctionData(task.contractFunc, args);
-            txRequest = {
-              to: task.contractAddress,
-              value: task.ethValue && task.ethValue !== '0' ? ethers.utils.parseEther(task.ethValue) : ethers.BigNumber.from(0),
-              data,
-            };
-            batchAddLog(`  Func: ${task.contractFunc}(${args.join(', ')})`, 'info');
-          } else {
-            txRequest = { to: task.contractAddress, value: ethers.BigNumber.from(0), data: '0x' };
-          }
-        } else {
-          batchAddLog(`  Skip — tidak ada contract address`, 'warn');
-          setBatchProgress(p => ({ ...p, done: i + 1 }));
+      round++;
+      setBatchLoopRound(round);
+      const isLooping = batchLoopEnabled;
+      const maxRounds = batchLoopMax; // 0 = infinite
+
+      if (isLooping) {
+        batchAddLog(`━━━ Round ${round}${maxRounds > 0 ? ` / ${maxRounds}` : ' (∞)'} ━━━`, 'info');
+      }
+
+      let roundSuccess = 0;
+      let roundFail    = 0;
+
+      // ── Wallet loop ──────────────────────────────────────────────
+      for (let wi = 0; wi < batchWallets.length; wi++) {
+        if (batchStopRef.current) break;
+        const bw = batchWallets[wi];
+        setBatchProgress(p => ({ ...p, walDone: wi, walTotal: batchWallets.length, currentWal: bw.label, taskDone: 0, taskTotal: tasks.length, currentTask: '' }));
+
+        let ethWallet: ethers.Wallet;
+        try {
+          ethWallet = new ethers.Wallet(bw.privateKey, provider);
+          batchAddLog(`
+👛 Wallet [${wi+1}/${batchWallets.length}]: ${bw.address.slice(0,10)}…${bw.address.slice(-4)}`, 'info');
+        } catch (e: any) {
+          batchAddLog(`❌ Wallet ${wi+1} invalid: ${e.message}`, 'err');
           continue;
         }
 
+      setBatchProgress(p => ({ ...p, taskDone: 0, taskTotal: tasks.length, currentTask: '' }));
+
+      // ── Inner task loop ──────────────────────────────────────────
+      for (let i = 0; i < tasks.length; i++) {
+        if (batchStopRef.current) { batchAddLog('⛔ Dihentikan oleh user.', 'warn'); break; }
+        const task = tasks[i];
+        setBatchProgress(p => ({ ...p, taskDone: i, taskTotal: tasks.length, currentTask: task.projectName }));
+
+        const maxAttempts = batchRetryFailed ? 1 + batchRetryMax : 1;
+        let taskSuccess = false;
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          if (batchStopRef.current) break;
+
+          const attemptLabel = maxAttempts > 1 ? ` (attempt ${attempt}/${maxAttempts})` : '';
+          batchAddLog(`  [Task ${i+1}/${tasks.length}] ${task.projectName}${attemptLabel}`, 'info');
+
+          try {
+            let txRequest: ethers.providers.TransactionRequest = {};
+            if (task.contractAddress) {
+              if (task.contractAbi && task.contractFunc) {
+                const iface = new ethers.utils.Interface(JSON.parse(task.contractAbi));
+                const args  = JSON.parse(task.contractArgs || '[]');
+                const data  = iface.encodeFunctionData(task.contractFunc, args);
+                txRequest = {
+                  to: task.contractAddress,
+                  value: task.ethValue && task.ethValue !== '0' ? ethers.utils.parseEther(task.ethValue) : ethers.BigNumber.from(0),
+                  data,
+                };
+                batchAddLog(`  Func: ${task.contractFunc}(${args.join(', ')})`, 'info');
+              } else {
+                txRequest = { to: task.contractAddress, value: ethers.BigNumber.from(0), data: '0x' };
+              }
+            } else {
+              batchAddLog(`  Skip — tidak ada contract address`, 'warn');
+              taskSuccess = true; // skip bukan failure
+              break;
+            }
+
+            if (batchStopRef.current) { batchAddLog('⛔ Dihentikan oleh user.', 'warn'); break; }
+
+            if (batchGasLimit && parseInt(batchGasLimit) > 0) {
+              txRequest.gasLimit = ethers.BigNumber.from(batchGasLimit);
+            } else {
+              try {
+                const est = await ethWallet.estimateGas(txRequest);
+                txRequest.gasLimit = est.mul(120).div(100);
+                batchAddLog(`  Gas: ~${est.toNumber().toLocaleString()} (+20%)`, 'info');
+              } catch (gasErr: any) {
+                const reason = gasErr?.error?.reason ?? gasErr?.reason ?? gasErr?.message ?? '';
+                batchAddLog(`  Simulasi REVERT: ${String(reason).slice(0, 80)}`, 'err');
+                if (batchRetryFailed && attempt < maxAttempts && !batchStopRef.current) {
+                  batchAddLog(`  🔄 Retry ${attempt}/${batchRetryMax} dalam ${batchRetryDelay}ms...`, 'warn');
+                  await interruptibleDelay(batchRetryDelay);
+                  continue;
+                }
+                roundFail++;
+                setAirdropTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'failed' } : t));
+                break;
+              }
+            }
+
+            if (batchStopRef.current) { batchAddLog('⛔ Dihentikan oleh user.', 'warn'); break; }
+
+            const tx = await ethWallet.sendTransaction(txRequest);
+            batchAddLog(`  TX: ${tx.hash.slice(0, 20)}...`, 'ok');
+
+            // Race tx.wait() against stop signal
+            const receipt = await Promise.race([
+              tx.wait(),
+              new Promise<never>((_, rej) => {
+                const poll = setInterval(() => {
+                  if (batchStopRef.current) { clearInterval(poll); rej(new Error('__STOPPED__')); }
+                }, 300);
+                tx.wait().finally(() => clearInterval(poll));
+              }),
+            ]);
+
+            if (batchStopRef.current) { batchAddLog('⛔ TX dikonfirmasi tapi batch dihentikan.', 'warn'); break; }
+
+            batchAddLog(`  ✅ Confirmed block #${receipt.blockNumber}${attempt > 1 ? ` (setelah ${attempt} attempt)` : ''}`, 'ok');
+            roundSuccess++;
+            taskSuccess = true;
+            setAirdropTasks(prev => prev.map(t => t.id === task.id
+              ? { ...t, txHash: tx.hash, walletAddress: ethWallet.address, status: 'done', doneAt: Date.now() }
+              : t
+            ));
+            saveTxHistory({
+              taskName: task.projectName,
+              description: `[BATCH${isLooping ? ` R${round}`:''}] ${task.taskType.toUpperCase()} · ${task.network || net.name} · block #${receipt.blockNumber}`,
+              to: task.contractAddress || '',
+              value: task.ethValue || '0',
+              data: '0x',
+              status: 'success',
+              txHash: tx.hash,
+              timestamp: Date.now(),
+            });
+            if (net.explorerUrl) batchAddLog(`  ${net.explorerUrl}/tx/${tx.hash}`, 'info');
+            break; // sukses, keluar dari retry loop
+          } catch (e: any) {
+            const msg: string = e?.message ?? String(e);
+            if (msg === '__STOPPED__') {
+              batchAddLog('⛔ Dihentikan saat menunggu konfirmasi TX.', 'warn');
+              break;
+            }
+            let friendly = msg;
+            if (msg.includes('insufficient funds')) friendly = 'Saldo tidak cukup';
+            else if (msg.includes('nonce')) friendly = 'Nonce error';
+            else if (msg.includes('timeout') || msg.includes('network')) friendly = 'Timeout/RPC error';
+            batchAddLog(`  GAGAL: ${friendly.slice(0, 100)}`, 'err');
+
+            if (batchRetryFailed && attempt < maxAttempts && !batchStopRef.current) {
+              batchAddLog(`  🔄 Retry ${attempt}/${batchRetryMax} dalam ${batchRetryDelay}ms...`, 'warn');
+              await interruptibleDelay(batchRetryDelay);
+            } else {
+              roundFail++;
+              setAirdropTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'failed' } : t));
+            }
+          }
+        } // end retry loop
+
         if (batchStopRef.current) { batchAddLog('⛔ Dihentikan oleh user.', 'warn'); break; }
 
-        if (batchGasLimit && parseInt(batchGasLimit) > 0) {
-          txRequest.gasLimit = ethers.BigNumber.from(batchGasLimit);
-        } else {
-          try {
-            const est = await wallet.estimateGas(txRequest);
-            txRequest.gasLimit = est.mul(120).div(100);
-            batchAddLog(`  Gas: ~${est.toNumber().toLocaleString()} (+20%)`, 'info');
-          } catch (gasErr: any) {
-            const reason = gasErr?.error?.reason ?? gasErr?.reason ?? gasErr?.message ?? '';
-            batchAddLog(`  Simulasi REVERT: ${String(reason).slice(0, 80)}`, 'err');
-            failCount++;
-            setAirdropTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'failed' } : t));
-            setBatchProgress(p => ({ ...p, done: i + 1 }));
-            continue;
-          }
+        if (!taskSuccess && batchRetryFailed) {
+          batchAddLog(`  ❌ Task "${task.projectName}" gagal setelah ${maxAttempts} attempt.`, 'err');
         }
 
-        if (batchStopRef.current) { batchAddLog('⛔ Dihentikan oleh user.', 'warn'); break; }
-
-        const tx = await wallet.sendTransaction(txRequest);
-        batchAddLog(`  TX: ${tx.hash.slice(0, 20)}...`, 'ok');
-
-        // Race tx.wait() against stop signal so UI stays responsive
-        const receipt = await Promise.race([
-          tx.wait(),
-          new Promise<never>((_, rej) => {
-            const poll = setInterval(() => {
-              if (batchStopRef.current) { clearInterval(poll); rej(new Error('__STOPPED__')); }
-            }, 300);
-            tx.wait().finally(() => clearInterval(poll));
-          }),
-        ]);
-
-        if (batchStopRef.current) { batchAddLog('⛔ TX dikonfirmasi tapi batch dihentikan.', 'warn'); break; }
-
-        batchAddLog(`  Confirmed block #${receipt.blockNumber}`, 'ok');
-        successCount++;
-        setAirdropTasks(prev => prev.map(t => t.id === task.id
-          ? { ...t, txHash: tx.hash, walletAddress: wallet.address, status: 'done', doneAt: Date.now() }
-          : t
-        ));
-        saveTxHistory({
-          taskName: task.projectName,
-          description: `[BATCH] ${task.taskType.toUpperCase()} · ${task.network || net.name} · block #${receipt.blockNumber}`,
-          to: task.contractAddress || '',
-          value: task.ethValue || '0',
-          data: '0x',
-          status: 'success',
-          txHash: tx.hash,
-          timestamp: Date.now(),
-        });
-        if (net.explorerUrl) batchAddLog(`  ${net.explorerUrl}/tx/${tx.hash}`, 'info');
-
-        if (i < tasks.length - 1 && !batchStopRef.current && batchDelayMs > 0) {
+        if (i < tasks.length - 1 && !batchStopRef.current && batchDelayMs > 0 && taskSuccess) {
           batchAddLog(`  Delay ${batchDelayMs}ms...`, 'info');
           await interruptibleDelay(batchDelayMs);
         }
-      } catch (e: any) {
-        const msg: string = e?.message ?? String(e);
-        if (msg === '__STOPPED__') {
-          batchAddLog('⛔ Dihentikan saat menunggu konfirmasi TX.', 'warn');
-          break;
-        }
-        let friendly = msg;
-        if (msg.includes('insufficient funds')) friendly = 'Saldo tidak cukup';
-        else if (msg.includes('nonce')) friendly = 'Nonce error';
-        else if (msg.includes('timeout') || msg.includes('network')) friendly = 'Timeout/RPC error';
-        batchAddLog(`  GAGAL: ${friendly.slice(0, 100)}`, 'err');
-        failCount++;
-        setAirdropTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'failed' } : t));
+        setBatchProgress(p => ({ ...p, taskDone: i + 1 }));
       }
-      setBatchProgress(p => ({ ...p, done: i + 1 }));
-    }
+      // ── End inner task loop ──────────────────────────────────────
 
-    batchAddLog(`Selesai! Sukses: ${successCount} | Gagal: ${failCount}`, successCount > 0 ? 'ok' : 'warn');
+        // delay between wallets (except after last wallet)
+        if (wi < batchWallets.length - 1 && !batchStopRef.current && batchWalDelay > 0) {
+          batchAddLog(`⏳ Jeda ${batchWalDelay / 1000}s sebelum wallet berikutnya...`, 'info');
+          await interruptibleDelay(batchWalDelay);
+        }
+
+        setBatchProgress(p => ({ ...p, walDone: wi + 1 }));
+      }
+      // ── End wallet loop ──────────────────────────────────────────
+
+      totalSuccess += roundSuccess;
+      totalFail    += roundFail;
+
+      if (isLooping) {
+        batchAddLog(`Round ${round} selesai — Sukses: ${roundSuccess} | Gagal: ${roundFail} | Total: ${totalSuccess}✅ ${totalFail}❌`, roundSuccess > 0 ? 'ok' : 'warn');
+      }
+
+      // Stop if user clicked stop
+      if (batchStopRef.current) break;
+
+      // Stop if not looping
+      if (!isLooping) break;
+
+      // Stop if max rounds reached
+      if (maxRounds > 0 && round >= maxRounds) {
+        batchAddLog(`✅ Selesai ${maxRounds} round.`, 'ok');
+        break;
+      }
+
+      // Delay before next round
+      if (batchLoopDelay > 0) {
+        batchAddLog(`⏳ Jeda ${batchLoopDelay / 1000}s sebelum round ${round + 1}...`, 'info');
+        await interruptibleDelay(batchLoopDelay);
+        if (batchStopRef.current) break;
+      }
+    }
+    // ── End outer loop ───────────────────────────────────────────────
+
+    batchAddLog(
+      `🏁 Selesai! ${batchLoopEnabled ? `${round} round · ` : ''}Total: ${totalSuccess} sukses | ${totalFail} gagal`,
+      totalSuccess > 0 ? 'ok' : 'warn'
+    );
     setBatchRunning(false);
     setBatchDone(true);
-    setBatchProgress(p => ({ ...p, current: '' }));
+    setBatchProgress(p => ({ ...p, currentTask: '', currentWal: '' }));
   };
 
   const openExecPanel = (task: AirdropTask) => {
@@ -3243,7 +3374,7 @@ export const WalletGenerator: React.FC = () => {
                 </span>
               </div>
               {!batchRunning && (
-                <button onClick={() => { setBatchModalOpen(false); setBatchLog([]); setBatchDone(false); setBatchProgress({done:0,total:0,current:''}); }}
+                <button onClick={() => { setBatchModalOpen(false); setBatchLog([]); setBatchDone(false); setBatchProgress({walDone:0,walTotal:0,taskDone:0,taskTotal:0,currentWal:'',currentTask:''}); }}
                   style={{ background:'none', border:'none', color:'#444', cursor:'pointer', fontSize:'18px', lineHeight:1 }}>✕</button>
               )}
             </div>
@@ -3251,28 +3382,60 @@ export const WalletGenerator: React.FC = () => {
             {/* Config — only shown before running */}
             {!batchRunning && !batchDone && (
               <div style={{ padding:'16px 20px', borderBottom:'1px solid #1a1a1a', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
-                <div style={{ gridColumn:'1/-1' }}>
-                  <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
-                    <FaWallet style={{ marginRight:'4px' }}/>Wallet
-                  </label>
-                  <select value={batchWalSel} onChange={e => handleBatchWalSel(e.target.value)}
-                    style={{ width:'100%', fontFamily:'monospace', fontSize:'11px' }}>
-                    <option value="">— Pilih dari BIP39 —</option>
-                    {wallets.map((w, wi) => w.addresses.map((a) => (
-                      <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
-                        [{w.name}] {a.address} (#{a.index})
-                      </option>
-                    )))}
-                  </select>
+                {/* ── Multi-wallet panel ── */}
+                <div style={{ gridColumn:'1/-1', background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #01a2ff', padding:'12px 14px' }}>
+                  <div style={{ fontSize:'10px', color:'#01a2ff', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px', display:'flex', alignItems:'center', gap:'6px' }}>
+                    <FaWallet size={10}/> Daftar Wallet ({batchWallets.length}) — semua wallet akan garap task secara urut
+                  </div>
+
+                  {/* Add from BIP39 */}
+                  <div style={{ display:'flex', gap:'6px', marginBottom:'8px' }}>
+                    <select defaultValue="" onChange={e => { addBatchWalletFromBIP39(e.target.value); e.target.value = ''; }}
+                      style={{ flex:1, fontFamily:'monospace', fontSize:'11px' }}>
+                      <option value="">＋ Tambah dari BIP39...</option>
+                      {wallets.map((w, wi) => w.addresses.map((a) => {
+                        const id = `${wi},${a.index}`;
+                        const already = batchWallets.some(bw => bw.id === id);
+                        return (
+                          <option key={id} value={id} disabled={already}>
+                            {already ? '✓ ' : ''} [{w.name}] {a.address.slice(0,10)}…{a.address.slice(-4)} (#{a.index})
+                          </option>
+                        );
+                      }))}
+                    </select>
+                  </div>
+
+                  {/* Add manual PK */}
+                  <div style={{ display:'flex', gap:'6px', marginBottom:'10px' }}>
+                    <input type="password" placeholder="Private key manual (0x...)" value={batchManualPK}
+                      onChange={e => setBatchManualPK(e.target.value)}
+                      onKeyDown={e => e.key === 'Enter' && addBatchWalletManual()}
+                      style={{ flex:1, fontFamily:'monospace', fontSize:'11px' }}/>
+                    <button onClick={addBatchWalletManual} disabled={!batchManualPK.trim()}
+                      style={{ background:'#01a2ff', color:'#000', border:'none', padding:'6px 12px', cursor: batchManualPK.trim() ? 'pointer' : 'not-allowed', fontSize:'11px', fontWeight:'bold', opacity: batchManualPK.trim() ? 1 : 0.4 }}>
+                      ＋
+                    </button>
+                  </div>
+
+                  {/* Wallet list */}
+                  {batchWallets.length === 0 ? (
+                    <div style={{ color:'#333', fontSize:'11px', textAlign:'center', padding:'10px 0', border:'1px dashed #1a1a1a' }}>
+                      Belum ada wallet. Tambah dari BIP39 atau masukkan private key manual.
+                    </div>
+                  ) : (
+                    <div style={{ display:'flex', flexDirection:'column', gap:'4px' }}>
+                      {batchWallets.map((bw, idx) => (
+                        <div key={bw.id} style={{ display:'flex', alignItems:'center', gap:'8px', background:'#111', border:'1px solid #1a1a1a', padding:'6px 10px' }}>
+                          <span style={{ fontSize:'10px', color:'#444', minWidth:'16px', textAlign:'right' }}>{idx+1}</span>
+                          <span style={{ flex:1, fontFamily:'monospace', fontSize:'11px', color:'#888', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{bw.label}</span>
+                          <button onClick={() => removeBatchWallet(bw.id)}
+                            style={{ background:'none', border:'none', color:'#f44336', cursor:'pointer', padding:'2px 5px', fontSize:'12px', flexShrink:0 }}>✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
-                <div style={{ gridColumn:'1/-1' }}>
-                  <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
-                    Private Key
-                  </label>
-                  <input type="password" placeholder="0x... (auto dari pilihan wallet di atas)" value={batchPrivKey}
-                    onChange={e => setBatchPrivKey(e.target.value)}
-                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px' }}/>
-                </div>
+
                 <div>
                   <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
                     Network
@@ -3305,17 +3468,112 @@ export const WalletGenerator: React.FC = () => {
                     ))}
                   </div>
                 </div>
+                <div>
+                  <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
+                    Delay antar Wallet (ms)
+                  </label>
+                  <div style={{ display:'flex', gap:'5px', alignItems:'center' }}>
+                    <input type="number" value={batchWalDelay} min="0" step="500"
+                      onChange={e => setBatchWalDelay(parseInt(e.target.value)||0)}
+                      style={{ flex:1, fontFamily:'monospace', fontSize:'11px' }}/>
+                    {([0,1000,3000,5000] as const).map(v => (
+                      <button key={v} onClick={() => setBatchWalDelay(v)}
+                        style={{ fontSize:'10px', padding:'4px 6px', background:'#111', border:`1px solid ${batchWalDelay===v?'#01a2ff':'#2a2a2a'}`, color:batchWalDelay===v?'#01a2ff':'#555', cursor:'pointer' }}>
+                        {v===0?'Off':v/1000+'s'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* ── Loop settings ── */}
+                <div style={{ gridColumn:'1/-1', background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #836EFD', padding:'12px 14px' }}>
+                  <label style={{ display:'flex', alignItems:'center', gap:'8px', cursor:'pointer', userSelect:'none', marginBottom: batchLoopEnabled ? '10px' : '0' }}>
+                    <input type="checkbox" checked={batchLoopEnabled} onChange={e => setBatchLoopEnabled(e.target.checked)} style={{ width:'auto', margin:0, accentColor:'#836EFD' }}/>
+                    <span style={{ fontSize:'12px', color: batchLoopEnabled ? '#836EFD' : '#666', fontWeight: batchLoopEnabled ? 'bold' : 'normal' }}>
+                      🔁 Loop (ulangi semua task terus-menerus)
+                    </span>
+                  </label>
+                  {batchLoopEnabled && (
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginTop:'4px' }}>
+                      <div>
+                        <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'3px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
+                          Max Round (0 = ∞)
+                        </label>
+                        <input type="number" value={batchLoopMax} min="0"
+                          onChange={e => setBatchLoopMax(parseInt(e.target.value)||0)}
+                          style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px' }}/>
+                      </div>
+                      <div>
+                        <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'3px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
+                          Jeda antar Round (ms)
+                        </label>
+                        <input type="number" value={batchLoopDelay} min="0" step="1000"
+                          onChange={e => setBatchLoopDelay(parseInt(e.target.value)||0)}
+                          style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px' }}/>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Auto-retry settings ── */}
+                <div style={{ gridColumn:'1/-1', background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #ff6600', padding:'12px 14px' }}>
+                  <label style={{ display:'flex', alignItems:'center', gap:'8px', cursor:'pointer', userSelect:'none', marginBottom: batchRetryFailed ? '10px' : '0' }}>
+                    <input type="checkbox" checked={batchRetryFailed} onChange={e => setBatchRetryFailed(e.target.checked)} style={{ width:'auto', margin:0, accentColor:'#ff6600' }}/>
+                    <span style={{ fontSize:'12px', color: batchRetryFailed ? '#ff9944' : '#666', fontWeight: batchRetryFailed ? 'bold' : 'normal' }}>
+                      🔄 Auto-retry task gagal otomatis
+                    </span>
+                  </label>
+                  {batchRetryFailed && (
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginTop:'4px' }}>
+                      <div>
+                        <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'3px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
+                          Max Retry per Task
+                        </label>
+                        <div style={{ display:'flex', gap:'4px', alignItems:'center' }}>
+                          <input type="number" value={batchRetryMax} min="1" max="10"
+                            onChange={e => setBatchRetryMax(Math.min(10, Math.max(1, parseInt(e.target.value)||1)))}
+                            style={{ flex:1, fontFamily:'monospace', fontSize:'11px' }}/>
+                          {([1,2,3,5] as const).map(v => (
+                            <button key={v} onClick={() => setBatchRetryMax(v)}
+                              style={{ fontSize:'10px', padding:'4px 6px', background:'#111', border:`1px solid ${batchRetryMax===v?'#ff6600':'#2a2a2a'}`, color:batchRetryMax===v?'#ff9944':'#555', cursor:'pointer', flexShrink:0 }}>
+                              {v}x
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'3px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
+                          Delay Sebelum Retry (ms)
+                        </label>
+                        <div style={{ display:'flex', gap:'4px', alignItems:'center' }}>
+                          <input type="number" value={batchRetryDelay} min="500" step="500"
+                            onChange={e => setBatchRetryDelay(parseInt(e.target.value)||1000)}
+                            style={{ flex:1, fontFamily:'monospace', fontSize:'11px' }}/>
+                          {([1000,2000,5000] as const).map(v => (
+                            <button key={v} onClick={() => setBatchRetryDelay(v)}
+                              style={{ fontSize:'10px', padding:'4px 6px', background:'#111', border:`1px solid ${batchRetryDelay===v?'#ff6600':'#2a2a2a'}`, color:batchRetryDelay===v?'#ff9944':'#555', cursor:'pointer', flexShrink:0 }}>
+                              {v/1000}s
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <div style={{ gridColumn:'1/-1', fontSize:'10px', color:'#554433', lineHeight:'1.5' }}>
+                        Jika TX gagal (revert, timeout, dll), otomatis coba ulang hingga {batchRetryMax}x dengan jeda {batchRetryDelay/1000}s. Jika semua attempt gagal, task ditandai <span style={{ color:'#f44336' }}>failed</span>.
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 <div style={{ gridColumn:'1/-1' }}>
                   <button
                     onClick={() => runBatchExec(airdropTasks.filter(t => batchSelectedIds.has(t.id) && t.contractAddress))}
-                    disabled={!batchPrivKey || batchSelectedIds.size === 0}
+                    disabled={batchWallets.length === 0 || batchSelectedIds.size === 0}
                     style={{
-                      width:'100%', padding:'12px', background: !batchPrivKey || batchSelectedIds.size === 0 ? '#1a1a1a' : '#836EFD',
-                      color:'#fff', border:'none', cursor: !batchPrivKey || batchSelectedIds.size === 0 ? 'not-allowed' : 'pointer',
+                      width:'100%', padding:'12px', background: batchWallets.length === 0 || batchSelectedIds.size === 0 ? '#1a1a1a' : '#836EFD',
+                      color:'#fff', border:'none', cursor: batchWallets.length === 0 || batchSelectedIds.size === 0 ? 'not-allowed' : 'pointer',
                       fontSize:'13px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
-                      opacity: !batchPrivKey || batchSelectedIds.size === 0 ? 0.5 : 1,
+                      opacity: batchWallets.length === 0 || batchSelectedIds.size === 0 ? 0.5 : 1,
                     }}>
-                    <FaLayerGroup size={13}/> Eksekusi {batchSelectedIds.size} Task Sekarang
+                    <FaLayerGroup size={13}/> Eksekusi {batchSelectedIds.size} Task × {batchWallets.length} Wallet
                   </button>
                   <div style={{ fontSize:'10px', color:'#444', marginTop:'6px', textAlign:'center' }}>
                     Hanya task dengan contract address yang dieksekusi. Task tanpa kontrak akan di-skip.
@@ -3327,18 +3585,36 @@ export const WalletGenerator: React.FC = () => {
             {/* Progress bar — shown while running or done */}
             {(batchRunning || batchDone) && (
               <div style={{ padding:'12px 20px', borderBottom:'1px solid #1a1a1a', background:'#070707' }}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px' }}>
+                {/* Wallet progress */}
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'4px' }}>
+                  <span style={{ fontSize:'11px', color:'#01a2ff' }}>
+                    👛 {batchDone ? 'Selesai' : (batchProgress.currentWal || 'Memulai...')}
+                  </span>
+                  <span style={{ fontFamily:'monospace', fontSize:'11px', color:'#444' }}>
+                    Wallet {batchProgress.walDone}/{batchProgress.walTotal}
+                  </span>
+                </div>
+                <div style={{ height:'3px', background:'#1a1a1a', marginBottom:'8px', overflow:'hidden' }}>
+                  <div style={{
+                    height:'100%',
+                    width: batchProgress.walTotal > 0 ? `${(batchProgress.walDone / batchProgress.walTotal) * 100}%` : '0%',
+                    background: batchDone ? '#4caf50' : '#01a2ff',
+                    transition:'width 0.4s ease',
+                  }}/>
+                </div>
+                {/* Task progress */}
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'4px' }}>
                   <span style={{ fontSize:'12px', color: batchDone ? '#4caf50' : '#836EFD', fontWeight:'bold' }}>
-                    {batchDone ? '✅ Selesai!' : `⚡ ${batchProgress.current || 'Memulai...'}`}
+                    {batchDone ? '✅ Selesai!' : `⚡ ${batchProgress.currentTask || 'Memulai...'}`}
                   </span>
                   <span style={{ fontFamily:'monospace', fontSize:'12px', color:'#888' }}>
-                    {batchProgress.done}/{batchProgress.total}
+                    Task {batchProgress.taskDone}/{batchProgress.taskTotal}
                   </span>
                 </div>
                 <div style={{ height:'4px', background:'#1a1a1a', borderRadius:'2px', overflow:'hidden' }}>
                   <div style={{
                     height:'100%',
-                    width: batchProgress.total > 0 ? `${(batchProgress.done / batchProgress.total) * 100}%` : '0%',
+                    width: batchProgress.taskTotal > 0 ? `${(batchProgress.taskDone / batchProgress.taskTotal) * 100}%` : '0%',
                     background: batchDone ? '#4caf50' : '#836EFD',
                     transition:'width 0.4s ease',
                     boxShadow: batchDone ? '0 0 8px #4caf5066' : '0 0 8px #836EFD66',
@@ -3353,7 +3629,7 @@ export const WalletGenerator: React.FC = () => {
                     </button>
                   )}
                   {batchDone && (
-                    <button onClick={() => { setBatchModalOpen(false); setBatchLog([]); setBatchDone(false); setBatchProgress({done:0,total:0,current:''}); setBatchSelectedIds(new Set()); }}
+                    <button onClick={() => { setBatchModalOpen(false); setBatchLog([]); setBatchDone(false); setBatchProgress({walDone:0,walTotal:0,taskDone:0,taskTotal:0,currentWal:'',currentTask:''}); setBatchSelectedIds(new Set()); }}
                       style={{ background:'#4caf50', border:'none', color:'#000', padding:'6px 16px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }}>
                       Tutup
                     </button>
@@ -4373,7 +4649,6 @@ export const WalletGenerator: React.FC = () => {
             </div>
           )}
 
-          {/* ── TX History Panel ─────────────────────────────────────── */}
           <div style={{ marginTop:'28px', background:'#0a0a0a', border:'1px solid #1e1e1e', borderTop:'2px solid #836EFD' }}>
             <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderBottom:'1px solid #141414' }}>
               <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
