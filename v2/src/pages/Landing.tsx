@@ -289,7 +289,7 @@ export const Landing: React.FC = () => {
           fontSize: '10px', letterSpacing: '3px', color: '#555',
           textTransform: 'uppercase', textAlign: 'center', marginBottom: '20px',
         }}>
-          KENAPA IAC TOOLKIT?
+          KENAPA ERDROP MANAGER?
         </p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
           {[
