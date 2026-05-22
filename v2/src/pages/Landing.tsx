@@ -263,7 +263,7 @@ export const Landing: React.FC = () => {
             animation: 'fadeSlideUp 0.5s ease 2s both',
           }}>
             {[
-              { label: '8 Modul', color: '#01a2ff' },
+              { label: '8 Fitur', color: '#01a2ff' },
               { label: '100% Lokal', color: '#00e676' },
               { label: 'No Login', color: '#f3ba2f' },
               { label: 'Open Source', color: '#a855f7' },
@@ -370,7 +370,7 @@ export const Landing: React.FC = () => {
                   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
                   transition: 'all 0.2s',
                 }}>
-                  Buka Modul <FaArrowRight style={{ fontSize: '9px' }} />
+                  Coba Fitur <FaArrowRight style={{ fontSize: '9px' }} />
                 </button>
               </Link>
             </div>
