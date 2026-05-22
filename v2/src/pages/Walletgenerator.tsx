@@ -54,7 +54,7 @@ interface AirdropTask {
   contractAbi?: string;
   contractFunc?: string;
   contractArgs?: string;   // JSON array string e.g. '["0xabc", "1000"]'
-  ethValue?: string;       // ETH value to send with call, default "0" 
+  ethValue?: string;       // ETH value to send with call, default "0"
 }
 
 interface TxQueueItem {
@@ -2130,8 +2130,9 @@ export const WalletGenerator: React.FC = () => {
   const [txStatus,      setTxStatus]      = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
   const [txWalletSel,   setTxWalletSel]   = useState('');
 
-  const txProviderRef = useRef<ethers.providers.JsonRpcProvider | null>(null);
-  const txWalletRef   = useRef<ethers.Wallet | null>(null);
+  const txProviderRef   = useRef<ethers.providers.JsonRpcProvider | null>(null);
+  const txWalletRef     = useRef<ethers.Wallet | null>(null);
+  const garapImportRef  = useRef<HTMLInputElement>(null);
 
   const [netForm,      setNetForm]      = useState<Omit<RPCNetwork,'id'>&{rpcRaw:string}>({name:'',chainId:0,symbol:'',rpcUrls:[],rpcRaw:'',explorerUrl:'',color:'#01a2ff'});
   const [netEditId,    setNetEditId]    = useState<string|null>(null);
@@ -2215,9 +2216,185 @@ export const WalletGenerator: React.FC = () => {
   const [execGasLimit,  setExecGasLimit]  = useState('');   // manual override, empty = auto-estimate
   const [execSimFailed, setExecSimFailed] = useState(false); // true = estimateGas reverted, warn user
 
+  // \u2500\u2500 Batch execution modal state \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  const [batchModalOpen,   setBatchModalOpen]   = useState(false);
+  const [batchNetId,       setBatchNetId]       = useState<string>('sepolia');
+  const [batchWalSel,      setBatchWalSel]      = useState<string>('');
+  const [batchPrivKey,     setBatchPrivKey]     = useState<string>('');
+  const [batchGasLimit,    setBatchGasLimit]    = useState<string>('');
+  const [batchDelayMs,     setBatchDelayMs]     = useState<number>(2000);
+  const [batchRunning,     setBatchRunning]     = useState(false);
+  const [batchLog,         setBatchLog]         = useState<{id:string;msg:string;type:'info'|'ok'|'err'|'warn'}[]>([]);
+  const [batchProgress,    setBatchProgress]    = useState<{done:number;total:number;current:string}>({done:0,total:0,current:''});
+  const [batchDone,        setBatchDone]        = useState(false);
+  const [batchSelectedIds, setBatchSelectedIds] = useState<Set<string>>(new Set());
+  const batchStopRef = React.useRef(false);
+  const batchLogRef  = React.useRef<HTMLDivElement>(null);
+
   const execAddLog = (msg: string) => {
     const ts = new Date().toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
     setExecLog(prev => [...prev.slice(-99), `[${ts}] ${msg}`]);
+  };
+
+  const batchAddLog = (msg: string, type: 'info'|'ok'|'err'|'warn' = 'info') => {
+    const ts = new Date().toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit', second:'2-digit' });
+    const entry = { id: Date.now().toString() + Math.random(), msg: `[${ts}] ${msg}`, type };
+    setBatchLog(prev => [...prev.slice(-499), entry]);
+    setTimeout(() => { if (batchLogRef.current) batchLogRef.current.scrollTop = batchLogRef.current.scrollHeight; }, 30);
+  };
+
+  const handleBatchWalSel = (val: string) => {
+    setBatchWalSel(val);
+    if (!val || !val.includes(',')) { setBatchPrivKey(''); return; }
+    const [wi, ai] = val.split(',').map(Number);
+    const addr = wallets[wi]?.addresses.find(a => a.index === ai);
+    if (addr) setBatchPrivKey(addr.privateKey);
+  };
+
+  const runBatchExec = async (tasks: AirdropTask[]) => {
+    if (!batchPrivKey) { batchAddLog('Pilih wallet / masukkan private key.', 'err'); return; }
+    const net = networks.find(n => n.id === batchNetId);
+    if (!net) { batchAddLog('Network tidak valid.', 'err'); return; }
+    setBatchRunning(true);
+    setBatchDone(false);
+    batchStopRef.current = false;
+    setBatchProgress({ done: 0, total: tasks.length, current: '' });
+
+    batchAddLog(`Menghubungkan ke ${net.name}...`, 'info');
+    let provider: ethers.providers.JsonRpcProvider;
+    let wallet: ethers.Wallet;
+    try {
+      provider = await getProvider(net);
+      wallet = new ethers.Wallet(batchPrivKey, provider);
+      batchAddLog(`Terhubung: ${wallet.address}`, 'ok');
+    } catch (e: any) {
+      batchAddLog(`Gagal connect: ${e.message}`, 'err');
+      setBatchRunning(false);
+      return;
+    }
+
+    // Interruptible delay helper
+    const interruptibleDelay = async (ms: number) => {
+      const step = 200;
+      let elapsed = 0;
+      while (elapsed < ms) {
+        if (batchStopRef.current) return;
+        await new Promise(r => setTimeout(r, Math.min(step, ms - elapsed)));
+        elapsed += step;
+      }
+    };
+
+    let successCount = 0;
+    let failCount = 0;
+
+    for (let i = 0; i < tasks.length; i++) {
+      if (batchStopRef.current) { batchAddLog('⛔ Dihentikan oleh user.', 'warn'); break; }
+      const task = tasks[i];
+      setBatchProgress({ done: i, total: tasks.length, current: task.projectName });
+      batchAddLog(`[${i+1}/${tasks.length}] ${task.projectName}`, 'info');
+
+      try {
+        let txRequest: ethers.providers.TransactionRequest = {};
+        if (task.contractAddress) {
+          if (task.contractAbi && task.contractFunc) {
+            const iface = new ethers.utils.Interface(JSON.parse(task.contractAbi));
+            const args  = JSON.parse(task.contractArgs || '[]');
+            const data  = iface.encodeFunctionData(task.contractFunc, args);
+            txRequest = {
+              to: task.contractAddress,
+              value: task.ethValue && task.ethValue !== '0' ? ethers.utils.parseEther(task.ethValue) : ethers.BigNumber.from(0),
+              data,
+            };
+            batchAddLog(`  Func: ${task.contractFunc}(${args.join(', ')})`, 'info');
+          } else {
+            txRequest = { to: task.contractAddress, value: ethers.BigNumber.from(0), data: '0x' };
+          }
+        } else {
+          batchAddLog(`  Skip — tidak ada contract address`, 'warn');
+          setBatchProgress(p => ({ ...p, done: i + 1 }));
+          continue;
+        }
+
+        if (batchStopRef.current) { batchAddLog('⛔ Dihentikan oleh user.', 'warn'); break; }
+
+        if (batchGasLimit && parseInt(batchGasLimit) > 0) {
+          txRequest.gasLimit = ethers.BigNumber.from(batchGasLimit);
+        } else {
+          try {
+            const est = await wallet.estimateGas(txRequest);
+            txRequest.gasLimit = est.mul(120).div(100);
+            batchAddLog(`  Gas: ~${est.toNumber().toLocaleString()} (+20%)`, 'info');
+          } catch (gasErr: any) {
+            const reason = gasErr?.error?.reason ?? gasErr?.reason ?? gasErr?.message ?? '';
+            batchAddLog(`  Simulasi REVERT: ${String(reason).slice(0, 80)}`, 'err');
+            failCount++;
+            setAirdropTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'failed' } : t));
+            setBatchProgress(p => ({ ...p, done: i + 1 }));
+            continue;
+          }
+        }
+
+        if (batchStopRef.current) { batchAddLog('⛔ Dihentikan oleh user.', 'warn'); break; }
+
+        const tx = await wallet.sendTransaction(txRequest);
+        batchAddLog(`  TX: ${tx.hash.slice(0, 20)}...`, 'ok');
+
+        // Race tx.wait() against stop signal so UI stays responsive
+        const receipt = await Promise.race([
+          tx.wait(),
+          new Promise<never>((_, rej) => {
+            const poll = setInterval(() => {
+              if (batchStopRef.current) { clearInterval(poll); rej(new Error('__STOPPED__')); }
+            }, 300);
+            tx.wait().finally(() => clearInterval(poll));
+          }),
+        ]);
+
+        if (batchStopRef.current) { batchAddLog('⛔ TX dikonfirmasi tapi batch dihentikan.', 'warn'); break; }
+
+        batchAddLog(`  Confirmed block #${receipt.blockNumber}`, 'ok');
+        successCount++;
+        setAirdropTasks(prev => prev.map(t => t.id === task.id
+          ? { ...t, txHash: tx.hash, walletAddress: wallet.address, status: 'done', doneAt: Date.now() }
+          : t
+        ));
+        saveTxHistory({
+          taskName: task.projectName,
+          description: `[BATCH] ${task.taskType.toUpperCase()} · ${task.network || net.name} · block #${receipt.blockNumber}`,
+          to: task.contractAddress || '',
+          value: task.ethValue || '0',
+          data: '0x',
+          status: 'success',
+          txHash: tx.hash,
+          timestamp: Date.now(),
+        });
+        if (net.explorerUrl) batchAddLog(`  ${net.explorerUrl}/tx/${tx.hash}`, 'info');
+
+        if (i < tasks.length - 1 && !batchStopRef.current && batchDelayMs > 0) {
+          batchAddLog(`  Delay ${batchDelayMs}ms...`, 'info');
+          await interruptibleDelay(batchDelayMs);
+        }
+      } catch (e: any) {
+        const msg: string = e?.message ?? String(e);
+        if (msg === '__STOPPED__') {
+          batchAddLog('⛔ Dihentikan saat menunggu konfirmasi TX.', 'warn');
+          break;
+        }
+        let friendly = msg;
+        if (msg.includes('insufficient funds')) friendly = 'Saldo tidak cukup';
+        else if (msg.includes('nonce')) friendly = 'Nonce error';
+        else if (msg.includes('timeout') || msg.includes('network')) friendly = 'Timeout/RPC error';
+        batchAddLog(`  GAGAL: ${friendly.slice(0, 100)}`, 'err');
+        failCount++;
+        setAirdropTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'failed' } : t));
+      }
+      setBatchProgress(p => ({ ...p, done: i + 1 }));
+    }
+
+    batchAddLog(`Selesai! Sukses: ${successCount} | Gagal: ${failCount}`, successCount > 0 ? 'ok' : 'warn');
+    setBatchRunning(false);
+    setBatchDone(true);
+    setBatchProgress(p => ({ ...p, current: '' }));
   };
 
   const openExecPanel = (task: AirdropTask) => {
@@ -2364,6 +2541,18 @@ export const WalletGenerator: React.FC = () => {
       execAddLog(`✅ DIKONFIRMASI di block #${receipt.blockNumber}!`);
       setExecSimFailed(false);
       showAlert(`TX "${task.projectName}" berhasil! Block #${receipt.blockNumber}`, 'success');
+
+      // ── Save to TX history ─────────────────────────────────────────
+      saveTxHistory({
+        taskName: task.projectName,
+        description: `${task.taskType.toUpperCase()} · ${task.network || net.name} · block #${receipt.blockNumber}`,
+        to: execMode === 'contract' ? (execContract.contractAddress || execRawTo) : execRawTo,
+        value: execMode === 'contract' ? (execContract.ethValue || '0') : execRawVal,
+        data: '0x',
+        status: 'success',
+        txHash: tx.hash,
+        timestamp: Date.now(),
+      });
 
       const explorerUrl = net.explorerUrl ? `${net.explorerUrl}/tx/${tx.hash}` : '';
       if (explorerUrl) execAddLog(`🔗 Explorer: ${explorerUrl}`);
@@ -2797,6 +2986,55 @@ export const WalletGenerator: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
+  // ── Export / Import Garap Hub tasks ─────────────────────────────
+  const exportGarapan = () => {
+    if (airdropTasks.length === 0) { showAlert('Belum ada task untuk diexport.', 'error'); return; }
+    const payload = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      walletAirdropTasks: airdropTasks,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href = url;
+    a.download = `garap-hub-${new Date().toISOString().split('T')[0]}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    showAlert(`${airdropTasks.length} task berhasil diexport!`, 'success');
+  };
+
+  const handleGarapImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target?.result as string);
+        const imported: AirdropTask[] = parsed.walletAirdropTasks ?? parsed;
+        if (!Array.isArray(imported)) throw new Error('Format tidak dikenali');
+        setConfirmData({
+          isOpen: true, title: 'IMPORT TASK?',
+          message: `${imported.length} task akan digabung dengan data yang ada. Lanjutkan?`,
+          action: () => {
+            const existingIds = new Set(airdropTasks.map(t => t.id));
+            const newTasks = imported.filter(t => !existingIds.has(t.id));
+            setAirdropTasks(prev => [...newTasks, ...prev]);
+            showAlert(`${newTasks.length} task baru berhasil diimport!`, 'success');
+          },
+        });
+      } catch { showAlert('File tidak valid atau format salah.', 'error'); }
+      if (garapImportRef.current) garapImportRef.current.value = '';
+    };
+    reader.readAsText(file);
+  };
+
+  // ── Save TX to history helper ────────────────────────────────────
+  const saveTxHistory = (entry: Omit<TxQueueItem, 'id'>) => {
+    const histEntry: TxQueueItem = { ...entry, id: Date.now().toString() + Math.random().toString(36).slice(2) };
+    setAgHistory(prev => [histEntry, ...prev.slice(0, 499)]);
+  };
+
   const filteredWallets = wallets.filter(w =>
     w.name.toLowerCase().includes(search.toLowerCase()) ||
     w.addresses.some(a => a.address.toLowerCase().includes(search.toLowerCase()))
@@ -2864,6 +3102,16 @@ export const WalletGenerator: React.FC = () => {
       setTxStatus({ type: 'pending', msg: 'Tx terkirim! Menunggu konfirmasi...', hash: tx.hash });
       const receipt = await tx.wait();
       setTxStatus({ type: 'success', msg: `Dikonfirmasi di block #${receipt.blockNumber}`, hash: tx.hash });
+      saveTxHistory({
+        taskName: 'Transfer',
+        description: `Kirim ${txSendAmt} ${selectedNetwork?.symbol ?? 'ETH'} ke ${shortAddr(txSendTo)} di ${selectedNetwork?.name ?? ''}`,
+        to: txSendTo,
+        value: txSendAmt,
+        data: '0x',
+        status: 'success',
+        txHash: tx.hash,
+        timestamp: Date.now(),
+      });
       setTxSendTo(''); setTxSendAmt('');
       await txRefreshBalance();
     } catch (e: any) { setTxStatus({ type: 'error', msg: e.message }); }
@@ -2972,6 +3220,168 @@ export const WalletGenerator: React.FC = () => {
         onConfirm={() => { confirmData.action?.(); setConfirmData(p => ({ ...p, isOpen: false })); }} />
 
       {qrAddress && <QRModal address={qrAddress} onClose={() => setQrAddress(null)} />}
+
+      {/* ── Batch Execution Modal ─────────────────────────────────── */}
+      {batchModalOpen && (
+        <div style={{
+          position:'fixed', inset:0, background:'rgba(0,0,0,0.88)', zIndex:9000,
+          display:'flex', alignItems:'center', justifyContent:'center', padding:'16px',
+        }}>
+          <div style={{
+            background:'#0a0a0a', border:'1px solid #2a2a2a', borderTop:'3px solid #836EFD',
+            width:'100%', maxWidth:'600px', maxHeight:'90vh', display:'flex', flexDirection:'column',
+          }}>
+            {/* Header */}
+            <div style={{ padding:'16px 20px', borderBottom:'1px solid #1a1a1a', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                <FaLayerGroup color="#836EFD" size={14}/>
+                <span style={{ fontWeight:'bold', fontSize:'13px', textTransform:'uppercase', letterSpacing:'1.5px', color:'#836EFD' }}>
+                  Garap Batch
+                </span>
+                <span style={{ fontSize:'11px', color:'#555', border:'1px solid #2a2a2a', padding:'2px 8px' }}>
+                  {batchSelectedIds.size} task dipilih
+                </span>
+              </div>
+              {!batchRunning && (
+                <button onClick={() => { setBatchModalOpen(false); setBatchLog([]); setBatchDone(false); setBatchProgress({done:0,total:0,current:''}); }}
+                  style={{ background:'none', border:'none', color:'#444', cursor:'pointer', fontSize:'18px', lineHeight:1 }}>✕</button>
+              )}
+            </div>
+
+            {/* Config — only shown before running */}
+            {!batchRunning && !batchDone && (
+              <div style={{ padding:'16px 20px', borderBottom:'1px solid #1a1a1a', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+                <div style={{ gridColumn:'1/-1' }}>
+                  <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
+                    <FaWallet style={{ marginRight:'4px' }}/>Wallet
+                  </label>
+                  <select value={batchWalSel} onChange={e => handleBatchWalSel(e.target.value)}
+                    style={{ width:'100%', fontFamily:'monospace', fontSize:'11px' }}>
+                    <option value="">— Pilih dari BIP39 —</option>
+                    {wallets.map((w, wi) => w.addresses.map((a) => (
+                      <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
+                        [{w.name}] {a.address} (#{a.index})
+                      </option>
+                    )))}
+                  </select>
+                </div>
+                <div style={{ gridColumn:'1/-1' }}>
+                  <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
+                    Private Key
+                  </label>
+                  <input type="password" placeholder="0x... (auto dari pilihan wallet di atas)" value={batchPrivKey}
+                    onChange={e => setBatchPrivKey(e.target.value)}
+                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px' }}/>
+                </div>
+                <div>
+                  <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
+                    Network
+                  </label>
+                  <select value={batchNetId} onChange={e => setBatchNetId(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'11px' }}>
+                    {networks.map(n => <option key={n.id} value={n.id}>{n.name}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
+                    Gas Limit (kosong = auto)
+                  </label>
+                  <input type="number" placeholder="auto" value={batchGasLimit}
+                    onChange={e => setBatchGasLimit(e.target.value)} min="21000"
+                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px' }}/>
+                </div>
+                <div>
+                  <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
+                    Delay antar TX (ms)
+                  </label>
+                  <div style={{ display:'flex', gap:'5px', alignItems:'center' }}>
+                    <input type="number" value={batchDelayMs} min="0" step="500"
+                      onChange={e => setBatchDelayMs(parseInt(e.target.value)||0)}
+                      style={{ flex:1, fontFamily:'monospace', fontSize:'11px' }}/>
+                    {([500,1000,2000,5000] as const).map(v => (
+                      <button key={v} onClick={() => setBatchDelayMs(v)}
+                        style={{ fontSize:'10px', padding:'4px 6px', background:'#111', border:`1px solid ${batchDelayMs===v?'#836EFD':'#2a2a2a'}`, color:batchDelayMs===v?'#836EFD':'#555', cursor:'pointer' }}>
+                        {v/1000}s
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div style={{ gridColumn:'1/-1' }}>
+                  <button
+                    onClick={() => runBatchExec(airdropTasks.filter(t => batchSelectedIds.has(t.id) && t.contractAddress))}
+                    disabled={!batchPrivKey || batchSelectedIds.size === 0}
+                    style={{
+                      width:'100%', padding:'12px', background: !batchPrivKey || batchSelectedIds.size === 0 ? '#1a1a1a' : '#836EFD',
+                      color:'#fff', border:'none', cursor: !batchPrivKey || batchSelectedIds.size === 0 ? 'not-allowed' : 'pointer',
+                      fontSize:'13px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
+                      opacity: !batchPrivKey || batchSelectedIds.size === 0 ? 0.5 : 1,
+                    }}>
+                    <FaLayerGroup size={13}/> Eksekusi {batchSelectedIds.size} Task Sekarang
+                  </button>
+                  <div style={{ fontSize:'10px', color:'#444', marginTop:'6px', textAlign:'center' }}>
+                    Hanya task dengan contract address yang dieksekusi. Task tanpa kontrak akan di-skip.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Progress bar — shown while running or done */}
+            {(batchRunning || batchDone) && (
+              <div style={{ padding:'12px 20px', borderBottom:'1px solid #1a1a1a', background:'#070707' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px' }}>
+                  <span style={{ fontSize:'12px', color: batchDone ? '#4caf50' : '#836EFD', fontWeight:'bold' }}>
+                    {batchDone ? '✅ Selesai!' : `⚡ ${batchProgress.current || 'Memulai...'}`}
+                  </span>
+                  <span style={{ fontFamily:'monospace', fontSize:'12px', color:'#888' }}>
+                    {batchProgress.done}/{batchProgress.total}
+                  </span>
+                </div>
+                <div style={{ height:'4px', background:'#1a1a1a', borderRadius:'2px', overflow:'hidden' }}>
+                  <div style={{
+                    height:'100%',
+                    width: batchProgress.total > 0 ? `${(batchProgress.done / batchProgress.total) * 100}%` : '0%',
+                    background: batchDone ? '#4caf50' : '#836EFD',
+                    transition:'width 0.4s ease',
+                    boxShadow: batchDone ? '0 0 8px #4caf5066' : '0 0 8px #836EFD66',
+                  }}/>
+                </div>
+                <div style={{ display:'flex', justifyContent:'flex-end', gap:'8px', marginTop:'10px' }}>
+                  {batchRunning && (
+                    <button onClick={() => { batchStopRef.current = true; batchAddLog('⛔ Menghentikan setelah TX saat ini...', 'warn'); }}
+                      disabled={batchStopRef.current}
+                      style={{ background: batchStopRef.current ? '#1a1a1a' : '#2a0a0a', border:`1px solid ${batchStopRef.current ? '#444' : '#f44336'}`, color: batchStopRef.current ? '#555' : '#f44336', padding:'6px 14px', cursor: batchStopRef.current ? 'not-allowed' : 'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
+                      <FaSpinner style={{ animation:'spin 1s linear infinite' }} size={11}/> {batchStopRef.current ? 'Menghentikan...' : 'Stop'}
+                    </button>
+                  )}
+                  {batchDone && (
+                    <button onClick={() => { setBatchModalOpen(false); setBatchLog([]); setBatchDone(false); setBatchProgress({done:0,total:0,current:''}); setBatchSelectedIds(new Set()); }}
+                      style={{ background:'#4caf50', border:'none', color:'#000', padding:'6px 16px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }}>
+                      Tutup
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Log output */}
+            <div ref={batchLogRef} style={{ flex:1, overflowY:'auto', padding:'12px 20px', fontFamily:'monospace', fontSize:'11px', lineHeight:'1.7', minHeight:'160px', maxHeight:'300px' }}>
+              {batchLog.length === 0 ? (
+                <div style={{ color:'#333', textAlign:'center', marginTop:'20px' }}>Log eksekusi akan muncul di sini.</div>
+              ) : (
+                batchLog.map(l => (
+                  <div key={l.id} style={{
+                    color: l.type==='ok' ? '#4caf50' : l.type==='err' ? '#f44336' : l.type==='warn' ? '#ffaa00' : '#666',
+                    borderBottom: l.msg.startsWith('[') && !l.msg.includes('  ') ? '1px solid #0f0f0f' : 'none',
+                    paddingBottom: l.msg.startsWith('[') && !l.msg.includes('  ') ? '4px' : '0',
+                    marginBottom:  l.msg.startsWith('[') && !l.msg.includes('  ') ? '4px' : '0',
+                  }}>
+                    {l.msg}
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {!tosAgreed && (
         <div style={{
@@ -3506,10 +3916,47 @@ export const WalletGenerator: React.FC = () => {
           </div>
 
           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
-            <button onClick={() => { setAtShowForm(p => !p); setAtEditId(null); setAtForm(atEmptyForm); }}
-              style={{ background:'#01a2ff', color:'#000', border:'none', padding:'9px 18px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px' }}>
-              <FaPlus/> Tambah Task
-            </button>
+            <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+              <button onClick={() => { setAtShowForm(p => !p); setAtEditId(null); setAtForm(atEmptyForm); }}
+                style={{ background:'#01a2ff', color:'#000', border:'none', padding:'9px 18px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px' }}>
+                <FaPlus/> Tambah Task
+              </button>
+              <button
+                onClick={() => {
+                  if (batchSelectedIds.size > 0) {
+                    setBatchModalOpen(true);
+                  } else {
+                    // Auto-select all todo tasks with contract
+                    const todoIds = new Set(airdropTasks.filter(t => t.status === 'todo' && t.contractAddress).map(t => t.id));
+                    if (todoIds.size > 0) { setBatchSelectedIds(todoIds); setBatchModalOpen(true); }
+                    else { showAlert('Tidak ada task todo dengan contract address.', 'info'); }
+                  }
+                }}
+                style={{
+                  background: batchSelectedIds.size > 0 ? '#1a0d2a' : '#111',
+                  border:`1px solid ${batchSelectedIds.size > 0 ? '#836EFD' : '#333'}`,
+                  color: batchSelectedIds.size > 0 ? '#836EFD' : '#555',
+                  padding:'9px 16px', cursor:'pointer', fontSize:'12px', fontWeight:'bold',
+                  display:'flex', alignItems:'center', gap:'6px',
+                }}>
+                <FaLayerGroup size={12}/> Garap Batch {batchSelectedIds.size > 0 ? `(${batchSelectedIds.size})` : ''}
+              </button>
+              {batchSelectedIds.size > 0 && (
+                <button onClick={() => setBatchSelectedIds(new Set())}
+                  style={{ background:'none', border:'1px solid #333', color:'#555', padding:'6px 10px', cursor:'pointer', fontSize:'11px' }}>
+                  Batal Pilih
+                </button>
+              )}
+              <button onClick={exportGarapan} disabled={airdropTasks.length === 0}
+                style={{ background:'none', border:'1px solid #4caf5044', color:'#4caf50', padding:'8px 14px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'5px', opacity: airdropTasks.length === 0 ? 0.4 : 1 }}>
+                <FaFileExport size={12}/> Export
+              </button>
+              <button onClick={() => garapImportRef.current?.click()}
+                style={{ background:'none', border:'1px solid #ffaa0044', color:'#ffaa00', padding:'8px 14px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'5px' }}>
+                <FaFileImport size={12}/> Import
+              </button>
+              <input ref={garapImportRef} type="file" accept=".json" style={{ display:'none' }} onChange={handleGarapImport} />
+            </div>
             <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
               {(['all','todo','done','failed'] as const).map(f => (
                 <button key={f} onClick={() => setAtFilter(f)} style={{
@@ -3672,7 +4119,26 @@ export const WalletGenerator: React.FC = () => {
                       {task.notes && <div style={{ fontSize:'11px', color:'#444', marginTop:'5px', fontStyle:'italic' }}>{task.notes}</div>}
                     </div>
 
-                    <div style={{ display:'flex', gap:'6px', flexShrink:0, flexWrap:'wrap', justifyContent:'flex-end' }}>
+                    <div style={{ display:'flex', gap:'6px', flexShrink:0, flexWrap:'wrap', justifyContent:'flex-end', alignItems:'flex-start' }}>
+                      {/* Batch checkbox */}
+                      {task.contractAddress && (
+                        <button
+                          title="Pilih untuk Batch"
+                          onClick={() => setBatchSelectedIds(prev => {
+                            const next = new Set(prev);
+                            if (next.has(task.id)) next.delete(task.id); else next.add(task.id);
+                            return next;
+                          })}
+                          style={{
+                            background: batchSelectedIds.has(task.id) ? '#1a0d2a' : '#0a0a0a',
+                            border:`1px solid ${batchSelectedIds.has(task.id) ? '#836EFD' : '#2a2a2a'}`,
+                            color: batchSelectedIds.has(task.id) ? '#836EFD' : '#333',
+                            padding:'6px 8px', cursor:'pointer', fontSize:'11px',
+                            display:'flex', alignItems:'center', gap:'4px',
+                          }}>
+                          <FaLayerGroup size={10}/> {batchSelectedIds.has(task.id) ? '✓' : '+'}
+                        </button>
+                      )}
                       <button
                         onClick={() => {
                           if (isExecOpen) { setExecTaskId(null); }
@@ -3906,6 +4372,97 @@ export const WalletGenerator: React.FC = () => {
               </button>
             </div>
           )}
+
+          {/* ── TX History Panel ─────────────────────────────────────── */}
+          <div style={{ marginTop:'28px', background:'#0a0a0a', border:'1px solid #1e1e1e', borderTop:'2px solid #836EFD' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderBottom:'1px solid #141414' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                <FaChartBar color="#836EFD" size={13}/>
+                <span style={{ fontSize:'11px', textTransform:'uppercase', letterSpacing:'1.5px', color:'#836EFD', fontWeight:'bold' }}>
+                  TX History
+                </span>
+                <span style={{ fontSize:'11px', color:'#333', border:'1px solid #222', padding:'2px 8px', fontFamily:'monospace' }}>
+                  {agHistory.length} tx
+                </span>
+              </div>
+              {agHistory.length > 0 && (
+                <button
+                  onClick={() => setConfirmData({ isOpen:true, title:'HAPUS HISTORY TX?', message:'Semua riwayat transaksi akan dihapus.',
+                    action:()=>{ setAgHistory([]); showAlert('History TX dihapus.','hapus'); } })}
+                  style={{ background:'none', border:'1px solid #2a2a2a', color:'#444', padding:'5px 12px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
+                  <FaTrash size={10}/> Clear
+                </button>
+              )}
+            </div>
+
+            {agHistory.length === 0 ? (
+              <div style={{ padding:'32px', textAlign:'center', color:'#2a2a2a', fontSize:'12px' }}>
+                Belum ada transaksi. History akan muncul setelah TX berhasil.
+              </div>
+            ) : (
+              <div style={{ maxHeight:'420px', overflowY:'auto' }}>
+                {agHistory.slice(0, 100).map((h, idx) => {
+                  const histNet = h.description.includes('·')
+                    ? networks.find(n => h.description.toLowerCase().includes(n.id.toLowerCase()) || h.description.toLowerCase().includes(n.name.toLowerCase()))
+                    : null;
+                  const timeStr = h.timestamp
+                    ? new Date(h.timestamp).toLocaleString('id-ID', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })
+                    : '—';
+                  const isBatch = h.description.startsWith('[BATCH]');
+                  return (
+                    <div key={h.id ?? idx} style={{
+                      display:'flex', alignItems:'flex-start', gap:'12px',
+                      padding:'12px 18px', borderBottom:'1px solid #111',
+                      transition:'background 0.15s',
+                    }}
+                    onMouseEnter={e => (e.currentTarget.style.background = '#0d0d0d')}
+                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
+                      {/* status dot */}
+                      <div style={{ width:'8px', height:'8px', borderRadius:'50%', background: h.status === 'success' ? '#4caf50' : h.status === 'failed' ? '#f44336' : '#ffaa00', flexShrink:0, marginTop:'5px' }}/>
+                      <div style={{ flex:1, minWidth:0 }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'8px', flexWrap:'wrap' }}>
+                          <div style={{ minWidth:0 }}>
+                            <div style={{ fontSize:'12px', fontWeight:'bold', color:'#ddd', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                              {isBatch && <span style={{ fontSize:'10px', color:'#836EFD', border:'1px solid #836EFD44', padding:'1px 5px', marginRight:'6px', fontWeight:'normal' }}>BATCH</span>}
+                              {h.taskName}
+                            </div>
+                            <div style={{ fontSize:'11px', color:'#555', marginTop:'2px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                              {h.description}
+                            </div>
+                          </div>
+                          <span style={{ fontSize:'10px', color:'#444', whiteSpace:'nowrap', flexShrink:0 }}>{timeStr}</span>
+                        </div>
+                        {h.txHash && (
+                          <div style={{ marginTop:'6px', display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                            <code style={{ fontSize:'10px', color:'#555', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'220px' }}>
+                              {h.txHash}
+                            </code>
+                            <button
+                              onClick={() => copyText(h.txHash!, `hist_${h.id}`)}
+                              style={{ background:'none', border:'none', color: copiedKey === `hist_${h.id}` ? '#4caf50' : '#333', cursor:'pointer', padding:'2px', flexShrink:0 }}
+                              title="Salin TX Hash">
+                              {copiedKey === `hist_${h.id}` ? <FaCheckCircle size={10}/> : <FaCopy size={10}/>}
+                            </button>
+                            {histNet?.explorerUrl && (
+                              <a href={`${histNet.explorerUrl}/tx/${h.txHash}`} target="_blank" rel="noreferrer"
+                                style={{ fontSize:'10px', color:'#836EFD', textDecoration:'none', display:'flex', alignItems:'center', gap:'3px', flexShrink:0 }}>
+                                <FaLink size={9}/> Explorer ↗
+                              </a>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {agHistory.length > 100 && (
+                  <div style={{ padding:'12px', textAlign:'center', fontSize:'11px', color:'#333' }}>
+                    Menampilkan 100 dari {agHistory.length} tx terakhir
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </>
       )}
       {activeTab === 'networks' && (
