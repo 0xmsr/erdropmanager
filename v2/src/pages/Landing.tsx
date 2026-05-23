@@ -74,8 +74,8 @@ const FEATURES = [
     title: 'AI Assistant',
     path: '/ai',
     color: '#c084fc',
-    desc: 'Chat langsung dengan Claude AI untuk riset project, analisis whitepaper, atau tanya tentang strategi airdrop.',
-    bullets: ['Powered by Claude (Anthropic)', 'Context-aware crypto advisor', 'Selalu up to date'],
+    desc: 'Chat langsung dengan Rekt AI untuk riset project, analisis whitepaper, atau tanya tentang strategi airdrop.',
+    bullets: ['Powered by Rekt', 'Context-aware crypto advisor', 'Selalu up to date'],
   },
   {
     icon: <FaChartBar />,
