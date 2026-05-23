@@ -13,6 +13,7 @@ import {
   FaBolt, FaPlay, FaCode, FaGasPump, FaRobot,
   FaSpinner, FaChartBar,
   FaMagic, FaLayerGroup, FaInfoCircle, FaTerminal, FaFileCode, FaList,
+  FaCheck, FaRegCopy,
 } from 'react-icons/fa';
 
 interface BIP39Wallet {
@@ -49,12 +50,11 @@ interface AirdropTask {
   notes: string;
   createdAt: number;
   doneAt?: number;
-  // Smart contract call fields (optional - filled when "Auto Execute" is configured)
   contractAddress?: string;
   contractAbi?: string;
   contractFunc?: string;
-  contractArgs?: string;   // JSON array string e.g. '["0xabc", "1000"]'
-  ethValue?: string;       // ETH value to send with call, default "0"
+  contractArgs?: string;
+  ethValue?: string; 
 }
 
 interface TxQueueItem {
@@ -231,8 +231,8 @@ export interface ContractConfig {
   contractAddress: string;
   contractAbi:     string;
   contractFunc:    string;
-  contractArgs:    string;  // JSON array string, e.g. '["0xabc","1000"]'
-  ethValue:        string;  // ETH as string, e.g. "0.01"
+  contractArgs:    string;
+  ethValue:        string;
 }
 
 interface AbiInput {
@@ -397,7 +397,6 @@ function encodeArgForType(type: string, val: string): string {
     if (type === 'bytes32') {
       return (val || '').replace(/^0x/, '').padEnd(64, '0');
     }
-    // bytes, string, array — return as hex placeholder
     return '0'.padStart(64, '0');
   } catch {
     return 'ff'.padStart(64, '0');
@@ -577,10 +576,16 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
     if (!selFunc) { setCalldata(''); return; }
     const cd = buildCalldata(selFunc, argValues);
     setCalldata(cd);
+    const parsedArgs = argValues.map(v => {
+      if (typeof v === 'string' && (v.trim().startsWith('[') || v.trim().startsWith('{'))) {
+        try { return JSON.parse(v); } catch { return v; }
+      }
+      return v;
+    });
     onChange({
       ...value,
       contractFunc: selFunc.name,
-      contractArgs: JSON.stringify(argValues),
+      contractArgs: JSON.stringify(parsedArgs),
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selFunc, argValues]);
@@ -659,8 +664,6 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
       const ethVal = value.ethValue && value.ethValue !== '0'
         ? '0x' + BigInt(Math.floor(parseFloat(value.ethValue) * 1e18)).toString(16)
         : '0x0';
-
-      // fire estimate + gasPrice + feeHistory in parallel
       const [estRes, priceRes, feeRes] = await Promise.allSettled([
         rpcCall('eth_estimateGas', [{
           from: '0x0000000000000000000000000000000000000001',
@@ -672,13 +675,11 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
         rpcCall('eth_feeHistory', ['0x5', 'latest', [10, 50, 90]]),
       ]);
 
-      // parse gas estimate
       if (estRes.status === 'fulfilled' && estRes.value?.result) {
         gasUsed = parseInt(estRes.value.result, 16);
         method  = 'rpc';
       }
 
-      // parse base fee from feeHistory (EIP-1559) → more accurate than gasPrice
       let baseFeeGwei = 0;
       if (feeRes.status === 'fulfilled' && feeRes.value?.result?.baseFeePerGas?.length) {
         const fees: string[] = feeRes.value.result.baseFeePerGas;
@@ -686,18 +687,15 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
         baseFeeGwei = parseInt(latest, 16) / 1e9;
       }
 
-      // parse legacy gasPrice as fallback
       if (priceRes.status === 'fulfilled' && priceRes.value?.result) {
         gasPriceGwei = parseInt(priceRes.value.result, 16) / 1e9;
       }
 
-      // prefer baseFee when available, add small priority tip
       if (baseFeeGwei > 0) {
-        gasPriceGwei = baseFeeGwei + 0.1; // +0.1 gwei tip
+        gasPriceGwei = baseFeeGwei + 0.1;
       }
     } catch { /* keep heuristic */ }
 
-    // default gwei when both fail
     if (gasPriceGwei <= 0) gasPriceGwei = net.id === 'ethereum' ? 15 : 1;
 
     const ethCost = (mult: number) => (gasUsed * gasPriceGwei * mult * 1e9) / 1e18;
@@ -1361,17 +1359,17 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
               </div>
 
               <div>
-                <FieldLabel tip='Array JSON argumen. Contoh: ["0xabc123", "1000000000000000000"]'>
+                <FieldLabel tip='Array JSON argumen. Simple: ["0xabc", "1000"]. Tuple bersarang: [["val1","val2","0x"], ["fee","0"], "0xaddr"]'>
                   Arguments (JSON Array)
                 </FieldLabel>
                 <input
-                  placeholder='["0xRecipient", "1000000000000000000"]'
+                  placeholder='Simple: ["0xAddr","1000"] | Tuple: [["40245","0x...","1000","0x0003","0x","0x"],["108874","0"],"0x..."]'
                   value={value.contractArgs}
                   onChange={e => onChange({ ...value, contractArgs: e.target.value })}
                   style={S.input}
                 />
                 <div style={{ fontSize:'10px', color: C.muted, marginTop:'3px' }}>
-                  Nilai uint256 dalam wei — 1 ETH = 1000000000000000000
+                  uint256 dalam wei · bytes kosong = "0x" · tuple = array bersarang [["val1","val2",...]]
                 </div>
               </div>
 
@@ -1563,13 +1561,6 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
   );
 };
 
-
-
-// ═══════════════════════════════════════════════════════════════════════
-// BytecodeExplorer — EVM Bytecode Decoder & Function Decompiler
-// ═══════════════════════════════════════════════════════════════════════
-
-// ── Complete EVM Opcode Table ──────────────────────────────────────────
 const EVM_OPCODES: Record<string, { name: string; inputs: number; desc: string; color: string }> = {
   '00': { name:'STOP',         inputs:0, desc:'Halt execution',                              color:'#888' },
   '01': { name:'ADD',          inputs:0, desc:'a + b',                                       color:'#4caf50' },
@@ -1731,7 +1722,6 @@ const KNOWN_4BYTE: Record<string, string> = {
   '414bf389': 'exactInputSingle((address,address,uint24,address,uint256,uint256,uint256,uint160))',
 };
 
-// ── Disassembler ──────────────────────────────────────────────────────
 interface DisasmInstruction {
   offset: number;
   hex: string;
@@ -1779,7 +1769,6 @@ function disassemble(hexInput: string): DisasmInstruction[] {
   return result;
 }
 
-// ── Function Signature Extractor ──────────────────────────────────────
 interface DetectedFunc {
   selector: string;
   known: string | null;
@@ -1808,7 +1797,78 @@ function extractFunctionSelectors(hexInput: string): DetectedFunc[] {
   return found;
 }
 
-// ── String Extractor ──────────────────────────────────────────────────
+// ── ABI Generator from known selectors ────────────────────────────────
+interface AbiEntry {
+  type: string;
+  name: string;
+  inputs: { name: string; type: string; internalType?: string }[];
+  outputs: { name: string; type: string; internalType?: string }[];
+  stateMutability: string;
+}
+
+/** Parse a Solidity function signature string into an ABI entry.
+ *  e.g. "transfer(address,uint256)" → full ABI object */
+function parseSigToAbi(sig: string): AbiEntry | null {
+  const m = sig.match(/^(\w+)\(([^)]*)\)$/);
+  if (!m) return null;
+  const name = m[1];
+  const rawParams = m[2];
+
+  const parseParams = (raw: string): { name: string; type: string; internalType?: string }[] => {
+    if (!raw.trim()) return [];
+    // Split on top-level commas (not inside parentheses)
+    const result: { name: string; type: string }[] = [];
+    let depth = 0, current = '';
+    for (const ch of raw) {
+      if (ch === '(') { depth++; current += ch; }
+      else if (ch === ')') { depth--; current += ch; }
+      else if (ch === ',' && depth === 0) { result.push(parseOneParam(current.trim())); current = ''; }
+      else { current += ch; }
+    }
+    if (current.trim()) result.push(parseOneParam(current.trim()));
+    return result;
+  };
+
+  const parseOneParam = (s: string, idx?: number): { name: string; type: string } => {
+    const parts = s.trim().split(/\s+/);
+    if (parts.length >= 2) return { type: parts[0], name: parts[1] };
+    return { type: s.trim(), name: `arg${idx ?? 0}` };
+  };
+
+  const inputs = parseParams(rawParams).map((p, i) => ({ ...p, name: p.name || `arg${i}`, internalType: p.type }));
+
+  // Determine stateMutability heuristic from name
+  const viewNames = /^(get|is|has|balance|total|name|symbol|decimals|owner|allowance|supply|supports)/i;
+  const payableNames = /^(mint|buy|purchase|deposit|fund|pay|contribute)/i;
+  const stateMutability = viewNames.test(name) ? 'view' : payableNames.test(name) ? 'payable' : 'nonpayable';
+
+  // Guess outputs from name
+  let outputs: { name: string; type: string; internalType?: string }[] = [];
+  if (viewNames.test(name)) {
+    if (/balance|amount|total|supply|price|value|count|length|id/i.test(name)) outputs = [{ name: '', type: 'uint256', internalType: 'uint256' }];
+    else if (/address|owner|spender|operator/i.test(name)) outputs = [{ name: '', type: 'address', internalType: 'address' }];
+    else if (/name|symbol|uri|token/i.test(name)) outputs = [{ name: '', type: 'string', internalType: 'string' }];
+    else if (/bool|is|has|supports/i.test(name)) outputs = [{ name: '', type: 'bool', internalType: 'bool' }];
+    else outputs = [{ name: '', type: 'uint256', internalType: 'uint256' }];
+  } else if (/approve|transfer/i.test(name)) {
+    outputs = [{ name: '', type: 'bool', internalType: 'bool' }];
+  }
+
+  return { type: 'function', name, inputs, outputs, stateMutability };
+}
+
+function buildAbiFromSelectors(funcs: DetectedFunc[]): AbiEntry[] {
+  const entries: AbiEntry[] = [];
+  for (const f of funcs) {
+    if (!f.known) continue;
+    const entry = parseSigToAbi(f.known);
+    if (entry) entries.push(entry);
+  }
+  // Deduplicate by name
+  const seen = new Set<string>();
+  return entries.filter(e => { const k = e.name; if (seen.has(k)) return false; seen.add(k); return true; });
+}
+
 function extractStrings(hexInput: string): string[] {
   const clean = hexInput.replace(/^0x/i, '').toLowerCase().replace(/[^0-9a-f]/g, '');
   const strings: string[] = [];
@@ -1828,17 +1888,18 @@ function extractStrings(hexInput: string): string[] {
   return [...new Set(strings)].filter(s => s.trim().length >= 4);
 }
 
-// ── Main Component ────────────────────────────────────────────────────
 const BytecodeExplorer: React.FC = () => {
   const [input,      setInput]      = useState('');
-  const [tab,        setTab]        = useState<'disasm'|'funcs'|'strings'>('disasm');
+  const [tab,        setTab]        = useState<'disasm'|'funcs'|'strings'|'abi'>('disasm');
   const [filterOp,   setFilterOp]   = useState('');
   const [disasm,     setDisasm]     = useState<DisasmInstruction[]>([]);
   const [funcs,      setFuncs]      = useState<DetectedFunc[]>([]);
   const [strings,    setStrings]    = useState<string[]>([]);
+  const [abiEntries, setAbiEntries] = useState<AbiEntry[]>([]);
   const [parsed,     setParsed]     = useState(false);
   const [error,      setError]      = useState('');
   const [showMax,    setShowMax]    = useState(500);
+  const [abiCopied,  setAbiCopied]  = useState(false);
 
   const handleParse = () => {
     const clean = input.trim().replace(/\s/g, '');
@@ -1848,15 +1909,17 @@ const BytecodeExplorer: React.FC = () => {
     if (!/^[0-9a-fA-F]*$/.test(hex)) { setError('Bytecode mengandung karakter non-hex.'); return; }
     setError('');
     setDisasm(disassemble(clean));
-    setFuncs(extractFunctionSelectors(clean));
+    const detectedFuncs = extractFunctionSelectors(clean);
+    setFuncs(detectedFuncs);
     setStrings(extractStrings(clean));
+    setAbiEntries(buildAbiFromSelectors(detectedFuncs));
     setParsed(true);
     setShowMax(500);
     setTab('disasm');
   };
 
   const handleClear = () => {
-    setInput(''); setDisasm([]); setFuncs([]); setStrings([]);
+    setInput(''); setDisasm([]); setFuncs([]); setStrings([]); setAbiEntries([]);
     setParsed(false); setError(''); setFilterOp('');
   };
 
@@ -1931,6 +1994,7 @@ const BytecodeExplorer: React.FC = () => {
             {[
               { label:'Total Instruksi', value: disasm.length.toLocaleString(),  color:'#836efd' },
               { label:'Fungsi Terdeteksi', value: funcs.length,                  color:'#f3ba2f' },
+              { label:'ABI Terbentuk', value: abiEntries.length,                 color:'#00e676' },
               { label:'String Terdeteksi', value: strings.length,               color:'#4caf50' },
               { label:'Ukuran',            value: `${Math.floor(byteCount).toLocaleString()} bytes`, color:'#01a2ff' },
             ].map(s => (
@@ -1947,6 +2011,9 @@ const BytecodeExplorer: React.FC = () => {
             </button>
             <button style={tabBtnStyle(tab==='funcs')} onClick={() => setTab('funcs')}>
               <FaCode /> Fungsi ({funcs.length})
+            </button>
+            <button style={tabBtnStyle(tab==='abi')} onClick={() => setTab('abi')}>
+              <FaFileCode /> ABI ({abiEntries.length})
             </button>
             <button style={tabBtnStyle(tab==='strings')} onClick={() => setTab('strings')}>
               <FaFileCode /> Strings ({strings.length})
@@ -2057,6 +2124,124 @@ const BytecodeExplorer: React.FC = () => {
             </div>
           )}
 
+          {tab === 'abi' && (
+            <div>
+              <p style={{ fontSize:'12px', color:'#555', marginBottom:'12px' }}>
+                ABI lengkap yang direkonstruksi dari function selector yang dikenal. Hanya fungsi dengan signature yang teridentifikasi akan muncul.
+              </p>
+              {abiEntries.length === 0 ? (
+                <div style={{ padding:'24px', textAlign:'center', color:'#333', border:'1px dashed #1a1a1a' }}>
+                  Tidak ada ABI yang bisa direkonstruksi — tidak ada function selector yang dikenal.
+                  <div style={{ marginTop:'10px', fontSize:'11px', color:'#2a2a2a' }}>
+                    Coba cek selector secara manual di{' '}
+                    <a href="https://www.4byte.directory" target="_blank" rel="noreferrer" style={{ color:'#01a2ff' }}>4byte.directory</a>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Action bar */}
+                  <div style={{ display:'flex', gap:'8px', marginBottom:'14px', flexWrap:'wrap', alignItems:'center' }}>
+                    <button
+                      onClick={() => {
+                        const fullAbi = JSON.stringify(abiEntries, null, 2);
+                        navigator.clipboard.writeText(fullAbi);
+                        setAbiCopied(true);
+                        setTimeout(() => setAbiCopied(false), 2500);
+                      }}
+                      style={{ background: abiCopied ? '#0d2a0d' : '#0d2a0d', border:`1px solid ${abiCopied ? '#4caf50' : '#00e676'}`, color: abiCopied ? '#4caf50' : '#00e676', padding:'8px 16px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px', fontWeight:'bold' }}>
+                      {abiCopied ? <><FaCheck size={11}/> Copied!</> : <><FaRegCopy size={11}/> Copy ABI (JSON)</>}
+                    </button>
+                    <button
+                      onClick={() => {
+                        const blob = new Blob([JSON.stringify(abiEntries, null, 2)], { type:'application/json' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = url; a.download = 'abi.json'; a.click();
+                        URL.revokeObjectURL(url);
+                      }}
+                      style={{ background:'none', border:'1px solid #333', color:'#555', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
+                      ↓ Download abi.json
+                    </button>
+                    <span style={{ fontSize:'11px', color:'#333', marginLeft:'4px' }}>
+                      {abiEntries.length} fungsi · {funcs.filter(f=>!f.known).length} selector tidak dikenal (tidak termasuk)
+                    </span>
+                  </div>
+
+                  {/* ABI entries cards */}
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(340px, 1fr))', gap:'10px', marginBottom:'16px' }}>
+                    {abiEntries.map((entry, i) => {
+                      const mutColor = entry.stateMutability === 'view' ? '#2196f3'
+                        : entry.stateMutability === 'payable' ? '#ff6600'
+                        : '#4caf50';
+                      const selector = funcs.find(f => f.known?.startsWith(entry.name + '('))?.selector;
+                      return (
+                        <div key={i} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:`3px solid ${mutColor}`, padding:'12px 16px' }}>
+                          {/* Header */}
+                          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'8px' }}>
+                            <span style={{ fontFamily:'monospace', fontSize:'13px', color:'#fff', fontWeight:'bold' }}>{entry.name}</span>
+                            <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
+                              <span style={{ fontSize:'10px', padding:'2px 7px', border:`1px solid ${mutColor}`, color:mutColor, fontWeight:'bold', letterSpacing:'0.5px' }}>
+                                {entry.stateMutability.toUpperCase()}
+                              </span>
+                              {selector && (
+                                <code style={{ fontSize:'10px', color:'#836efd', fontFamily:'monospace' }}>0x{selector}</code>
+                              )}
+                            </div>
+                          </div>
+                          {/* Inputs */}
+                          {entry.inputs.length > 0 && (
+                            <div style={{ marginBottom:'6px' }}>
+                              <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'4px' }}>Inputs</div>
+                              {entry.inputs.map((inp, j) => (
+                                <div key={j} style={{ display:'flex', gap:'8px', fontSize:'12px', padding:'3px 0', borderBottom:'1px solid #0f0f0f' }}>
+                                  <span style={{ color:'#f3ba2f', fontFamily:'monospace', minWidth:'80px' }}>{inp.type}</span>
+                                  <span style={{ color:'#aaa' }}>{inp.name}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {/* Outputs */}
+                          {entry.outputs.length > 0 && (
+                            <div>
+                              <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'4px' }}>Returns</div>
+                              {entry.outputs.map((out, j) => (
+                                <div key={j} style={{ display:'flex', gap:'8px', fontSize:'12px', padding:'3px 0' }}>
+                                  <span style={{ color:'#00e676', fontFamily:'monospace', minWidth:'80px' }}>{out.type}</span>
+                                  <span style={{ color:'#555' }}>{out.name || '—'}</span>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {entry.inputs.length === 0 && entry.outputs.length === 0 && (
+                            <div style={{ fontSize:'11px', color:'#333', fontStyle:'italic' }}>no params / no return value</div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Full JSON preview */}
+                  <div style={{ background:'#070707', border:'1px solid #1a1a1a' }}>
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 14px', borderBottom:'1px solid #1a1a1a', background:'#0d0d0d' }}>
+                      <span style={{ fontSize:'11px', color:'#444', fontFamily:'monospace' }}>ABI JSON</span>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(JSON.stringify(abiEntries, null, 2));
+                          setAbiCopied(true); setTimeout(() => setAbiCopied(false), 2500);
+                        }}
+                        style={{ background:'none', border:'none', cursor:'pointer', color: abiCopied ? '#4caf50' : '#444', fontSize:'11px', display:'flex', alignItems:'center', gap:'4px', padding:'2px 6px' }}>
+                        {abiCopied ? <><FaCheck size={10}/> Copied!</> : <><FaRegCopy size={10}/> Copy</>}
+                      </button>
+                    </div>
+                    <pre style={{ margin:0, padding:'14px', overflowX:'auto', fontFamily:'monospace', fontSize:'11px', lineHeight:'1.6', color:'#aaa', whiteSpace:'pre', maxHeight:'50vh', overflowY:'auto' }}>
+                      {JSON.stringify(abiEntries, null, 2)}
+                    </pre>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
           {tab === 'strings' && (
             <div>
               <p style={{ fontSize:'12px', color:'#555', marginBottom:'12px' }}>
@@ -2129,6 +2314,26 @@ export const WalletGenerator: React.FC = () => {
   const [txConnecting,  setTxConnecting]  = useState(false);
   const [txStatus,      setTxStatus]      = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
   const [txWalletSel,   setTxWalletSel]   = useState('');
+  const [txGasMode,     setTxGasMode]     = useState<'slow'|'standard'|'fast'|'manual'>('standard');
+  const [txGasPrices,   setTxGasPrices]   = useState<{slow:number;standard:number;fast:number}|null>(null);
+  const [txGasManual,   setTxGasManual]   = useState('');
+  const [txGasLimit,    setTxGasLimit]    = useState('21000');
+  const [txFetchingGas, setTxFetchingGas] = useState(false);
+  const [txMode,        setTxMode]        = useState<'single'|'multi'|'sweep'>('single');
+  const [txMultiRows,   setTxMultiRows]   = useState<{id:string;to:string;amount:string;status:'idle'|'pending'|'success'|'failed';hash?:string;error?:string}[]>([
+    { id: '1', to: '', amount: '', status: 'idle' },
+  ]);
+  const [txMultiRunning, setTxMultiRunning] = useState(false);
+  const [txMultiEqualAmt, setTxMultiEqualAmt] = useState('');
+  const [sweepDestAddr,    setSweepDestAddr]    = useState('');
+  const [sweepAmtMode,     setSweepAmtMode]     = useState<'all'|'fixed'>('all');
+  const [sweepFixedAmt,    setSweepFixedAmt]    = useState('');
+  const [sweepLeaveGas,    setSweepLeaveGas]    = useState('0.0005');
+  const [sweepSources,     setSweepSources]     = useState<{id:string;label:string;address:string;privateKey:string;balance?:string;status:'idle'|'pending'|'success'|'failed'|'skipped';hash?:string;error?:string}[]>([]);
+  const [sweepManualPK,    setSweepManualPK]    = useState('');
+  const [sweepRunning,     setSweepRunning]     = useState(false);
+  const [sweepDelayMs,     setSweepDelayMs]     = useState(1500);
+  const [sweepFetchingBal, setSweepFetchingBal] = useState(false);
 
   const txProviderRef   = useRef<ethers.providers.JsonRpcProvider | null>(null);
   const txWalletRef     = useRef<ethers.Wallet | null>(null);
@@ -2154,7 +2359,6 @@ export const WalletGenerator: React.FC = () => {
   useEffect(() => { localStorage.setItem('rpcNetworks',         JSON.stringify(networks));     }, [networks]);
   useEffect(() => { localStorage.setItem('walletAirdropTasks',  JSON.stringify(airdropTasks)); }, [airdropTasks]);
 
-  // ── TOS Modal state ──────────────────────────────────────────────
   const [tosAgreed,       setTosAgreed]       = useState<boolean>(() => localStorage.getItem('tosAgreed') === 'true');
   const [tosChecked,      setTosChecked]      = useState<boolean[]>([false, false, false, false]);
   const tosAllChecked = tosChecked.every(Boolean);
@@ -2164,62 +2368,48 @@ export const WalletGenerator: React.FC = () => {
     localStorage.setItem('tosAgreed', 'true');
     setTosAgreed(true);
   };
-
-  // ── Multi Balance Checker state ──────────────────────────────────
   const [balCheckNetId,   setBalCheckNetId]   = useState<string>('ethereum');
   const [balResults,      setBalResults]      = useState<Record<string, { balance: string; loading: boolean; error: boolean }>>({});
   const [balChecking,     setBalChecking]     = useState(false);
-
-  // ── QR Code modal state ──────────────────────────────────────────
   const [qrAddress,       setQrAddress]       = useState<string | null>(null);
-
-  // ── CSV Export state ─────────────────────────────────────────────
   const [csvExporting,    setCsvExporting]    = useState(false);
-
-  // ── Auto Garap state ──────────────────────────────────
   const [agQueue,       setAgQueue]       = useState<TxQueueItem[]>(() => { try { return JSON.parse(localStorage.getItem(TX_QUEUE_KEY) || '[]'); } catch { return []; } });
   const [agHistory,     setAgHistory]     = useState<TxQueueItem[]>(() => { try { return JSON.parse(localStorage.getItem(TX_HISTORY_KEY) || '[]'); } catch { return []; } });
-  const [agRunning,     setAgRunning]     = useState(false); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const [agRunning,     setAgRunning]     = useState(false);
   const agStopRef = React.useRef(false);
-  const [agSimMode,     setAgSimMode]     = useState(false); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const [agSimMode,     setAgSimMode]     = useState(false);
   const [agGasPrice,    setAgGasPrice]    = useState('');
-  const [agGasLimit,    setAgGasLimit]    = useState('200000'); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agTab,         setAgTab]         = useState<'queue'|'builder'|'reader'|'history'>('queue'); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const [agGasLimit,    setAgGasLimit]    = useState('200000');
+  const [agTab,         setAgTab]         = useState<'queue'|'builder'|'reader'|'history'>('queue');
   const [agLog,         setAgLog]         = useState<string[]>([]);
   const agLogRef = React.useRef<HTMLDivElement>(null);
-  const [agExpanded,    setAgExpanded]    = useState<string|null>(null); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agContract,    setAgContract]    = useState<AutoContractCall>({ contractAddress:'', abi:'', functionName:'', args:'[]', value:'0' }); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agCalldata,    setAgCalldata]    = useState(''); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agTpl,         setAgTpl]         = useState(''); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agReadC,       setAgReadC]       = useState({ address:'', abi:'', func:'', args:'[]' }); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agReadResult,  setAgReadResult]  = useState(''); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agReading,     setAgReading]     = useState(false); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agTaskSel,     setAgTaskSel]     = useState(''); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agSuggest,     setAgSuggest]     = useState<string[]>([]); // eslint-disable-line @typescript-eslint/no-unused-vars
-
-  // ── Garap Hub execution panel state ──────────────────────────────
-  const [execTaskId,    setExecTaskId]    = useState<string|null>(null);   // which task is open
+  const [agExpanded,    setAgExpanded]    = useState<string|null>(null);
+  const [agContract,    setAgContract]    = useState<AutoContractCall>({ contractAddress:'', abi:'', functionName:'', args:'[]', value:'0' });
+  const [agCalldata,    setAgCalldata]    = useState('');
+  const [agTpl,         setAgTpl]         = useState('');
+  const [agReadC,       setAgReadC]       = useState({ address:'', abi:'', func:'', args:'[]' });
+  const [agReadResult,  setAgReadResult]  = useState('');
+  const [agReading,     setAgReading]     = useState(false);
+  const [agTaskSel,     setAgTaskSel]     = useState('');
+  const [agSuggest,     setAgSuggest]     = useState<string[]>([]);
+  const [execTaskId,    setExecTaskId]    = useState<string|null>(null);
   const [execNetId,     setExecNetId]     = useState<string>('sepolia');
-  const [execWalSel,    setExecWalSel]    = useState<string>('');           // "walletIdx,addrIdx"
+  const [execWalSel,    setExecWalSel]    = useState<string>('');
   const [execPrivKey,   setExecPrivKey]   = useState<string>('');
   const [execRunning,   setExecRunning]   = useState(false);
   const [execLog,       setExecLog]       = useState<string[]>([]);
-  // per-task contract config (ephemeral, filled from task fields or overridden in UI)
   const [execContract,  setExecContract]  = useState<{
     contractAddress: string; contractAbi: string; contractFunc: string;
     contractArgs: string; ethValue: string;
   }>({ contractAddress:'', contractAbi:'', contractFunc:'', contractArgs:'[]', ethValue:'0' });
-  const [execMode,      setExecMode]      = useState<'contract'|'raw'>('contract'); // contract call vs raw ETH send
+  const [execMode,      setExecMode]      = useState<'contract'|'raw'>('contract');
   const [execRawTo,     setExecRawTo]     = useState('');
   const [execRawVal,    setExecRawVal]    = useState('0');
   const [execRawData,   setExecRawData]   = useState('0x');
-  const [execGasLimit,  setExecGasLimit]  = useState('');   // manual override, empty = auto-estimate
-  const [execSimFailed, setExecSimFailed] = useState(false); // true = estimateGas reverted, warn user
-
-  // \u2500\u2500 Batch execution modal state \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+  const [execGasLimit,  setExecGasLimit]  = useState('');
+  const [execSimFailed, setExecSimFailed] = useState(false);
   const [batchModalOpen,   setBatchModalOpen]   = useState(false);
   const [batchNetId,       setBatchNetId]       = useState<string>('sepolia');
-  // Multi-wallet support
   const [batchWallets,     setBatchWallets]     = useState<{id:string;label:string;address:string;privateKey:string}[]>([]);
   const [batchManualPK,    setBatchManualPK]    = useState('');
   const [batchWalDelay,    setBatchWalDelay]    = useState<number>(3000);
@@ -2231,12 +2421,12 @@ export const WalletGenerator: React.FC = () => {
   const [batchDone,        setBatchDone]        = useState(false);
   const [batchSelectedIds, setBatchSelectedIds] = useState<Set<string>>(new Set());
   const [batchLoopEnabled, setBatchLoopEnabled] = useState(false);
-  const [batchLoopMax,     setBatchLoopMax]     = useState(0);       // 0 = infinite
-  const [batchLoopDelay,   setBatchLoopDelay]   = useState(5000);    // ms between rounds
-  const [batchLoopRound,   setBatchLoopRound]   = useState(0);       // current round (1-based)
-  const [batchRetryFailed, setBatchRetryFailed] = useState(false);   // auto-retry gagal
-  const [batchRetryMax,    setBatchRetryMax]    = useState(3);        // max retry per task
-  const [batchRetryDelay,  setBatchRetryDelay]  = useState(2000);     // ms sebelum retry
+  const [batchLoopMax,     setBatchLoopMax]     = useState(0);
+  const [batchLoopDelay,   setBatchLoopDelay]   = useState(5000);
+  const [batchLoopRound,   setBatchLoopRound]   = useState(0);
+  const [batchRetryFailed, setBatchRetryFailed] = useState(false);
+  const [batchRetryMax,    setBatchRetryMax]    = useState(3);
+  const [batchRetryDelay,  setBatchRetryDelay]  = useState(2000);
   const batchStopRef = React.useRef(false);
   const batchLogRef  = React.useRef<HTMLDivElement>(null);
 
@@ -2314,7 +2504,6 @@ export const WalletGenerator: React.FC = () => {
     let totalFail    = 0;
     let round        = 0;
 
-    // ── Outer loop (rounds) ──────────────────────────────────────────
     while (true) {
       if (batchStopRef.current) break;
 
@@ -2330,7 +2519,6 @@ export const WalletGenerator: React.FC = () => {
       let roundSuccess = 0;
       let roundFail    = 0;
 
-      // ── Wallet loop ──────────────────────────────────────────────
       for (let wi = 0; wi < batchWallets.length; wi++) {
         if (batchStopRef.current) break;
         const bw = batchWallets[wi];
@@ -2347,8 +2535,6 @@ export const WalletGenerator: React.FC = () => {
         }
 
       setBatchProgress(p => ({ ...p, taskDone: 0, taskTotal: tasks.length, currentTask: '' }));
-
-      // ── Inner task loop ──────────────────────────────────────────
       for (let i = 0; i < tasks.length; i++) {
         if (batchStopRef.current) { batchAddLog('⛔ Dihentikan oleh user.', 'warn'); break; }
         const task = tasks[i];
@@ -2368,7 +2554,11 @@ export const WalletGenerator: React.FC = () => {
             if (task.contractAddress) {
               if (task.contractAbi && task.contractFunc) {
                 const iface = new ethers.utils.Interface(JSON.parse(task.contractAbi));
-                const args  = JSON.parse(task.contractArgs || '[]');
+                const _rawArgs = JSON.parse(task.contractArgs || '[]');
+                const args = _rawArgs.map((a: any) => {
+                  if (typeof a === 'string') { try { return JSON.parse(a); } catch { return a; } }
+                  return a;
+                });
                 const data  = iface.encodeFunctionData(task.contractFunc, args);
                 txRequest = {
                   to: task.contractAddress,
@@ -2479,9 +2669,7 @@ export const WalletGenerator: React.FC = () => {
         }
         setBatchProgress(p => ({ ...p, taskDone: i + 1 }));
       }
-      // ── End inner task loop ──────────────────────────────────────
 
-        // delay between wallets (except after last wallet)
         if (wi < batchWallets.length - 1 && !batchStopRef.current && batchWalDelay > 0) {
           batchAddLog(`⏳ Jeda ${batchWalDelay / 1000}s sebelum wallet berikutnya...`, 'info');
           await interruptibleDelay(batchWalDelay);
@@ -2489,7 +2677,6 @@ export const WalletGenerator: React.FC = () => {
 
         setBatchProgress(p => ({ ...p, walDone: wi + 1 }));
       }
-      // ── End wallet loop ──────────────────────────────────────────
 
       totalSuccess += roundSuccess;
       totalFail    += roundFail;
@@ -2517,7 +2704,6 @@ export const WalletGenerator: React.FC = () => {
         if (batchStopRef.current) break;
       }
     }
-    // ── End outer loop ───────────────────────────────────────────────
 
     batchAddLog(
       `🏁 Selesai! ${batchLoopEnabled ? `${round} round · ` : ''}Total: ${totalSuccess} sukses | ${totalFail} gagal`,
@@ -2573,7 +2759,6 @@ export const WalletGenerator: React.FC = () => {
       const wallet   = new ethers.Wallet(execPrivKey, provider);
       execAddLog(`✅ Terhubung: ${wallet.address}`);
 
-      // ── Build txRequest ────────────────────────────────────────────
       let txRequest: ethers.providers.TransactionRequest = {};
 
       if (execMode === 'contract' && execContract.contractAddress) {
@@ -2581,7 +2766,11 @@ export const WalletGenerator: React.FC = () => {
         if (execContract.contractAbi && execContract.contractFunc) {
           try {
             const iface = new ethers.utils.Interface(JSON.parse(execContract.contractAbi));
-            const args  = JSON.parse(execContract.contractArgs || '[]');
+            const _rawArgs = JSON.parse(execContract.contractArgs || '[]');
+            const args = _rawArgs.map((a: any) => {
+              if (typeof a === 'string') { try { return JSON.parse(a); } catch { return a; } }
+              return a;
+            });
             const data  = iface.encodeFunctionData(execContract.contractFunc, args);
             txRequest = {
               to:    execContract.contractAddress,
@@ -2616,7 +2805,6 @@ export const WalletGenerator: React.FC = () => {
         execAddLog(`💸 Mengirim ${execRawVal} ${net.symbol} ke ${shortAddr(execRawTo)}`);
       }
 
-      // ── Gas estimation ─────────────────────────────────────────────
       if (execGasLimit && parseInt(execGasLimit) > 0) {
         // User provided manual override — skip simulation entirely
         txRequest.gasLimit = ethers.BigNumber.from(execGasLimit);
@@ -2651,7 +2839,6 @@ export const WalletGenerator: React.FC = () => {
         }
       }
 
-      // ── Send ──────────────────────────────────────────────────────
       execAddLog('🚀 Mengirim transaksi...');
       const tx = await wallet.sendTransaction(txRequest);
       execAddLog(`📨 TX terkirim! Hash: ${tx.hash}`);
@@ -2672,8 +2859,6 @@ export const WalletGenerator: React.FC = () => {
       execAddLog(`✅ DIKONFIRMASI di block #${receipt.blockNumber}!`);
       setExecSimFailed(false);
       showAlert(`TX "${task.projectName}" berhasil! Block #${receipt.blockNumber}`, 'success');
-
-      // ── Save to TX history ─────────────────────────────────────────
       saveTxHistory({
         taskName: task.projectName,
         description: `${task.taskType.toUpperCase()} · ${task.network || net.name} · block #${receipt.blockNumber}`,
@@ -2712,13 +2897,13 @@ export const WalletGenerator: React.FC = () => {
   };
   // MetaMask connect for Auto Garap
   const [agWallet,      setAgWallet]      = useState({ address:'', chainId:0, chainName:'', balance:'0', connected:false });
-  const [agConnecting,  setAgConnecting]  = useState(false); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const [agConnecting,  setAgConnecting]  = useState(false);
   // Raw TX builder state
-  const [agRawTo,       setAgRawTo]       = useState(''); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agRawVal,      setAgRawVal]      = useState('0'); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agRawData,     setAgRawData]     = useState('0x'); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agRawDesc,     setAgRawDesc]     = useState(''); // eslint-disable-line @typescript-eslint/no-unused-vars
-  const [agRawTask,     setAgRawTask]     = useState('Manual'); // eslint-disable-line @typescript-eslint/no-unused-vars
+  const [agRawTo,       setAgRawTo]       = useState('');
+  const [agRawVal,      setAgRawVal]      = useState('0');
+  const [agRawData,     setAgRawData]     = useState('0x');
+  const [agRawDesc,     setAgRawDesc]     = useState('');
+  const [agRawTask,     setAgRawTask]     = useState('Manual');
 
   useEffect(() => { localStorage.setItem(TX_QUEUE_KEY, JSON.stringify(agQueue)); }, [agQueue]);
   useEffect(() => { localStorage.setItem(TX_HISTORY_KEY, JSON.stringify(agHistory)); }, [agHistory]);
@@ -2899,7 +3084,6 @@ export const WalletGenerator: React.FC = () => {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const agExplorer = networks.find(n => n.chainId === agWallet.chainId)?.explorerUrl ?? 'https://etherscan.io';
 
-  // ── Multi Balance Checker logic ──────────────────────────────────
   const checkAllBalances = async () => {
     const net = networks.find(n => n.id === balCheckNetId);
     if (!net) return;
@@ -2927,7 +3111,6 @@ export const WalletGenerator: React.FC = () => {
     setBalChecking(false);
   };
 
-  // ── QR Code generator (pure canvas, no external lib) ─────────────
   const QRModal: React.FC<{ address: string; onClose: () => void }> = ({ address, onClose }) => {
     const canvasRef = React.useRef<HTMLCanvasElement>(null);
     React.useEffect(() => {
@@ -2942,7 +3125,6 @@ export const WalletGenerator: React.FC = () => {
       ctx.fillStyle = '#fff';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       ctx.fillStyle = '#000';
-      // simple deterministic pattern based on address chars
       const hash = address.toLowerCase().replace('0x', '');
       for (let row = 0; row < cells; row++) {
         for (let col = 0; col < cells; col++) {
@@ -2953,7 +3135,6 @@ export const WalletGenerator: React.FC = () => {
           }
         }
       }
-      // finder patterns (corners)
       [[0,0],[0,cells-7],[cells-7,0]].forEach(([r, c]) => {
         ctx.fillStyle = '#000';
         ctx.fillRect(20 + c * cellSize, 20 + r * cellSize, 7 * cellSize, 7 * cellSize);
@@ -3004,7 +3185,6 @@ export const WalletGenerator: React.FC = () => {
     );
   };
 
-  // ── CSV Batch Export ──────────────────────────────────────────────
   const exportAllCSV = () => {
     if (wallets.length === 0) { showAlert('Tidak ada wallet untuk diekspor.', 'error'); return; }
     setCsvExporting(true);
@@ -3117,7 +3297,6 @@ export const WalletGenerator: React.FC = () => {
     URL.revokeObjectURL(url);
   };
 
-  // ── Export / Import Garap Hub tasks ─────────────────────────────
   const exportGarapan = () => {
     if (airdropTasks.length === 0) { showAlert('Belum ada task untuk diexport.', 'error'); return; }
     const payload = {
@@ -3160,7 +3339,6 @@ export const WalletGenerator: React.FC = () => {
     reader.readAsText(file);
   };
 
-  // ── Save TX to history helper ────────────────────────────────────
   const saveTxHistory = (entry: Omit<TxQueueItem, 'id'>) => {
     const histEntry: TxQueueItem = { ...entry, id: Date.now().toString() + Math.random().toString(36).slice(2) };
     setAgHistory(prev => [histEntry, ...prev.slice(0, 499)]);
@@ -3187,6 +3365,17 @@ export const WalletGenerator: React.FC = () => {
       setTxAddress(wallet.address);
       setTxConnected(true);
       await txRefreshBalance(provider, wallet.address);
+      setTxFetchingGas(true);
+      try {
+        const feeData = await provider.getFeeData();
+        const baseGwei = feeData.gasPrice ? parseFloat(ethers.utils.formatUnits(feeData.gasPrice, 'gwei')) : 1;
+        setTxGasPrices({
+          slow:     Math.max(0.001, baseGwei * 0.85),
+          standard: Math.max(0.001, baseGwei),
+          fast:     Math.max(0.001, baseGwei * 1.3),
+        });
+      } catch { /* ignore */ }
+      setTxFetchingGas(false);
     } catch (e: any) { showAlert('Gagal connect: ' + e.message, 'error'); }
     setTxConnecting(false);
   };
@@ -3218,6 +3407,31 @@ export const WalletGenerator: React.FC = () => {
     setTxLoadingBal(false);
   };
 
+  const txFetchGasPrice = async () => {
+    const provider = txProviderRef.current;
+    if (!provider) return;
+    setTxFetchingGas(true);
+    try {
+      const feeData = await provider.getFeeData();
+      const baseGwei = feeData.gasPrice ? parseFloat(ethers.utils.formatUnits(feeData.gasPrice, 'gwei')) : 1;
+      setTxGasPrices({
+        slow:     Math.max(0.001, baseGwei * 0.85),
+        standard: Math.max(0.001, baseGwei),
+        fast:     Math.max(0.001, baseGwei * 1.3),
+      });
+    } catch { /* silently ignore */ }
+    setTxFetchingGas(false);
+  };
+
+  const txGetGasPrice = (): ethers.BigNumber | undefined => {
+    if (txGasMode === 'manual' && txGasManual) {
+      try { return ethers.utils.parseUnits(txGasManual, 'gwei'); } catch { return undefined; }
+    }
+    if (!txGasPrices) return undefined;
+    const gwei = txGasPrices[txGasMode as 'slow'|'standard'|'fast'] ?? txGasPrices.standard;
+    try { return ethers.utils.parseUnits(gwei.toFixed(9), 'gwei'); } catch { return undefined; }
+  };
+
   const txSend = async () => {
     const wallet = txWalletRef.current;
     if (!wallet) return;
@@ -3227,26 +3441,238 @@ export const WalletGenerator: React.FC = () => {
     setTxSending(true);
     setTxStatus({ type: 'pending', msg: `Mengirim transaksi ke ${selectedNetwork?.name}...` });
     try {
-      const tx = await wallet.sendTransaction({
-        to: txSendTo, value: ethers.utils.parseEther(txSendAmt),
-      });
+      const txReq: ethers.providers.TransactionRequest = {
+        to: txSendTo,
+        value: ethers.utils.parseEther(txSendAmt),
+        gasLimit: parseInt(txGasLimit) || 21000,
+      };
+      const gp = txGetGasPrice();
+      if (gp) txReq.gasPrice = gp;
+      const tx = await wallet.sendTransaction(txReq);
       setTxStatus({ type: 'pending', msg: 'Tx terkirim! Menunggu konfirmasi...', hash: tx.hash });
       const receipt = await tx.wait();
       setTxStatus({ type: 'success', msg: `Dikonfirmasi di block #${receipt.blockNumber}`, hash: tx.hash });
       saveTxHistory({
         taskName: 'Transfer',
         description: `Kirim ${txSendAmt} ${selectedNetwork?.symbol ?? 'ETH'} ke ${shortAddr(txSendTo)} di ${selectedNetwork?.name ?? ''}`,
-        to: txSendTo,
-        value: txSendAmt,
-        data: '0x',
-        status: 'success',
-        txHash: tx.hash,
-        timestamp: Date.now(),
+        to: txSendTo, value: txSendAmt, data: '0x',
+        status: 'success', txHash: tx.hash, timestamp: Date.now(),
       });
       setTxSendTo(''); setTxSendAmt('');
       await txRefreshBalance();
     } catch (e: any) { setTxStatus({ type: 'error', msg: e.message }); }
     setTxSending(false);
+  };
+
+  const txMultiAddRow = () =>
+    setTxMultiRows(prev => [...prev, { id: Date.now().toString(), to: '', amount: '', status: 'idle' }]);
+
+  const txMultiRemoveRow = (id: string) =>
+    setTxMultiRows(prev => prev.filter(r => r.id !== id));
+
+  const txMultiUpdateRow = (id: string, field: 'to'|'amount', val: string) =>
+    setTxMultiRows(prev => prev.map(r => r.id === id ? { ...r, [field]: val } : r));
+
+  const txMultiApplyEqual = () => {
+    if (!txMultiEqualAmt) return;
+    setTxMultiRows(prev => prev.map(r => ({ ...r, amount: txMultiEqualAmt })));
+  };
+
+  const txMultiSend = async () => {
+    const wallet = txWalletRef.current;
+    if (!wallet) { showAlert('Wallet tidak terhubung.', 'error'); return; }
+    const validRows = txMultiRows.filter(r => ethers.utils.isAddress(r.to) && parseFloat(r.amount) > 0);
+    if (validRows.length === 0) { showAlert('Tidak ada baris valid (address + jumlah).', 'error'); return; }
+    setTxMultiRunning(true);
+    setTxMultiRows(prev => prev.map(r => ({ ...r, status: 'idle', hash: undefined, error: undefined })));
+    const gp = txGetGasPrice();
+    for (const row of validRows) {
+      setTxMultiRows(prev => prev.map(r => r.id === row.id ? { ...r, status: 'pending' } : r));
+      try {
+        const txReq: ethers.providers.TransactionRequest = {
+          to: row.to,
+          value: ethers.utils.parseEther(row.amount),
+          gasLimit: parseInt(txGasLimit) || 21000,
+        };
+        if (gp) txReq.gasPrice = gp;
+        const tx = await wallet.sendTransaction(txReq);
+        await tx.wait();
+        setTxMultiRows(prev => prev.map(r => r.id === row.id ? { ...r, status: 'success', hash: tx.hash } : r));
+        saveTxHistory({
+          taskName: 'Multi-Send', description: `${row.amount} ${selectedNetwork?.symbol ?? 'ETH'} → ${shortAddr(row.to)}`,
+          to: row.to, value: row.amount, data: '0x',
+          status: 'success', txHash: tx.hash, timestamp: Date.now(),
+        });
+      } catch (e: any) {
+        setTxMultiRows(prev => prev.map(r => r.id === row.id ? { ...r, status: 'failed', error: e.message?.slice(0,120) } : r));
+      }
+    }
+    setTxMultiRunning(false);
+    await txRefreshBalance();
+  };
+
+  const sweepAddFromBIP39 = (val: string) => {
+    if (!val || !val.includes(',')) return;
+    const [wi, ai] = val.split(',').map(Number);
+    const w = wallets[wi];
+    const addr = w?.addresses.find(a => a.index === ai);
+    if (!addr) return;
+    const id = `bip39_${wi}_${ai}`;
+    if (sweepSources.some(s => s.id === id)) return;
+    setSweepSources(prev => [...prev, {
+      id, label: `[${w.name}] #${ai} ${addr.address.slice(0,10)}…`,
+      address: addr.address, privateKey: addr.privateKey,
+      status: 'idle',
+    }]);
+  };
+
+  const sweepAddManualPK = () => {
+    const pk = sweepManualPK.trim();
+    if (!pk) return;
+    try {
+      const wallet = new ethers.Wallet(pk);
+      const id = `manual_${wallet.address}`;
+      if (sweepSources.some(s => s.id === id)) { showAlert('Address sudah ada di daftar.', 'error'); return; }
+      setSweepSources(prev => [...prev, {
+        id, label: `Manual ${wallet.address.slice(0,10)}…`,
+        address: wallet.address, privateKey: pk,
+        status: 'idle',
+      }]);
+      setSweepManualPK('');
+    } catch { showAlert('Private key tidak valid.', 'error'); }
+  };
+
+  const sweepRemoveSource = (id: string) =>
+    setSweepSources(prev => prev.filter(s => s.id !== id));
+
+  const sweepFetchBalances = async () => {
+    const net = selectedNetwork;
+    if (!net || sweepSources.length === 0) return;
+    setSweepFetchingBal(true);
+    try {
+      const provider = await getProvider(net);
+      await Promise.all(sweepSources.map(async s => {
+        try {
+          const bal = await provider.getBalance(s.address);
+          const formatted = parseFloat(ethers.utils.formatEther(bal)).toFixed(6) + ' ' + net.symbol;
+          setSweepSources(prev => prev.map(x => x.id === s.id ? { ...x, balance: formatted } : x));
+        } catch {
+          setSweepSources(prev => prev.map(x => x.id === s.id ? { ...x, balance: 'Error' } : x));
+        }
+      }));
+    } catch (e: any) { showAlert('Gagal fetch balance: ' + e.message, 'error'); }
+    setSweepFetchingBal(false);
+  };
+
+  const sweepRun = async () => {
+    if (!ethers.utils.isAddress(sweepDestAddr)) { showAlert('Address tujuan tidak valid.', 'error'); return; }
+    if (sweepSources.length === 0) { showAlert('Belum ada wallet sumber.', 'error'); return; }
+    const net = selectedNetwork;
+    if (!net) { showAlert('Pilih network dulu.', 'error'); return; }
+    setSweepRunning(true);
+    setSweepSources(prev => prev.map(s => ({ ...s, status: 'idle', hash: undefined, error: undefined })));
+
+    let provider: ethers.providers.JsonRpcProvider;
+    try {
+      provider = await getProvider(net);
+    } catch (e: any) {
+      showAlert('Gagal connect ke network: ' + e.message, 'error');
+      setSweepRunning(false);
+      return;
+    }
+
+    for (const src of sweepSources) {
+      setSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'pending' } : s));
+      try {
+        const wallet = new ethers.Wallet(src.privateKey, provider);
+        const bal = await provider.getBalance(wallet.address);
+
+        if (bal.lte(0)) {
+          setSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'skipped', error: 'Saldo 0' } : s));
+          if (sweepDelayMs > 0) await new Promise(r => setTimeout(r, sweepDelayMs));
+          continue;
+        }
+
+        // ── Query actual gas price from RPC directly (no artificial minimum) ──
+        // Try multiple methods in order of accuracy:
+        // 1. eth_gasPrice raw → most accurate for the actual network
+        // 2. eth_feeHistory baseFee (EIP-1559)
+        // 3. Last resort: 1 wei (let network reject if truly invalid)
+        let effectiveGasPrice: ethers.BigNumber;
+        try {
+          const raw = await provider.send('eth_gasPrice', []);
+          effectiveGasPrice = ethers.BigNumber.from(raw);
+          // If gasPrice is 0 (some testnets allow 0-fee tx), use 1 wei
+          if (effectiveGasPrice.lte(0)) effectiveGasPrice = ethers.BigNumber.from(1);
+        } catch {
+          try {
+            const feeHistory = await provider.send('eth_feeHistory', ['0x1', 'latest', []]);
+            const baseFeeHex: string = feeHistory?.baseFeePerGas?.[1] ?? feeHistory?.baseFeePerGas?.[0];
+            effectiveGasPrice = baseFeeHex
+              ? ethers.BigNumber.from(baseFeeHex)
+              : ethers.BigNumber.from(1);
+          } catch {
+            effectiveGasPrice = ethers.BigNumber.from(1);
+          }
+        }
+
+        const gasLimit = ethers.BigNumber.from(21000);
+        const gasCost = effectiveGasPrice.mul(gasLimit);
+
+        let sendAmt: ethers.BigNumber;
+        if (sweepAmtMode === 'all') {
+          const leaveWei = sweepLeaveGas && parseFloat(sweepLeaveGas) > 0
+            ? ethers.utils.parseEther(sweepLeaveGas)
+            : ethers.BigNumber.from(0);
+          // Send everything minus gas cost minus optional leave amount
+          sendAmt = bal.sub(gasCost).sub(leaveWei);
+          // If still negative (gas > balance), try sending with 1 wei gas price as last resort
+          if (sendAmt.lte(0)) {
+            const minGasCost = ethers.BigNumber.from(21000); // 1 wei gas price
+            sendAmt = bal.sub(minGasCost).sub(leaveWei);
+          }
+        } else {
+          sendAmt = ethers.utils.parseEther(sweepFixedAmt || '0');
+        }
+
+        if (sendAmt.lte(0)) {
+          setSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'skipped',
+            error: `Saldo (${ethers.utils.formatEther(bal)} ETH) habis untuk gas` } : s));
+          if (sweepDelayMs > 0) await new Promise(r => setTimeout(r, sweepDelayMs));
+          continue;
+        }
+
+        // Build tx — if gasPrice is very small, use it directly; network will accept or reject
+        const txReq: ethers.providers.TransactionRequest = {
+          to: sweepDestAddr,
+          value: sendAmt,
+          gasLimit,
+          gasPrice: effectiveGasPrice,
+        };
+
+        const gasCostEth = parseFloat(ethers.utils.formatEther(gasCost)).toFixed(10);
+        const sendEth = parseFloat(ethers.utils.formatEther(sendAmt)).toFixed(10);
+        setSweepSources(prev => prev.map(s => s.id === src.id ? { ...s,
+          balance: `gas: ${gasCostEth} | send: ${sendEth} ${net.symbol}` } : s));
+
+        const tx = await wallet.sendTransaction(txReq);
+        await tx.wait();
+        const amtFormatted = parseFloat(ethers.utils.formatEther(sendAmt)).toFixed(8);
+        setSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'success', hash: tx.hash,
+          balance: `sent ${amtFormatted} ${net.symbol}` } : s));
+        saveTxHistory({
+          taskName: 'Sweep',
+          description: `${amtFormatted} ${net.symbol} dari ${shortAddr(src.address)} → ${shortAddr(sweepDestAddr)}`,
+          to: sweepDestAddr, value: amtFormatted, data: '0x',
+          status: 'success', txHash: tx.hash, timestamp: Date.now(),
+        });
+      } catch (e: any) {
+        setSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'failed', error: e.message?.slice(0, 160) } : s));
+      }
+      if (sweepDelayMs > 0) await new Promise(r => setTimeout(r, sweepDelayMs));
+    }
+    setSweepRunning(false);
+    await sweepFetchBalances();
   };
 
   const handleTxWalletSel = (val: string) => {
@@ -4118,50 +4544,411 @@ export const WalletGenerator: React.FC = () => {
               </div>
 
               <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:'2px solid #01a2ff', padding:'18px' }}>
-                <h3 style={{ margin:'0 0 14px', fontSize:'13px', textTransform:'uppercase', letterSpacing:'1px', color:'#01a2ff', display:'flex', alignItems:'center', gap:'6px' }}>
-                  <FaPaperPlane/> Send {selectedNetwork?.symbol} — {selectedNetwork?.name}
-                </h3>
-                <div style={{ display:'grid', gap:'10px' }}>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Ke address (to)</label>
-                    <input type="text" placeholder="0x..." value={txSendTo}
-                      onChange={e => setTxSendTo(e.target.value)}
-                      style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
+                {/* ── Mode toggle ── */}
+                <div style={{ display:'flex', gap:'6px', marginBottom:'16px' }}>
+                  {([['single','💸 Single Send'],['multi','📤 Multi Send'],['sweep','🧹 Sweep ke 1 Wallet']] as const).map(([m, label]) => (
+                    <button key={m} onClick={() => setTxMode(m)} style={{
+                      padding:'7px 16px', background: txMode===m ? '#01a2ff' : '#111',
+                      border:`1px solid ${txMode===m ? '#01a2ff' : '#333'}`,
+                      color: txMode===m ? '#000' : '#666',
+                      cursor:'pointer', fontSize:'12px', fontWeight:'bold',
+                    }}>{label}</button>
+                  ))}
+                </div>
+
+                {/* ── Gas Fee Selector ── */}
+                <div style={{ background:'#070707', border:'1px solid #1e1e1e', borderLeft:'3px solid #f3ba2f', padding:'14px', marginBottom:'14px' }}>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'10px', flexWrap:'wrap', gap:'8px' }}>
+                    <span style={{ fontSize:'11px', color:'#f3ba2f', textTransform:'uppercase', letterSpacing:'1px', display:'flex', alignItems:'center', gap:'5px' }}>
+                      <FaGasPump size={11}/> Gas Fee
+                    </span>
+                    <button onClick={txFetchGasPrice} disabled={txFetchingGas}
+                      style={{ background:'none', border:'1px solid #333', color:txFetchingGas?'#888':'#f3ba2f', padding:'3px 10px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'4px' }}>
+                      <FaSync size={9} style={{ animation:txFetchingGas?'spin 1s linear infinite':undefined }}/> {txFetchingGas ? 'Fetching...' : 'Refresh Gas'}
+                    </button>
                   </div>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Jumlah {selectedNetwork?.symbol}</label>
-                    <input type="number" placeholder="0.001" step="0.0001" min="0" value={txSendAmt}
-                      onChange={e => setTxSendAmt(e.target.value)}
-                      style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace' }}/>
-                  </div>
-                  <button onClick={txSend} disabled={txSending || !txSendTo || !txSendAmt}
-                    style={{ padding:'12px', background:txSending?'#1a1a2a':selectedNetwork?.color??'#01a2ff', color:'#000', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!txSendTo||!txSendAmt)?0.5:1 }}>
-                    {txSending
-                      ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
-                      : <><FaPaperPlane/> Kirim Transaksi</>}
-                  </button>
-                  {txStatus.type !== 'idle' && (
-                    <div style={{ background:'#0a0a0a', border:`1px solid ${txStatusColor}44`, borderLeft:`3px solid ${txStatusColor}`, padding:'12px', fontSize:'12px', fontFamily:'monospace', color:txStatusColor }}>
-                      {txStatus.type === 'pending' && <span style={{ marginRight:'6px', animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
-                      {txStatus.type === 'success' && '✓ '}
-                      {txStatus.type === 'error'   && '✗ '}
-                      {txStatus.msg}
-                      {txStatus.hash && (
-                        <div style={{ marginTop:'6px' }}>
-                          {selectedNetwork?.explorerUrl && (
-                            <a href={`${selectedNetwork.explorerUrl}/tx/${txStatus.hash}`} target="_blank" rel="noreferrer"
-                              style={{ color:'#01a2ff', fontSize:'11px' }}>
-                              Lihat di {selectedNetwork.name} Explorer ↗
-                            </a>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'6px', marginBottom:'10px' }}>
+                    {(['slow','standard','fast','manual'] as const).map(mode => {
+                      const labels = { slow:'🐢 Slow', standard:'⚡ Standard', fast:'🚀 Fast', manual:'✏️ Manual' };
+                      const gpVal = txGasPrices ? {
+                        slow: txGasPrices.slow, standard: txGasPrices.standard, fast: txGasPrices.fast, manual: null,
+                      }[mode] : null;
+                      return (
+                        <button key={mode} onClick={() => setTxGasMode(mode)} style={{
+                          padding:'8px 4px', background: txGasMode===mode ? '#1a1400' : '#0d0d0d',
+                          border:`1px solid ${txGasMode===mode ? '#f3ba2f' : '#1e1e1e'}`,
+                          color: txGasMode===mode ? '#f3ba2f' : '#555',
+                          cursor:'pointer', fontSize:'11px', textAlign:'center', transition:'all 0.15s',
+                        }}>
+                          <div style={{ fontWeight:'bold', marginBottom:'2px' }}>{labels[mode]}</div>
+                          {mode !== 'manual' && gpVal !== null && (
+                            <div style={{ fontSize:'10px', color:'#888', fontFamily:'monospace' }}>{gpVal.toFixed(2)} Gwei</div>
                           )}
-                          <div style={{ fontSize:'10px', color:'#555', marginTop:'3px', wordBreak:'break-all' }}>
-                            {txStatus.hash}
-                          </div>
-                        </div>
-                      )}
+                          {mode !== 'manual' && gpVal === null && (
+                            <div style={{ fontSize:'10px', color:'#333' }}>—</div>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {txGasMode === 'manual' && (
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+                      <div>
+                        <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'3px', textTransform:'uppercase' }}>Gas Price (Gwei)</label>
+                        <input type="number" placeholder="e.g. 5" value={txGasManual} min="0" step="0.1"
+                          onChange={e => setTxGasManual(e.target.value)}
+                          style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
+                      </div>
+                      <div>
+                        <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'3px', textTransform:'uppercase' }}>Gas Limit</label>
+                        <input type="number" placeholder="21000" value={txGasLimit} min="21000"
+                          onChange={e => setTxGasLimit(e.target.value)}
+                          style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
+                      </div>
+                    </div>
+                  )}
+                  {txGasMode !== 'manual' && (
+                    <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'4px' }}>
+                      <label style={{ fontSize:'10px', color:'#555', whiteSpace:'nowrap', textTransform:'uppercase' }}>Gas Limit:</label>
+                      <input type="number" value={txGasLimit} min="21000"
+                        onChange={e => setTxGasLimit(e.target.value)}
+                        style={{ width:'100px', fontFamily:'monospace', fontSize:'12px' }}/>
+                      <span style={{ fontSize:'10px', color:'#333' }}>def: 21000 (native tx)</span>
                     </div>
                   )}
                 </div>
+
+                {/* ── Single Send ── */}
+                {txMode === 'single' && (
+                  <div style={{ display:'grid', gap:'10px' }}>
+                    <h3 style={{ margin:'0 0 6px', fontSize:'13px', textTransform:'uppercase', letterSpacing:'1px', color:'#01a2ff', display:'flex', alignItems:'center', gap:'6px' }}>
+                      <FaPaperPlane/> Send {selectedNetwork?.symbol} — {selectedNetwork?.name}
+                    </h3>
+                    <div>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Ke address (to)</label>
+                      <input type="text" placeholder="0x..." value={txSendTo}
+                        onChange={e => setTxSendTo(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
+                    </div>
+                    <div>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Jumlah {selectedNetwork?.symbol}</label>
+                      <input type="number" placeholder="0.001" step="0.0001" min="0" value={txSendAmt}
+                        onChange={e => setTxSendAmt(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace' }}/>
+                    </div>
+                    <button onClick={txSend} disabled={txSending || !txSendTo || !txSendAmt}
+                      style={{ padding:'12px', background:txSending?'#1a1a2a':selectedNetwork?.color??'#01a2ff', color:'#000', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!txSendTo||!txSendAmt)?0.5:1 }}>
+                      {txSending
+                        ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
+                        : <><FaPaperPlane/> Kirim Transaksi</>}
+                    </button>
+                    {txStatus.type !== 'idle' && (
+                      <div style={{ background:'#0a0a0a', border:`1px solid ${txStatusColor}44`, borderLeft:`3px solid ${txStatusColor}`, padding:'12px', fontSize:'12px', fontFamily:'monospace', color:txStatusColor }}>
+                        {txStatus.type === 'pending' && <span style={{ marginRight:'6px', animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
+                        {txStatus.type === 'success' && '✓ '}
+                        {txStatus.type === 'error'   && '✗ '}
+                        {txStatus.msg}
+                        {txStatus.hash && (
+                          <div style={{ marginTop:'6px' }}>
+                            {selectedNetwork?.explorerUrl && (
+                              <a href={`${selectedNetwork.explorerUrl}/tx/${txStatus.hash}`} target="_blank" rel="noreferrer"
+                                style={{ color:'#01a2ff', fontSize:'11px' }}>
+                                Lihat di {selectedNetwork.name} Explorer ↗
+                              </a>
+                            )}
+                            <div style={{ fontSize:'10px', color:'#555', marginTop:'3px', wordBreak:'break-all' }}>
+                              {txStatus.hash}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── Multi Send ── */}
+                {txMode === 'multi' && (
+                  <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
+                    <h3 style={{ margin:'0 0 4px', fontSize:'13px', textTransform:'uppercase', letterSpacing:'1px', color:'#01a2ff', display:'flex', alignItems:'center', gap:'6px' }}>
+                      <FaLayerGroup size={12}/> Multi Send — {selectedNetwork?.symbol}
+                    </h3>
+                    {/* Equal amount helper */}
+                    <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px', display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+                      <label style={{ fontSize:'11px', color:'#555', whiteSpace:'nowrap' }}>Jumlah rata:</label>
+                      <input type="number" placeholder="0.001" step="0.0001" min="0" value={txMultiEqualAmt}
+                        onChange={e => setTxMultiEqualAmt(e.target.value)}
+                        style={{ width:'110px', fontFamily:'monospace', fontSize:'12px' }}/>
+                      <button onClick={txMultiApplyEqual} disabled={!txMultiEqualAmt}
+                        style={{ background:'#1a1a00', border:'1px solid #f3ba2f44', color:'#f3ba2f', padding:'5px 12px', cursor:'pointer', fontSize:'11px', fontWeight:'bold', opacity:!txMultiEqualAmt?0.4:1 }}>
+                        Terapkan ke Semua
+                      </button>
+                      <span style={{ fontSize:'11px', color:'#444' }}>— atau isi manual per baris</span>
+                    </div>
+                    {/* Rows */}
+                    <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+                      <div style={{ display:'grid', gridTemplateColumns:'1fr 130px 80px 26px', gap:'6px', padding:'4px 2px' }}>
+                        <span style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Address Tujuan</span>
+                        <span style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Jumlah</span>
+                        <span style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Status</span>
+                        <span/>
+                      </div>
+                      {txMultiRows.map((row, idx) => {
+                        const statusColor = { idle:'#333', pending:'#ffaa00', success:'#4caf50', failed:'#f44336' }[row.status];
+                        return (
+                          <div key={row.id} style={{ display:'grid', gridTemplateColumns:'1fr 130px 80px 26px', gap:'6px', alignItems:'center' }}>
+                            <input type="text" placeholder={`0x... #${idx+1}`} value={row.to}
+                              onChange={e => txMultiUpdateRow(row.id, 'to', e.target.value)}
+                              style={{ fontFamily:'monospace', fontSize:'11px', padding:'7px 9px', background: row.status==='failed'?'#1a0000':row.status==='success'?'#001a00':'#0d0d0d', border:`1px solid ${row.status!=='idle'?statusColor+'44':'#1e1e1e'}` }}/>
+                            <input type="number" placeholder="0.001" step="0.0001" min="0" value={row.amount}
+                              onChange={e => txMultiUpdateRow(row.id, 'amount', e.target.value)}
+                              style={{ fontFamily:'monospace', fontSize:'11px', padding:'7px 9px', background:'#0d0d0d', border:'1px solid #1e1e1e' }}/>
+                            <div style={{ fontSize:'10px', fontWeight:'bold', color:statusColor, fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                              {row.status === 'idle'    && '—'}
+                              {row.status === 'pending' && '⟳ Pending'}
+                              {row.status === 'success' && '✓ OK'}
+                              {row.status === 'failed'  && '✗ Fail'}
+                            </div>
+                            <button onClick={() => txMultiRemoveRow(row.id)} disabled={txMultiRows.length === 1}
+                              style={{ background:'none', border:'1px solid #2a2a2a', color:'#f44336', padding:'5px 6px', cursor: txMultiRows.length===1?'not-allowed':'pointer', fontSize:'11px', opacity:txMultiRows.length===1?0.3:1 }}>
+                              ×
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {/* TX hashes */}
+                    {txMultiRows.some(r => r.hash || r.error) && (
+                      <div style={{ background:'#070707', border:'1px solid #1a1a1a', padding:'10px 12px', fontSize:'11px', fontFamily:'monospace', display:'flex', flexDirection:'column', gap:'5px' }}>
+                        {txMultiRows.filter(r => r.hash || r.error).map(r => (
+                          <div key={r.id + '_log'}>
+                            {r.hash && (
+                              <span style={{ color:'#4caf50' }}>
+                                ✓ {shortAddr(r.to)} —{' '}
+                                {selectedNetwork?.explorerUrl
+                                  ? <a href={`${selectedNetwork.explorerUrl}/tx/${r.hash}`} target="_blank" rel="noreferrer" style={{ color:'#01a2ff' }}>{r.hash.slice(0,18)}…</a>
+                                  : r.hash.slice(0,22)+'…'
+                                }
+                              </span>
+                            )}
+                            {r.error && <span style={{ color:'#f44336' }}>✗ {shortAddr(r.to)} — {r.error.slice(0,80)}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {/* Controls */}
+                    <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+                      <button onClick={txMultiAddRow} disabled={txMultiRunning}
+                        style={{ background:'#111', border:'1px solid #333', color:'#888', padding:'10px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', justifyContent:'center', gap:'5px' }}>
+                        <FaPlus size={10}/> Tambah Baris
+                      </button>
+                      <button onClick={txMultiSend}
+                        disabled={txMultiRunning || txMultiRows.every(r => !r.to || !r.amount)}
+                        style={{
+                          padding:'10px', background:txMultiRunning?'#1a1a2a':'#01a2ff', color:'#000', border:'none',
+                          cursor:txMultiRunning?'wait':'pointer', fontSize:'13px', fontWeight:'bold',
+                          display:'flex', alignItems:'center', justifyContent:'center', gap:'7px',
+                          opacity: txMultiRows.every(r=>!r.to||!r.amount) ? 0.5 : 1,
+                        }}>
+                        {txMultiRunning
+                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim {txMultiRows.filter(r=>r.status==='success').length}/{txMultiRows.filter(r=>ethers.utils.isAddress(r.to)&&parseFloat(r.amount)>0).length}...</>
+                          : <><FaPaperPlane/> Kirim {txMultiRows.filter(r=>ethers.utils.isAddress(r.to)&&parseFloat(r.amount)>0).length || txMultiRows.length} Transaksi</>}
+                      </button>
+                    </div>
+                    <div style={{ fontSize:'10px', color:'#333', textAlign:'center' }}>
+                      Transaksi dikirim secara berurutan (sequential). Setiap TX menunggu konfirmasi sebelum berikutnya.
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Sweep Mode ── */}
+                {txMode === 'sweep' && (
+                  <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+                    <h3 style={{ margin:'0 0 4px', fontSize:'13px', textTransform:'uppercase', letterSpacing:'1px', color:'#00e676', display:'flex', alignItems:'center', gap:'6px' }}>
+                      🧹 Sweep — Banyak Wallet → 1 Address
+                    </h3>
+
+                    {/* Warning */}
+                    <div style={{ background:'rgba(255,170,0,0.05)', border:'1px solid #ffaa0033', borderLeft:'3px solid #ffaa00', padding:'10px 12px', fontSize:'11px', color:'#ffcc44', lineHeight:'1.8' }}>
+                      ⚠️ Fitur ini mengirim saldo dari banyak wallet ke <strong>satu address tujuan</strong>.
+                      Pastikan address tujuan benar — transaksi tidak bisa dibatalkan.<br/>
+                      <span style={{ color:'#aaa' }}>
+                        💡 Gas dihitung dari <strong>EIP-1559 base fee + 1 gwei tip</strong> (akurat seperti Rabby).
+                        Wallet dengan saldo &lt; gas cost otomatis di-skip (bukan gagal).
+                      </span>
+                    </div>
+
+                    {/* Destination address */}
+                    <div>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
+                        🎯 Address Tujuan (Penerima)
+                      </label>
+                      <input type="text" placeholder="0x... (address yang akan menerima semua dana)"
+                        value={sweepDestAddr} onChange={e => setSweepDestAddr(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px',
+                          borderColor: sweepDestAddr && !ethers.utils.isAddress(sweepDestAddr) ? '#f44336' : undefined }}/>
+                      {sweepDestAddr && !ethers.utils.isAddress(sweepDestAddr) && (
+                        <div style={{ fontSize:'10px', color:'#f44336', marginTop:'3px' }}>Address tidak valid</div>
+                      )}
+                    </div>
+
+                    {/* Amount mode */}
+                    <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'12px 14px' }}>
+                      <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px' }}>💰 Mode Jumlah</div>
+                      <div style={{ display:'flex', gap:'8px', marginBottom:'10px' }}>
+                        {([['all','Semua Saldo'],['fixed','Jumlah Tetap']] as const).map(([m, label]) => (
+                          <button key={m} onClick={() => setSweepAmtMode(m)} style={{
+                            padding:'6px 14px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
+                            background: sweepAmtMode===m ? '#00e676' : '#111',
+                            border:`1px solid ${sweepAmtMode===m ? '#00e676' : '#333'}`,
+                            color: sweepAmtMode===m ? '#000' : '#666',
+                          }}>{label}</button>
+                        ))}
+                      </div>
+                      {sweepAmtMode === 'all' && (
+                        <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                          <label style={{ fontSize:'11px', color:'#555', whiteSpace:'nowrap' }}>Sisakan untuk gas:</label>
+                          <input type="number" placeholder="0.0005" step="0.0001" min="0"
+                            value={sweepLeaveGas} onChange={e => setSweepLeaveGas(e.target.value)}
+                            style={{ width:'120px', fontFamily:'monospace', fontSize:'12px' }}/>
+                          <span style={{ fontSize:'10px', color:'#444' }}>{selectedNetwork?.symbol ?? 'ETH'} (untuk tx berikutnya)</span>
+                        </div>
+                      )}
+                      {sweepAmtMode === 'fixed' && (
+                        <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                          <label style={{ fontSize:'11px', color:'#555', whiteSpace:'nowrap' }}>Jumlah per wallet:</label>
+                          <input type="number" placeholder="0.001" step="0.0001" min="0"
+                            value={sweepFixedAmt} onChange={e => setSweepFixedAmt(e.target.value)}
+                            style={{ width:'120px', fontFamily:'monospace', fontSize:'12px' }}/>
+                          <span style={{ fontSize:'10px', color:'#444' }}>{selectedNetwork?.symbol ?? 'ETH'}</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Delay setting */}
+                    <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                      <label style={{ fontSize:'11px', color:'#555', whiteSpace:'nowrap', textTransform:'uppercase' }}>Delay antar TX:</label>
+                      <input type="number" value={sweepDelayMs} min="0" step="500"
+                        onChange={e => setSweepDelayMs(parseInt(e.target.value)||0)}
+                        style={{ width:'80px', fontFamily:'monospace', fontSize:'12px' }}/>
+                      {([0,500,1000,2000,3000] as const).map(v => (
+                        <button key={v} onClick={() => setSweepDelayMs(v)}
+                          style={{ fontSize:'10px', padding:'4px 8px', background:'#111', border:`1px solid ${sweepDelayMs===v?'#00e676':'#2a2a2a'}`, color:sweepDelayMs===v?'#00e676':'#555', cursor:'pointer' }}>
+                          {v === 0 ? 'Off' : v/1000+'s'}
+                        </button>
+                      ))}
+                    </div>
+
+                    {/* Source wallets */}
+                    <div style={{ background:'#070707', border:'1px solid #1e1e1e', borderLeft:'3px solid #00e676', padding:'12px 14px' }}>
+                      <div style={{ fontSize:'10px', color:'#00e676', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px', display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'6px' }}>
+                        <span>📋 Wallet Sumber ({sweepSources.length})</span>
+                        {sweepSources.length > 0 && (
+                          <button onClick={sweepFetchBalances} disabled={sweepFetchingBal}
+                            style={{ background:'none', border:'1px solid #00e67633', color:sweepFetchingBal?'#333':'#00e676', padding:'3px 10px', cursor:'pointer', fontSize:'10px', display:'flex', alignItems:'center', gap:'4px' }}>
+                            <FaSync size={9} style={{ animation:sweepFetchingBal?'spin 1s linear infinite':undefined }}/> {sweepFetchingBal?'Checking...':'Cek Balance'}
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Add from BIP39 */}
+                      <div style={{ display:'flex', gap:'6px', marginBottom:'8px' }}>
+                        <select defaultValue="" onChange={e => { sweepAddFromBIP39(e.target.value); e.target.value=''; }}
+                          style={{ flex:1, fontFamily:'monospace', fontSize:'11px' }}>
+                          <option value="">＋ Tambah dari Wallet BIP39...</option>
+                          {wallets.map((w, wi) => w.addresses.map(a => {
+                            const id = `bip39_${wi}_${a.index}`;
+                            const already = sweepSources.some(s => s.id === id);
+                            return (
+                              <option key={id} value={`${wi},${a.index}`} disabled={already}>
+                                {already ? '✓ ' : ''} [{w.name}] #{a.index} {a.address.slice(0,10)}…{a.address.slice(-4)}
+                              </option>
+                            );
+                          }))}
+                        </select>
+                      </div>
+
+                      {/* Add manual PK */}
+                      <div style={{ display:'flex', gap:'6px', marginBottom:'10px' }}>
+                        <input type="password" placeholder="Private key manual (0x...)"
+                          value={sweepManualPK} onChange={e => setSweepManualPK(e.target.value)}
+                          onKeyDown={e => e.key === 'Enter' && sweepAddManualPK()}
+                          style={{ flex:1, fontFamily:'monospace', fontSize:'11px' }}/>
+                        <button onClick={sweepAddManualPK} disabled={!sweepManualPK.trim()}
+                          style={{ background:'#00e676', color:'#000', border:'none', padding:'6px 12px', cursor:sweepManualPK.trim()?'pointer':'not-allowed', fontSize:'11px', fontWeight:'bold', opacity:sweepManualPK.trim()?1:0.4 }}>
+                          ＋
+                        </button>
+                      </div>
+
+                      {/* Source list */}
+                      {sweepSources.length === 0 ? (
+                        <div style={{ color:'#333', fontSize:'11px', textAlign:'center', padding:'12px 0', border:'1px dashed #1a1a1a' }}>
+                          Belum ada wallet sumber. Tambah dari BIP39 atau masukkan private key.
+                        </div>
+                      ) : (
+                        <div style={{ display:'flex', flexDirection:'column', gap:'4px' }}>
+                          {sweepSources.map((s, idx) => {
+                            const stColor = { idle:'#333', pending:'#ffaa00', success:'#4caf50', failed:'#f44336', skipped:'#888' }[s.status];
+                            return (
+                              <div key={s.id} style={{ display:'grid', gridTemplateColumns:'20px 1fr auto auto auto', gap:'6px', alignItems:'center', background:'#111', border:`1px solid ${stColor}22`, padding:'7px 10px' }}>
+                                <span style={{ fontSize:'10px', color:'#444', textAlign:'right' }}>{idx+1}</span>
+                                <div style={{ minWidth:0 }}>
+                                  <div style={{ fontFamily:'monospace', fontSize:'11px', color:'#888', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.label}</div>
+                                  {s.balance && <div style={{ fontSize:'10px', color:'#4caf50', fontFamily:'monospace' }}>{s.balance}</div>}
+                                  {s.hash && selectedNetwork?.explorerUrl && (
+                                    <a href={`${selectedNetwork.explorerUrl}/tx/${s.hash}`} target="_blank" rel="noreferrer"
+                                      style={{ fontSize:'10px', color:'#01a2ff' }}>✓ {s.hash.slice(0,16)}…</a>
+                                  )}
+                                  {s.error && <div style={{ fontSize:'10px', color: s.status==='skipped'?'#888':'#f44336', marginTop:'2px', lineHeight:'1.4' }}>{s.error}</div>}
+                                </div>
+                                <span style={{ fontSize:'10px', fontWeight:'bold', color:stColor, whiteSpace:'nowrap', minWidth:'55px', textAlign:'center' }}>
+                                  {s.status === 'idle' && '—'}
+                                  {s.status === 'pending' && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
+                                  {s.status === 'success' && '✓ OK'}
+                                  {s.status === 'failed' && '✗ Fail'}
+                                  {s.status === 'skipped' && '⊘ Skip'}
+                                </span>
+                                <button onClick={() => sweepRemoveSource(s.id)} disabled={sweepRunning}
+                                  style={{ background:'none', border:'1px solid #2a2a2a', color:'#f44336', padding:'3px 6px', cursor:sweepRunning?'not-allowed':'pointer', fontSize:'11px', opacity:sweepRunning?0.3:1 }}>
+                                  ×
+                                </button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Summary */}
+                    {sweepSources.length > 0 && sweepDestAddr && ethers.utils.isAddress(sweepDestAddr) && (
+                      <div style={{ background:'#001a00', border:'1px solid #00e67633', padding:'10px 14px', fontSize:'12px', color:'#00e676', fontFamily:'monospace' }}>
+                        🧹 Siap sweep <strong>{sweepSources.length} wallet</strong> → <strong>{sweepDestAddr.slice(0,10)}…{sweepDestAddr.slice(-6)}</strong>
+                        {sweepAmtMode === 'all'
+                          ? ` · Mode: Semua saldo (sisakan ${sweepLeaveGas} ${selectedNetwork?.symbol ?? 'ETH'} gas)`
+                          : ` · Mode: ${sweepFixedAmt || '?'} ${selectedNetwork?.symbol ?? 'ETH'} per wallet`}
+                      </div>
+                    )}
+
+                    {/* Run button */}
+                    <button onClick={sweepRun}
+                      disabled={sweepRunning || sweepSources.length === 0 || !ethers.utils.isAddress(sweepDestAddr)}
+                      style={{
+                        padding:'12px', fontWeight:'bold', fontSize:'13px', cursor:sweepRunning?'wait':'pointer',
+                        background: sweepRunning ? '#001a00' : (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)) ? 'transparent' : '#00e676',
+                        color: sweepRunning ? '#00e676' : '#000',
+                        border:`1px solid ${sweepRunning?'#00e67644':'#00e676'}`,
+                        display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
+                        opacity: (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)) ? 0.4 : 1,
+                        transition:'all 0.2s',
+                      }}>
+                      {sweepRunning
+                        ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Sweeping {sweepSources.filter(s=>s.status==='success').length}/{sweepSources.length}...</>
+                        : <>🧹 Mulai Sweep {sweepSources.length} Wallet</>}
+                    </button>
+                    <div style={{ fontSize:'10px', color:'#333', textAlign:'center' }}>
+                      Transaksi dikirim sequential. Gunakan delay agar tidak kena rate-limit RPC.
+                    </div>
+                  </div>
+                )}
               </div>
 
               <div style={{ textAlign:'center' }}>
@@ -4508,7 +5295,7 @@ export const WalletGenerator: React.FC = () => {
                             style={{ fontFamily:'monospace', fontSize:'11px', gridColumn:'span 2' }}/>
                           <input placeholder="Function Name (mint, claim, stake, ...)" value={execContract.contractFunc}
                             onChange={e => setExecContract(p => ({ ...p, contractFunc: e.target.value }))}/>
-                          <input placeholder='Args JSON ["arg1","arg2"] — kosong jika tidak ada' value={execContract.contractArgs}
+                          <input placeholder='Args JSON — simple: ["0xabc","1000"] | tuple: [["40245","0x...","1000"],["108874","0"],"0x..."]' value={execContract.contractArgs}
                             onChange={e => setExecContract(p => ({ ...p, contractArgs: e.target.value }))}
                             style={{ fontFamily:'monospace', fontSize:'11px' }}/>
                           <input placeholder="ETH Value (e.g. 0.01 — atau 0 jika payable dengan value 0)" value={execContract.ethValue}
