@@ -411,6 +411,63 @@ function buildCalldata(fn: AbiFunction, args: string[]): string {
     .join('');
   return selector + encoded;
 }
+// Pre-process JSON string: quote angka >= 16 digit supaya tidak jadi JS float
+// Contoh: 5000000000000000000000 → "5000000000000000000000" sebelum JSON.parse
+function safeParseContractArgs(raw: string): any[] {
+  try {
+    const patched = raw.replace(/(?<!["\d.])(\d{16,})(?![\d".])/g, '"$1"');
+    return JSON.parse(patched);
+  } catch {
+    try { return JSON.parse(raw); } catch { return []; }
+  }
+}
+
+// Parse arg sesuai tipe ABI — ABI-aware supaya tuple dan uint besar ditangani benar
+function parseArgWithAbiType(val: any, abiInput: any): any {
+  const type: string = abiInput?.type ?? '';
+  const isTuple = type === 'tuple' || type.startsWith('tuple(') || type.startsWith('tuple[');
+  const isUint  = type.startsWith('uint') || type.startsWith('int');
+
+  if (Array.isArray(val)) {
+    if (isTuple && abiInput?.components) {
+      return (val as any[]).map((v: any, i: number) =>
+        parseArgWithAbiType(v, abiInput.components[i] ?? { type: 'bytes' })
+      );
+    }
+    return val;
+  }
+
+  if (typeof val === 'string') {
+    // uint/int: kembalikan string langsung — BigNumber.from(string) aman untuk angka besar
+    if (isUint) return val;
+
+    if (isTuple) {
+      try {
+        const parsed = JSON.parse(val);
+        if (Array.isArray(parsed) && abiInput?.components) {
+          return (parsed as any[]).map((v: any, i: number) =>
+            parseArgWithAbiType(v, abiInput.components[i] ?? { type: 'bytes' })
+          );
+        }
+        return parsed;
+      } catch { }
+      try {
+        const parsed = JSON.parse('[' + val + ']');
+        const comps: any[] = abiInput?.components ?? [];
+        return (parsed as any[]).map((v: any, i: number) =>
+          parseArgWithAbiType(v, comps[i] ?? { type: 'bytes' })
+        );
+      } catch { return val; }
+    }
+
+    try { return JSON.parse(val); } catch { return val; }
+  }
+
+  // Angka sudah ter-parse (seharusnya tidak terjadi setelah safeParseContractArgs)
+  if (typeof val === 'number' && isUint) return val.toFixed(0);
+
+  return val;
+}
 
 function ethToWeiStr(eth: string): string {
   try {
@@ -2427,6 +2484,8 @@ export const WalletGenerator: React.FC = () => {
   const [batchRetryFailed, setBatchRetryFailed] = useState(false);
   const [batchRetryMax,    setBatchRetryMax]    = useState(3);
   const [batchRetryDelay,  setBatchRetryDelay]  = useState(2000);
+  // Per-task network override: taskId -> networkId ('' = use global batchNetId)
+  const [batchTaskNetworks, setBatchTaskNetworks] = useState<Record<string, string>>({});
   const batchStopRef = React.useRef(false);
   const batchLogRef  = React.useRef<HTMLDivElement>(null);
 
@@ -2470,23 +2529,43 @@ export const WalletGenerator: React.FC = () => {
 
   const runBatchExec = async (tasks: AirdropTask[]) => {
     if (batchWallets.length === 0) { batchAddLog('Tambahkan minimal 1 wallet.', 'err'); return; }
-    const net = networks.find(n => n.id === batchNetId);
-    if (!net) { batchAddLog('Network tidak valid.', 'err'); return; }
+    const defaultNet = networks.find(n => n.id === batchNetId);
+    if (!defaultNet) { batchAddLog('Network default tidak valid.', 'err'); return; }
+
+    // Check if multi-network mode is active
+    const multiNetworkMode = tasks.some(t => batchTaskNetworks[t.id] && batchTaskNetworks[t.id] !== batchNetId);
+
     setBatchRunning(true);
     setBatchDone(false);
     batchStopRef.current = false;
     setBatchLoopRound(0);
     setBatchProgress({ walDone:0, walTotal:batchWallets.length, taskDone:0, taskTotal:tasks.length, currentWal:'', currentTask:'' });
 
-    batchAddLog(`Menghubungkan ke ${net.name}...`, 'info');
-    let provider: ethers.providers.JsonRpcProvider;
-    try {
-      provider = await getProvider(net);
-      batchAddLog(`Terhubung ke ${net.name}`, 'ok');
-    } catch (e: any) {
-      batchAddLog(`Gagal connect: ${e.message}`, 'err');
-      setBatchRunning(false);
-      return;
+    // Provider cache: networkId -> provider
+    const providerCache: Record<string, ethers.providers.JsonRpcProvider> = {};
+
+    const getOrCreateProvider = async (net: RPCNetwork): Promise<ethers.providers.JsonRpcProvider> => {
+      if (providerCache[net.id]) return providerCache[net.id];
+      batchAddLog(`🌐 Menghubungkan ke ${net.name}...`, 'info');
+      const p = await getProvider(net);
+      providerCache[net.id] = p;
+      batchAddLog(`✅ Terhubung ke ${net.name}`, 'ok');
+      return p;
+    };
+
+    // Pre-connect all required networks
+    const requiredNetIds = new Set<string>([batchNetId]);
+    tasks.forEach(t => { if (batchTaskNetworks[t.id]) requiredNetIds.add(batchTaskNetworks[t.id]); });
+    if (requiredNetIds.size > 1) {
+      batchAddLog(`🔀 Multi-network mode: ${requiredNetIds.size} network akan digunakan`, 'info');
+    }
+    for (const netId of requiredNetIds) {
+      const n = networks.find(x => x.id === netId);
+      if (!n) { batchAddLog(`❌ Network "${netId}" tidak ditemukan.`, 'err'); setBatchRunning(false); return; }
+      try { await getOrCreateProvider(n); } catch (e: any) {
+        batchAddLog(`❌ Gagal connect ke ${n.name}: ${e.message}`, 'err');
+        setBatchRunning(false); return;
+      }
     }
 
     // Interruptible delay helper
@@ -2524,21 +2603,23 @@ export const WalletGenerator: React.FC = () => {
         const bw = batchWallets[wi];
         setBatchProgress(p => ({ ...p, walDone: wi, walTotal: batchWallets.length, currentWal: bw.label, taskDone: 0, taskTotal: tasks.length, currentTask: '' }));
 
-        let ethWallet: ethers.Wallet;
-        try {
-          ethWallet = new ethers.Wallet(bw.privateKey, provider);
-          batchAddLog(`
-👛 Wallet [${wi+1}/${batchWallets.length}]: ${bw.address.slice(0,10)}…${bw.address.slice(-4)}`, 'info');
-        } catch (e: any) {
-          batchAddLog(`❌ Wallet ${wi+1} invalid: ${e.message}`, 'err');
-          continue;
-        }
+        // Wallet will be re-connected per task if network changes
+        batchAddLog(`\n👛 Wallet [${wi+1}/${batchWallets.length}]: ${bw.address.slice(0,10)}…${bw.address.slice(-4)}`, 'info');
 
       setBatchProgress(p => ({ ...p, taskDone: 0, taskTotal: tasks.length, currentTask: '' }));
       for (let i = 0; i < tasks.length; i++) {
         if (batchStopRef.current) { batchAddLog('⛔ Dihentikan oleh user.', 'warn'); break; }
         const task = tasks[i];
         setBatchProgress(p => ({ ...p, taskDone: i, taskTotal: tasks.length, currentTask: task.projectName }));
+
+        // Resolve network for this task
+        const taskNetId = batchTaskNetworks[task.id] || batchNetId;
+        const taskNet = networks.find(n => n.id === taskNetId) ?? defaultNet;
+        const taskProvider = providerCache[taskNet.id];
+        if (!taskProvider) {
+          batchAddLog(`  ❌ Provider untuk ${taskNet.name} tidak tersedia, skip.`, 'err');
+          continue;
+        }
 
         const maxAttempts = batchRetryFailed ? 1 + batchRetryMax : 1;
         let taskSuccess = false;
@@ -2547,18 +2628,28 @@ export const WalletGenerator: React.FC = () => {
           if (batchStopRef.current) break;
 
           const attemptLabel = maxAttempts > 1 ? ` (attempt ${attempt}/${maxAttempts})` : '';
-          batchAddLog(`  [Task ${i+1}/${tasks.length}] ${task.projectName}${attemptLabel}`, 'info');
+          const netLabel = taskNetId !== batchNetId ? ` [${taskNet.name}]` : '';
+          batchAddLog(`  [Task ${i+1}/${tasks.length}] ${task.projectName}${netLabel}${attemptLabel}`, 'info');
+
+          // Create wallet connected to the correct network provider
+          let ethWallet: ethers.Wallet;
+          try {
+            ethWallet = new ethers.Wallet(bw.privateKey, taskProvider);
+          } catch (e: any) {
+            batchAddLog(`❌ Wallet ${wi+1} invalid: ${(e as any).message}`, 'err');
+            break;
+          }
 
           try {
             let txRequest: ethers.providers.TransactionRequest = {};
             if (task.contractAddress) {
               if (task.contractAbi && task.contractFunc) {
                 const iface = new ethers.utils.Interface(JSON.parse(task.contractAbi));
-                const _rawArgs = JSON.parse(task.contractArgs || '[]');
-                const args = _rawArgs.map((a: any) => {
-                  if (typeof a === 'string') { try { return JSON.parse(a); } catch { return a; } }
-                  return a;
-                });
+                const fragment = iface.getFunction(task.contractFunc);
+                const _rawArgs = safeParseContractArgs(task.contractArgs || '[]');
+                const args = _rawArgs.map((a: any, i: number) =>
+                  parseArgWithAbiType(a, fragment.inputs[i] ?? { type: 'bytes' })
+                );
                 const data  = iface.encodeFunctionData(task.contractFunc, args);
                 txRequest = {
                   to: task.contractAddress,
@@ -2625,7 +2716,7 @@ export const WalletGenerator: React.FC = () => {
             ));
             saveTxHistory({
               taskName: task.projectName,
-              description: `[BATCH${isLooping ? ` R${round}`:''}] ${task.taskType.toUpperCase()} · ${task.network || net.name} · block #${receipt.blockNumber}`,
+              description: `[BATCH${isLooping ? ` R${round}`:''}] ${task.taskType.toUpperCase()} · ${task.network || taskNet.name} · block #${receipt.blockNumber}`,
               to: task.contractAddress || '',
               value: task.ethValue || '0',
               data: '0x',
@@ -2633,7 +2724,7 @@ export const WalletGenerator: React.FC = () => {
               txHash: tx.hash,
               timestamp: Date.now(),
             });
-            if (net.explorerUrl) batchAddLog(`  ${net.explorerUrl}/tx/${tx.hash}`, 'info');
+            if (taskNet.explorerUrl) batchAddLog(`  ${taskNet.explorerUrl}/tx/${tx.hash}`, 'info');
             break; // sukses, keluar dari retry loop
           } catch (e: any) {
             const msg: string = e?.message ?? String(e);
@@ -2766,11 +2857,11 @@ export const WalletGenerator: React.FC = () => {
         if (execContract.contractAbi && execContract.contractFunc) {
           try {
             const iface = new ethers.utils.Interface(JSON.parse(execContract.contractAbi));
-            const _rawArgs = JSON.parse(execContract.contractArgs || '[]');
-            const args = _rawArgs.map((a: any) => {
-              if (typeof a === 'string') { try { return JSON.parse(a); } catch { return a; } }
-              return a;
-            });
+            const fragment = iface.getFunction(execContract.contractFunc);
+            const _rawArgs = safeParseContractArgs(execContract.contractArgs || '[]');
+            const args = _rawArgs.map((a: any, i: number) =>
+              parseArgWithAbiType(a, fragment.inputs[i] ?? { type: 'bytes' })
+            );
             const data  = iface.encodeFunctionData(execContract.contractFunc, args);
             txRequest = {
               to:    execContract.contractAddress,
@@ -3800,14 +3891,14 @@ export const WalletGenerator: React.FC = () => {
                 </span>
               </div>
               {!batchRunning && (
-                <button onClick={() => { setBatchModalOpen(false); setBatchLog([]); setBatchDone(false); setBatchProgress({walDone:0,walTotal:0,taskDone:0,taskTotal:0,currentWal:'',currentTask:''}); }}
+                <button onClick={() => { setBatchModalOpen(false); setBatchLog([]); setBatchDone(false); setBatchProgress({walDone:0,walTotal:0,taskDone:0,taskTotal:0,currentWal:'',currentTask:''}); setBatchTaskNetworks({}); }}
                   style={{ background:'none', border:'none', color:'#444', cursor:'pointer', fontSize:'18px', lineHeight:1 }}>✕</button>
               )}
             </div>
 
             {/* Config — only shown before running */}
             {!batchRunning && !batchDone && (
-              <div style={{ padding:'16px 20px', borderBottom:'1px solid #1a1a1a', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
+              <div style={{ padding:'16px 20px', borderBottom:'1px solid #1a1a1a', display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', overflowY:'auto', flex:1 }}>
                 {/* ── Multi-wallet panel ── */}
                 <div style={{ gridColumn:'1/-1', background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #01a2ff', padding:'12px 14px' }}>
                   <div style={{ fontSize:'10px', color:'#01a2ff', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px', display:'flex', alignItems:'center', gap:'6px' }}>
@@ -3864,12 +3955,68 @@ export const WalletGenerator: React.FC = () => {
 
                 <div>
                   <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
-                    Network
+                    Network Default
                   </label>
                   <select value={batchNetId} onChange={e => setBatchNetId(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'11px' }}>
                     {networks.map(n => <option key={n.id} value={n.id}>{n.name}</option>)}
                   </select>
                 </div>
+
+                {/* ── Per-task network override ── */}
+                {batchSelectedIds.size > 0 && (
+                  <div style={{ gridColumn:'1/-1', background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #f3ba2f', padding:'12px 14px' }}>
+                    <div style={{ fontSize:'10px', color:'#f3ba2f', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px', display:'flex', alignItems:'center', gap:'6px' }}>
+                      <FaNetworkWired size={10}/> Network per Task (Override) — kosongkan untuk pakai default
+                    </div>
+                    <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+                      {airdropTasks.filter(t => batchSelectedIds.has(t.id)).map(task => {
+                        const overrideNetId = batchTaskNetworks[task.id] || '';
+                        const effectiveNet = networks.find(n => n.id === (overrideNetId || batchNetId));
+                        const isOverridden = !!overrideNetId && overrideNetId !== batchNetId;
+                        return (
+                          <div key={task.id} style={{ display:'flex', alignItems:'center', gap:'8px', background:'#111', border:'1px solid #1a1a1a', padding:'7px 10px' }}>
+                            <div style={{ flex:1, minWidth:0 }}>
+                              <div style={{ fontSize:'11px', fontWeight:'bold', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                {task.projectName}
+                              </div>
+                              <div style={{ fontSize:'10px', color:'#444', marginTop:'1px' }}>{task.taskType.toUpperCase()} · {task.network || '—'}</div>
+                            </div>
+                            <div style={{ display:'flex', alignItems:'center', gap:'5px', flexShrink:0 }}>
+                              {isOverridden && (
+                                <span style={{ fontSize:'9px', color:'#f3ba2f', border:'1px solid #f3ba2f44', padding:'1px 5px', letterSpacing:'0.5px' }}>
+                                  OVERRIDE
+                                </span>
+                              )}
+                              <select
+                                value={overrideNetId}
+                                onChange={e => setBatchTaskNetworks(prev => {
+                                  const updated = { ...prev };
+                                  if (e.target.value) updated[task.id] = e.target.value;
+                                  else delete updated[task.id];
+                                  return updated;
+                                })}
+                                style={{
+                                  fontFamily:'monospace', fontSize:'10px', padding:'3px 6px',
+                                  background:'#0a0a0a', color: isOverridden ? '#f3ba2f' : '#555',
+                                  border: `1px solid ${isOverridden ? '#f3ba2f44' : '#1e1e1e'}`,
+                                  minWidth:'140px',
+                                }}
+                              >
+                                <option value="">— default ({effectiveNet?.name ?? batchNetId}) —</option>
+                                {networks.map(n => (
+                                  <option key={n.id} value={n.id}>{n.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ fontSize:'10px', color:'#443322', marginTop:'8px', lineHeight:'1.5' }}>
+                      Task dengan network berbeda akan dieksekusi menggunakan RPC masing-masing. Semua network di-connect di awal sebelum batch dimulai.
+                    </div>
+                  </div>
+                )}
                 <div>
                   <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
                     Gas Limit (kosong = auto)
@@ -3989,21 +4136,25 @@ export const WalletGenerator: React.FC = () => {
                   )}
                 </div>
 
-                <div style={{ gridColumn:'1/-1' }}>
-                  <button
-                    onClick={() => runBatchExec(airdropTasks.filter(t => batchSelectedIds.has(t.id) && t.contractAddress))}
-                    disabled={batchWallets.length === 0 || batchSelectedIds.size === 0}
-                    style={{
-                      width:'100%', padding:'12px', background: batchWallets.length === 0 || batchSelectedIds.size === 0 ? '#1a1a1a' : '#836EFD',
-                      color:'#fff', border:'none', cursor: batchWallets.length === 0 || batchSelectedIds.size === 0 ? 'not-allowed' : 'pointer',
-                      fontSize:'13px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
-                      opacity: batchWallets.length === 0 || batchSelectedIds.size === 0 ? 0.5 : 1,
-                    }}>
-                    <FaLayerGroup size={13}/> Eksekusi {batchSelectedIds.size} Task × {batchWallets.length} Wallet
-                  </button>
-                  <div style={{ fontSize:'10px', color:'#444', marginTop:'6px', textAlign:'center' }}>
-                    Hanya task dengan contract address yang dieksekusi. Task tanpa kontrak akan di-skip.
-                  </div>
+              </div>
+            )}
+
+            {/* Tombol eksekusi sticky — selalu terlihat di luar area scroll */}
+            {!batchRunning && !batchDone && (
+              <div style={{ padding:'12px 20px', borderTop:'1px solid #1e1e1e', background:'#0a0a0a', flexShrink:0 }}>
+                <button
+                  onClick={() => runBatchExec(airdropTasks.filter(t => batchSelectedIds.has(t.id) && t.contractAddress))}
+                  disabled={batchWallets.length === 0 || batchSelectedIds.size === 0}
+                  style={{
+                    width:'100%', padding:'12px', background: batchWallets.length === 0 || batchSelectedIds.size === 0 ? '#1a1a1a' : '#836EFD',
+                    color:'#fff', border:'none', cursor: batchWallets.length === 0 || batchSelectedIds.size === 0 ? 'not-allowed' : 'pointer',
+                    fontSize:'13px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
+                    opacity: batchWallets.length === 0 || batchSelectedIds.size === 0 ? 0.5 : 1,
+                  }}>
+                  <FaLayerGroup size={13}/> Eksekusi {batchSelectedIds.size} Task × {batchWallets.length} Wallet
+                </button>
+                <div style={{ fontSize:'10px', color:'#444', marginTop:'6px', textAlign:'center' }}>
+                  Hanya task dengan contract address yang dieksekusi. Task tanpa kontrak akan di-skip.
                 </div>
               </div>
             )}
@@ -4055,7 +4206,7 @@ export const WalletGenerator: React.FC = () => {
                     </button>
                   )}
                   {batchDone && (
-                    <button onClick={() => { setBatchModalOpen(false); setBatchLog([]); setBatchDone(false); setBatchProgress({walDone:0,walTotal:0,taskDone:0,taskTotal:0,currentWal:'',currentTask:''}); setBatchSelectedIds(new Set()); }}
+                    <button onClick={() => { setBatchModalOpen(false); setBatchLog([]); setBatchDone(false); setBatchProgress({walDone:0,walTotal:0,taskDone:0,taskTotal:0,currentWal:'',currentTask:''}); setBatchSelectedIds(new Set()); setBatchTaskNetworks({}); }}
                       style={{ background:'#4caf50', border:'none', color:'#000', padding:'6px 16px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }}>
                       Tutup
                     </button>
