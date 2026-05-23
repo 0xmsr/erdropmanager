@@ -5,7 +5,7 @@ import {
   FaRocket, FaWallet, FaChartBar, FaTint, FaBrain,
   FaListAlt, FaCoins, FaShieldAlt, FaDownload,
   FaUpload, FaTerminal, FaTelegram, FaTwitter,
-  FaArrowRight, FaCheck,
+  FaArrowRight, FaCheck, FaHeart, FaCopy,
 } from 'react-icons/fa';
 
 function useTypingEffect(text: string, speed = 45, startDelay = 0) {
@@ -94,6 +94,98 @@ const FEATURES = [
     bullets: ['EVM & Solana support', 'Enkripsi AES lokal', 'Bulk generate hingga 10 wallet'],
   },
 ];
+
+const EVM_ADDRESS = '0xf0B47853c621cAbA9Fd0Ed490C75856a2dFD43EF';
+
+const DonationSection: React.FC = () => {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(EVM_ADDRESS).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div style={{
+      padding: '40px 20px',
+      borderBottom: '1px solid #111',
+      textAlign: 'center',
+    }}>
+      <p style={{
+        fontSize: '10px', letterSpacing: '3px', color: '#555',
+        textTransform: 'uppercase', marginBottom: '12px',
+      }}>
+        DUKUNG PENGEMBANGAN
+      </p>
+      <h2 style={{
+        fontSize: 'clamp(16px, 4vw, 24px)',
+        fontFamily: '"Courier New", monospace',
+        letterSpacing: '2px', textTransform: 'uppercase',
+        color: '#fff', border: 'none', margin: '0 0 10px',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '10px',
+      }}>
+        <FaHeart style={{ color: '#ff4466', fontSize: '20px', animation: 'pulse-border 1.5s infinite' }} />
+        Traktir Developer
+      </h2>
+      <p style={{ fontSize: '12px', color: '#555', marginBottom: '24px', lineHeight: 1.8, maxWidth: '480px', margin: '0 auto 24px' }}>
+        Jika aplikasi ini membantu aktivitas airdrop kamu, pertimbangkan untuk donasi. Setiap kontribusi sangat berarti untuk pengembangan fitur baru!
+      </p>
+
+      <div style={{
+        display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: '12px',
+        background: '#0d0d0d', border: '1px solid #1e1e1e',
+        borderTop: '2px solid #f3ba2f',
+        padding: '20px 28px', maxWidth: '100%',
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <FaWallet style={{ color: '#f3ba2f', flexShrink: 0 }} />
+          <span style={{
+            fontSize: '10px', letterSpacing: '2px', textTransform: 'uppercase',
+            color: '#f3ba2f',
+          }}>
+            EVM Address (ETH / BNB / Polygon / dll)
+          </span>
+        </div>
+
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '10px',
+          background: '#111', border: '1px solid #2a2a2a',
+          padding: '10px 14px', maxWidth: '100%', boxSizing: 'border-box',
+        }}>
+          <code style={{
+            fontSize: '12px', color: '#ccc', fontFamily: '"Courier New", monospace',
+            wordBreak: 'break-all', flex: 1, textAlign: 'left',
+          }}>
+            {EVM_ADDRESS}
+          </code>
+          <button
+            onClick={handleCopy}
+            title="Copy address"
+            style={{
+              background: copied ? '#00e67622' : 'transparent',
+              border: `1px solid ${copied ? '#00e676' : '#333'}`,
+              color: copied ? '#00e676' : '#888',
+              padding: '6px 10px', cursor: 'pointer', flexShrink: 0,
+              display: 'flex', alignItems: 'center', gap: '5px',
+              fontSize: '11px', letterSpacing: '0.5px',
+              transition: 'all 0.2s',
+              fontFamily: '"Courier New", monospace',
+            }}
+          >
+            <FaCopy style={{ fontSize: '11px' }} />
+            {copied ? 'COPIED!' : 'COPY'}
+          </button>
+        </div>
+
+        <p style={{ fontSize: '11px', color: '#444', margin: 0 }}>
+          ⚠️ Pastikan mengirim ke jaringan yang benar (EVM compatible)
+        </p>
+      </div>
+    </div>
+  );
+};
 
 export const Landing: React.FC = () => {
   const heroLine1 = useTypingEffect('E R D R O P', 50, 200);
@@ -478,6 +570,8 @@ export const Landing: React.FC = () => {
           </div>
         </div>
       </div>
+
+      <DonationSection />
 
       <footer className="app-footer" style={{ textAlign: 'center', color: '#333', fontSize: '11px', padding: '16px', borderTop: '1px solid #111' }}>
         Powered by IAC Community
