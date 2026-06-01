@@ -80,11 +80,11 @@ interface AutoContractCall {
 }
 
 const AUTO_ACTION_TEMPLATES = [
-  { id:'transfer_eth',   label:'💸 Transfer ETH',       abi:'', category:'transfer' },
-  { id:'erc20_approve',  label:'✅ ERC-20 Approve',      abi:'[{"inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"}]', category:'token' },
-  { id:'erc20_transfer', label:'➡️ ERC-20 Transfer',     abi:'[{"inputs":[{"name":"recipient","type":"address"},{"name":"amount","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"}]', category:'token' },
-  { id:'nft_mint',       label:'🖼️ NFT Mint',            abi:'[{"inputs":[{"name":"quantity","type":"uint256"}],"name":"mint","outputs":[],"stateMutability":"payable","type":"function"}]', category:'nft' },
-  { id:'custom',         label:'⚙️ Custom Calldata',     abi:'', category:'custom' },
+  { id:'transfer_eth',   label:'[] Transfer ETH',       abi:'', category:'transfer' },
+  { id:'erc20_approve',  label:'[] ERC-20 Approve',      abi:'[{"inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"}]', category:'token' },
+  { id:'erc20_transfer', label:'[] ERC-20 Transfer',     abi:'[{"inputs":[{"name":"recipient","type":"address"},{"name":"amount","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"}]', category:'token' },
+  { id:'nft_mint',       label:'[] NFT Mint',            abi:'[{"inputs":[{"name":"quantity","type":"uint256"}],"name":"mint","outputs":[],"stateMutability":"payable","type":"function"}]', category:'nft' },
+  { id:'custom',         label:'[] Custom Calldata',     abi:'', category:'custom' },
 ];
 
 const AUTO_SELECTOR_MAP: Record<string, string> = {
@@ -2484,7 +2484,6 @@ export const WalletGenerator: React.FC = () => {
   const [batchRetryFailed, setBatchRetryFailed] = useState(false);
   const [batchRetryMax,    setBatchRetryMax]    = useState(3);
   const [batchRetryDelay,  setBatchRetryDelay]  = useState(2000);
-  // Per-task network override: taskId -> networkId ('' = use global batchNetId)
   const [batchTaskNetworks, setBatchTaskNetworks] = useState<Record<string, string>>({});
   const batchStopRef = React.useRef(false);
   const batchLogRef  = React.useRef<HTMLDivElement>(null);
