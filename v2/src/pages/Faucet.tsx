@@ -5,9 +5,16 @@ import { FaSearch, FaTint, FaExternalLinkAlt, FaLink } from 'react-icons/fa';
 
 const FAUCET_DATA: FaucetItem[] = [
   {
+    id: 'dachain',
+    name: 'DAC Chain Testnet',
+    description: 'Dapatkan Faucet Native Token [DACC] di jaringan Dac Chain Testnet',
+    url: 'https://inception.dachain.io/faucet',
+    urlText: 'Drip DACC',
+    color: 'rgb(40, 68, 115)'
+  },
+  {
     id: 'robinhood',
     name: 'Robinhood Chain Testnet',
-    icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/robinhood.png',
     description: 'Dapatkan Faucet ETH dan Tokens TSLA, AMZN, PLTR, NFLX, AMD, di jaringan Robinhood Chain Testnet',
     url: 'https://faucet.testnet.chain.robinhood.com/',
     urlText: 'Drip Robinhood ETH',
@@ -15,16 +22,14 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
     id: 'aptos',
-    icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/aptos.png',
     name: 'Aptos Testnet',
     description: 'Dapatkan APT di jaringan Aptos Testnet',
     url: 'https://aptos.dev/network/faucet',
     urlText: 'Drip APT',
-    color: 'rgb(209, 255, 204))'
+    color: 'rgb(209, 255, 204)'
   },
   {
       id: 'sui',
-      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/sui.jpg',
       name: 'Sui Testnet',
       description: 'Dapatkan SUI di jaringan Sui Testnet',
       color: 'rgb(30, 136, 245)',
@@ -38,7 +43,6 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
     id: 'republicai',
-    icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/republicai.jpg',
     name: 'Republic AI Testnet',
     description: 'Connect Wallet dan Claim token RAI untuk pengujian di Republic AI Testnet',
     url: 'https://points.republicai.io/faucet',
@@ -47,7 +51,6 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'mawari',
-      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/mawari.png',
       name: 'Mawari Network Testnet',
       description: 'Dapatkan Faucet Native Token [MAWARI] di jaringan Mawari Network Testnet',
       url: 'https://hub.testnet.mawari.net/',
@@ -56,16 +59,14 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'giwa',
-      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/giwaTestnet.png',
       name: 'Giwa Sepolia',
       description: 'Dapatkan ETH di jaringan Giwa Sepolia',
       url: 'https://faucet.giwa.io',
       urlText: 'Drip Giwa ETH',
-      color: 'rgb(38, 64, 167)'
+      color: 'rgb(252, 252, 255)'
   },
   {
       id: 'pharos',
-      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/pharos.png',
       name: 'Pharos Testnet',
       description: 'Dapatkan PHRS di jaringan Pharos Testnet dari Zan, Bitget wallet & Okx wallet',
       color: 'rgb(16, 0, 240)',
@@ -78,7 +79,6 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'monad',
-      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/monad.jpg',
       name: 'Monad Testnet',
       description: 'Dapatkan MON di jaringan Monad Testnet',
       color: '#836efd',
@@ -91,7 +91,6 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'sepolia',
-      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/sepolia.png',
       name: 'Sepolia ETH',
       description: 'Dapatkan ETH testnet di jaringan ETH Sepolia',
       color: '#9e9e9e',
@@ -104,7 +103,6 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'holesky',
-      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/sepolia.png',
       name: 'Holesky ETH',
       description: 'Dapatkan ETH testnet di jaringan Holesky Testnet',
       url: 'https://holeskyfaucet.io/',
@@ -113,7 +111,6 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'bnb',
-      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/bnb.jpg',
       name: 'BNB Testnet',
       description: 'Dapatkan BNB testnet di jaringan BNB Testnet',
       color: '#F3BA2F',
@@ -124,7 +121,6 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'mumbai',
-      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/polygon.jpg',
       name: 'Mumbai (Polygon)',
       description: 'Dapatkan MATIC testnet untuk jaringan Mumbai (Polygon).',
       url: 'https://faucet.polygon.technology/',
@@ -133,7 +129,6 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'base',
-      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/sepolia.png',
       name: 'Base Goerli',
       description: 'Dapatkan ETH testnet di jaringan Base Goerli',
       url: 'https://faucet.quicknode.com/base/goerli',
@@ -142,7 +137,6 @@ const FAUCET_DATA: FaucetItem[] = [
   },
   {
       id: 'arbitrum',
-      icon: 'https://api.shelbynet.shelby.xyz/shelby/v1/blobs/0x149d77a24e6739db5eadcc3d332368f404ac36ac60337d97b31d1ceb38ec7e8f/sepolia.png',
       name: 'Arbitrum Sepolia',
       description: 'Dapatkan ETH testnet di jaringan Arbitrum Sepolia.',
       url: 'https://faucet.triangleplatform.com/arbitrum/sepolia',
