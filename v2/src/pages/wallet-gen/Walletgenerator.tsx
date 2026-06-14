@@ -4,7 +4,7 @@ import { Link } from 'react-router-dom';
 import { Navbar } from '../../components/Navbar';
 import { CustomAlert, CustomConfirm } from '../../components/CustomModals';
 import { KNOWN_4BYTE, KNOWN_TOPICS, KNOWN_SELECTORS } from './know'
-import { TxDecoder } from './TxDecoder';
+import { TxDecoder } from './Txdecoder';
 import {
   FaWallet, FaPlus, FaTrash, FaCopy, FaEye, FaEyeSlash,
   FaKey, FaShieldAlt, FaLink,
@@ -3505,7 +3505,7 @@ export const WalletGenerator: React.FC = () => {
   });
 
   const [activeTab, setActiveTab] = useState<
-  'wallets' | 'transfer' | 'airdrop' | 'auto' | 'sweep' | 'balcheck' | 'networks' | 'bytecode' | 'txdecoder'
+  'wallets' | 'transfer' | 'airdrop' | 'auto' | 'sweep' | 'balcheck' | 'networks' | 'bytecode' | 'txdecoder' | 'garap'
 >('wallets');
   const [generating,     setGenerating]     = useState(false);
   const [entropyBits,    setEntropyBits]    = useState<128|160|192|224|256>(128);
