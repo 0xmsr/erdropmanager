@@ -1,8 +1,8 @@
 import { Link, useLocation } from 'react-router-dom';
 
 const NAV_ITEMS = [
-  { path: '/intro',      label: '⌂ Intro' },
-  { path: '/',           label: 'Home' },
+  { path: '/',      label: '⌂ Intro' },
+  { path: '/home',           label: 'Home' },
   { path: '/waitlist',   label: 'Waitlist' },
   { path: '/finance',    label: 'Keuangan' },
   { path: '/faucet',     label: 'Faucet' },
