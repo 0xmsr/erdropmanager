@@ -7,7 +7,7 @@ import { NotFound } from './pages/NotFound';
 import { Dashboard } from './pages/Dashboard';
 import { Portfolio } from './pages/Portfolio';
 import { AIAssistant } from './pages/AIAssistant';
-import { WalletGenerator } from './pages/Walletgenerator';
+import { WalletGenerator } from './pages/wallet-gen/Walletgenerator';
 import { Landing } from './pages/Landing';
 import { ToS } from './tos/WalletGen_Tos.tsx';
 import './App.css';
@@ -16,8 +16,8 @@ function App() {
   return (
     <BrowserRouter>
       <Routes>
-        <Route path="/intro" element={<Landing />} />
-        <Route path="/" element={<Home />} />
+        <Route path="/" element={<Landing />} />
+        <Route path="/home" element={<Home />} />
         <Route path="/finance" element={<Finance />} />
         <Route path="/faucet" element={<Faucet />} />
         <Route path="/waitlist" element={<Waitlist />} />
