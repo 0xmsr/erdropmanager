@@ -1857,7 +1857,7 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
                 </div>
               )}
 
-              {selFunc && !isPayable && (
+              {selFunc && !isPayable && !isView && (
                 <div>
                   <FieldLabel tip="Biasanya 0 untuk non-payable. Override jika perlu.">
                     ETH Value
@@ -1872,6 +1872,13 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
                     />
                     <span style={{ fontSize:'12px', color: C.muted }}>ETH</span>
                   </div>
+                </div>
+              )}
+
+              {isView && (
+                <div style={{ background:'#001a2a', border:'1px solid #01a2ff33', borderLeft:'3px solid #01a2ff', padding:'10px 14px', fontSize:'12px', color:'#01a2ff', display:'flex', alignItems:'center', gap:'8px' }}>
+                  <FaInfoCircle size={12} />
+                  <span>Fungsi <strong>read-only</strong> ({selFunc?.stateMutability}) — tidak mengirim transaksi, tidak ada gas yang digunakan.</span>
                 </div>
               )}
 
@@ -1914,6 +1921,12 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
                   <FaGasPump size={10}/> Gas Estimator
                 </div>
 
+                {isView ? (
+                  <div style={{ fontSize:'11px', color:'#01a2ff', background:'#001a2a', border:'1px solid #01a2ff33', padding:'8px 12px', display:'flex', alignItems:'center', gap:'6px' }}>
+                    <FaInfoCircle size={10}/>
+                    Fungsi read-only — tidak membutuhkan gas.
+                  </div>
+                ) : (
                 <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center', marginBottom:'10px' }}>
                   <select
                     value={gasNetId}
@@ -1950,6 +1963,7 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
                     >✕</button>
                   )}
                 </div>
+                )}
 
                 {gasError && (
                   <div style={{ fontSize:'11px', color:C.yellow, display:'flex', alignItems:'center', gap:'5px', marginBottom:'8px' }}>
@@ -2030,8 +2044,8 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
                     </div>
                   );
                 })()}
+                </div> {/* end: !isView else block */}
               </div>
-            </div>
           )}
 
           {activeTab === 'manual' && (
@@ -3628,6 +3642,7 @@ export const WalletGenerator: React.FC = () => {
   const [execRawData,   setExecRawData]   = useState('0x');
   const [execGasLimit,  setExecGasLimit]  = useState('');
   const [execSimFailed, setExecSimFailed] = useState(false);
+  const [execReadResult, setExecReadResult] = useState<string | null>(null); // hasil eth_call view/pure
   const [batchModalOpen,   setBatchModalOpen]   = useState(false);
   const [batchNetId,       setBatchNetId]       = useState<string>('sepolia');
   const [batchWallets,     setBatchWallets]     = useState<{id:string;label:string;address:string;privateKey:string}[]>([]);
@@ -3813,12 +3828,33 @@ export const WalletGenerator: React.FC = () => {
                   parseArgWithAbiType(a, fragment.inputs[i] ?? { type: 'bytes' })
                 );
                 const data  = iface.encodeFunctionData(task.contractFunc, args);
+                batchAddLog(`  Func: ${task.contractFunc}(${args.join(', ')})`, 'info');
+
+                // ── VIEW / PURE: gunakan provider.call, jangan kirim TX ──
+                const mut = (fragment as any).stateMutability as string;
+                if (mut === 'view' || mut === 'pure') {
+                  batchAddLog(`  [read-only] Fungsi "${task.contractFunc}" adalah ${mut} — eth_call (tanpa gas/TX).`, 'info');
+                  const callResult = await ethWallet.provider.call({ to: task.contractAddress, data });
+                  let decoded = callResult;
+                  try {
+                    const outTypes = fragment.outputs ?? [];
+                    if (outTypes.length > 0) {
+                      const dec = iface.decodeFunctionResult(task.contractFunc, callResult);
+                      decoded = dec.map((v: any) => v.toString()).join(', ');
+                    }
+                  } catch { /* pakai raw hex */ }
+                  batchAddLog(`  [result] ${decoded}`, 'ok');
+                  taskSuccess = true;
+                  setAirdropTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'done', doneAt: Date.now() } : t));
+                  break; // selesai tanpa TX
+                }
+
+                // ── WRITE: lanjut sebagai TX ──
                 txRequest = {
                   to: task.contractAddress,
                   value: task.ethValue && task.ethValue !== '0' ? ethers.utils.parseEther(task.ethValue) : ethers.BigNumber.from(0),
                   data,
                 };
-                batchAddLog(`  Func: ${task.contractFunc}(${args.join(', ')})`, 'info');
               } else {
                 txRequest = { to: task.contractAddress, value: ethers.BigNumber.from(0), data: '0x' };
               }
@@ -3969,6 +4005,7 @@ export const WalletGenerator: React.FC = () => {
   const openExecPanel = (task: AirdropTask) => {
     setExecTaskId(task.id);
     setExecLog([]);
+    setExecReadResult(null);
     setExecContract({
       contractAddress: task.contractAddress || '',
       contractAbi:     task.contractAbi     || '',
@@ -4024,6 +4061,31 @@ export const WalletGenerator: React.FC = () => {
               parseArgWithAbiType(a, fragment.inputs[i] ?? { type: 'bytes' })
             );
             const data  = iface.encodeFunctionData(execContract.contractFunc, args);
+            execAddLog(`[</>]  Func: ${execContract.contractFunc}(${args.join(', ')})`);
+
+            // ── VIEW / PURE: gunakan eth_call, jangan kirim TX ──
+            const mut = (fragment as any).stateMutability as string;
+            if (mut === 'view' || mut === 'pure') {
+              execAddLog(`[read-only] Fungsi "${execContract.contractFunc}" adalah ${mut} — menggunakan eth_call (tidak ada gas/TX).`);
+              const callResult = await provider.call({
+                to:   execContract.contractAddress,
+                data,
+              });
+              // Decode hasil jika ada outputs
+              let decoded = callResult;
+              try {
+                const outTypes = fragment.outputs ?? [];
+                if (outTypes.length > 0) {
+                  const dec = iface.decodeFunctionResult(execContract.contractFunc, callResult);
+                  decoded = dec.map((v: any) => v.toString()).join(', ');
+                }
+              } catch { /* pakai raw hex */ }
+              execAddLog(`[result] ${decoded}`);
+              setExecReadResult(decoded);
+              setExecRunning(false);
+              return;
+            }
+            // ── WRITE: lanjut sebagai TX ──
             txRequest = {
               to:    execContract.contractAddress,
               value: execContract.ethValue && execContract.ethValue !== '0'
@@ -4031,7 +4093,6 @@ export const WalletGenerator: React.FC = () => {
                        : ethers.BigNumber.from(0),
               data,
             };
-            execAddLog(`[</>]  Func: ${execContract.contractFunc}(${args.join(', ')})`);
           } catch (e: any) {
             execAddLog(`[X] ABI encode error: ${e.message}`);
             setExecRunning(false);
@@ -6699,15 +6760,30 @@ export const WalletGenerator: React.FC = () => {
                           ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Executing...</>
                           : execSimFailed
                             ? <><FaExclamationTriangle size={12}/> Force Send (⚠️ Berisiko)</>
-                            : <><FaBolt/> Eksekusi TX</>}
+                            : <><FaBolt/> Eksekusi TX / Call</>}
                       </button>
+
+                      {execReadResult !== null && (
+                        <div style={{
+                          background:'#001a0d', border:'1px solid #00e67644', borderLeft:'3px solid #00e676',
+                          padding:'10px 14px', marginBottom:'10px', fontSize:'12px',
+                        }}>
+                          <div style={{ fontSize:'10px', color:'#00e676', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px', display:'flex', alignItems:'center', gap:'5px' }}>
+                            <FaCheckCircle size={10}/> Hasil Read-Only (eth_call)
+                          </div>
+                          <code style={{ fontFamily:'monospace', color:'#aaffcc', wordBreak:'break-all', lineHeight:'1.7', display:'block' }}>
+                            {execReadResult}
+                          </code>
+                        </div>
+                      )}
 
                       {execLog.length > 0 && (
                         <div style={{ background:'#030308', border:'1px solid #0e0e1a', padding:'10px', fontFamily:'monospace', fontSize:'10px', color:'#888', maxHeight:'140px', overflowY:'auto', lineHeight:'1.7' }}>
                           {execLog.map((l, i) => (
                             <div key={i} style={{
-                              color: l.includes('[done]')||l.includes('DIKONFIRMASI') ? '#4caf50'
+                              color: l.includes('[done]')||l.includes('DIKONFIRMASI')||l.includes('[result]') ? '#4caf50'
                                    : l.includes('[X]') ? '#f44336'
+                                   : l.includes('[read-only]') ? '#01a2ff'
                                    : l.includes('[execute]')||l.includes('[send]') ? '#836EFD'
                                    : l.includes('⏳') ? '#ffaa00'
                                    : '#666',
