@@ -33,7 +33,7 @@ const FEATURES = [
     icon: <FaTerminal />,
     title: 'Airdrop Tracker',
     path: '/',
-    color: '#01a2ff',
+    color: 'rgba(255, 255, 255, 0.51)',
     desc: 'Catat & kelola semua garapan airdrop mu. Tandai status harian, set deadline, estimasi reward, dan simpan wallet per task.',
     bullets: ['Status Ongoing / END / Waitlist', 'Daily reset otomatis jam 07.00 WIB', 'Deadline countdown & overdue alert'],
   },
@@ -41,7 +41,7 @@ const FEATURES = [
     icon: <FaListAlt />,
     title: 'Waitlist Manager',
     path: '/waitlist',
-    color: '#a855f7',
+    color: 'rgba(255, 255, 255, 0.45)',
     desc: 'Daftar waitlist project baru dengan simpan akun sosmed (email, Discord, X) dan wallet yang dipakai.',
     bullets: ['Multi-sosmed per entry', 'Wallet address tracking', 'Linked ke Home tracker'],
   },
@@ -49,7 +49,7 @@ const FEATURES = [
     icon: <FaChartBar />,
     title: 'Finance Tracker',
     path: '/finance',
-    color: '#00e676',
+    color: 'rgba(255, 255, 255, 0.46)',
     desc: 'Pantau semua income & expense dari kegiatan kripto. Multi-currency: USD, IDR, BTC, ETH via CoinGecko.',
     bullets: ['Income vs Expense dashboard', 'Konversi real-time (USD/IDR/BTC/ETH)', 'Filter per network / tanggal'],
   },
@@ -57,7 +57,7 @@ const FEATURES = [
     icon: <FaCoins />,
     title: 'Portfolio Tracker',
     path: '/portfolio',
-    color: '#f3ba2f',
+    color: 'rgba(255, 249, 234, 0.49)',
     desc: 'Track token airdrop yang sudah kamu terima. Hitung nilai holding, monitor vesting, dan catat yang sudah dijual.',
     bullets: ['Status Holding / Vesting / Sold', 'Kalkulasi total nilai otomatis', 'Filter & search by network'],
   },
@@ -65,7 +65,7 @@ const FEATURES = [
     icon: <FaTint />,
     title: 'Info Faucet',
     path: '/faucet',
-    color: '#ff6b6b',
+    color: 'rgba(255, 255, 255, 0.51)',
     desc: 'Direktori lengkap faucet testnet populer. Monad, Sepolia, Sui, BNB, Base, dan banyak lagi dalam satu halaman.',
     bullets: ['14+ jaringan testnet', 'Multi-source per network', 'Search & filter cepat'],
   },
@@ -73,7 +73,7 @@ const FEATURES = [
     icon: <FaBrain />,
     title: 'AI Assistant',
     path: '/ai',
-    color: '#c084fc',
+    color: 'rgba(255, 255, 255, 0.47)',
     desc: 'Chat langsung dengan Rekt AI untuk riset project, analisis whitepaper, atau tanya tentang strategi airdrop.',
     bullets: ['Powered by Rekt', 'Context-aware crypto advisor', 'Selalu up to date'],
   },
@@ -81,17 +81,17 @@ const FEATURES = [
     icon: <FaChartBar />,
     title: 'Dashboard',
     path: '/dashboard',
-    color: '#ff9800',
+    color: 'rgba(255, 246, 233, 0.5)',
     desc: 'Overview lengkap semua data dalam satu layar. Progress harian, deadline, top network income, dan breakdown kategori.',
     bullets: ['Stat cards real-time', 'Deadline alert & overdue warning', 'Top network by income'],
   },
   {
     icon: <FaWallet />,
-    title: 'Wallet Generator',
+    title: 'Wallet-Gen',
     path: '/wallet-gen',
-    color: '#4db6ac',
-    desc: 'Generate EVM & Solana wallet baru langsung di browser. Enkripsi dengan password, export & import aman.',
-    bullets: ['EVM & Solana support', 'Enkripsi AES lokal', 'Bulk generate hingga 10 wallet'],
+    color: 'rgba(255, 255, 255, 0.5)',
+    desc: 'Generate EVM wallet baru langsung di browser. Enkripsi dengan password, export & import aman.',
+    bullets: ['Dompet Ethereum Virtual Machine (EVM)', 'Enkripsi AES lokal', 'Bulk generate hingga 10+ wallet'],
   },
 ];
 
@@ -327,7 +327,7 @@ export const Landing: React.FC = () => {
             flexWrap: 'wrap', marginBottom: '40px',
             animation: 'fadeSlideUp 0.5s ease 1.8s both',
           }}>
-            <Link to="/" style={{ textDecoration: 'none' }}>
+            <Link to="/home" style={{ textDecoration: 'none' }}>
               <button className="cta-btn" style={{
                 background: '#fff', color: '#000', border: 'none',
                 padding: '12px 28px', fontFamily: '"Courier New", monospace',
@@ -355,10 +355,10 @@ export const Landing: React.FC = () => {
             animation: 'fadeSlideUp 0.5s ease 2s both',
           }}>
             {[
-              { label: '8 Fitur', color: '#01a2ff' },
-              { label: '100% Lokal', color: '#00e676' },
-              { label: 'No Login', color: '#f3ba2f' },
-              { label: 'Open Source', color: '#a855f7' },
+              { label: '8 Fitur', color: '#ffffff' },
+              { label: '100% Lokal', color: '#888888' },
+              { label: 'No Login', color: '#888888' },
+              { label: 'Open Source', color: '#ffffff' },
             ].map(p => (
               <span key={p.label} style={{
                 fontSize: '10px', letterSpacing: '1.5px', textTransform: 'uppercase',
@@ -385,9 +385,9 @@ export const Landing: React.FC = () => {
         </p>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '12px' }}>
           {[
-            { icon: <FaShieldAlt />, title: 'Data 100% Lokal', desc: 'Semua data tersimpan di localStorage browser kamu. Tidak ada server, tidak ada database cloud, tidak ada yang bisa akses datamu.', color: '#00e676' },
-            { icon: <FaDownload />, title: 'Export & Import', desc: 'Backup semua data ke file .txt terenkripsi. Pindah device kapan saja tanpa kehilangan catatan airdrop.', color: '#01a2ff' },
-            { icon: <FaUpload />, title: 'Zero Signup', desc: 'Langsung pakai tanpa registrasi, email, atau password. Buka browser, buka app, mulai catat.', color: '#f3ba2f' },
+            { icon: <FaShieldAlt />, title: 'Data 100% Lokal', desc: 'Semua data tersimpan di localStorage browser kamu. Tidak ada server, tidak ada database cloud, tidak ada yang bisa akses datamu.', color: '#ffffff' },
+            { icon: <FaDownload />, title: 'Export & Import', desc: 'Backup semua data ke file .txt terenkripsi. Pindah device kapan saja tanpa kehilangan catatan airdrop.', color: '#ffffff' },
+            { icon: <FaUpload />, title: 'Zero Signup', desc: 'Langsung pakai tanpa registrasi, email, atau password. Buka browser, buka app, mulai catat.', color: '#ffffff' },
           ].map((item, i) => (
             <div key={i} style={{
               background: '#0d0d0d', border: '1px solid #1a1a1a',
