@@ -3008,7 +3008,10 @@ Berikan skor yang jujur. Jika kode benar-benar aman, katakan aman.`;
       if (res.ok) {
         const data = await res.json();
         const sigs: any[] = data.results ?? [];
-        setLookupResults(prev => ({ ...prev, [selector]: sigs.length > 0 ? sigs.map((s: any) => s.text_signature).join(' | ') : '(not found)' }));
+        const result = sigs.length > 0 ? sigs.map((s: any) => s.text_signature).join(' | ') : '(not found)';
+        const newResults = { ...lookupResults, [selector]: result };
+        setLookupResults(newResults);
+        rebuildAbiWithLookup(funcs, newResults);
       } else {
         setLookupResults(prev => ({ ...prev, [selector]: '(lookup failed)' }));
       }
@@ -3019,12 +3022,32 @@ Berikan skor yang jujur. Jika kode benar-benar aman, katakan aman.`;
     }
   };
 
+  /** Rebuild abiEntries dengan menggabungkan known DB lokal + hasil lookupResults */
+  const rebuildAbiWithLookup = (currentFuncs: DetectedFunc[], currentLookup: Record<string, string>) => {
+    const entries: AbiEntry[] = [];
+    const seen = new Set<string>();
+    for (const f of currentFuncs) {
+      const sig = f.known ?? (() => {
+        const raw = currentLookup[f.selector];
+        if (!raw || raw.startsWith('(')) return null;
+        return raw.split(' | ')[0].trim();
+      })();
+      if (!sig) continue;
+      const entry = parseSigToAbi(sig);
+      if (!entry || seen.has(entry.name)) continue;
+      seen.add(entry.name);
+      entries.push(entry);
+    }
+    setAbiEntries(entries);
+  };
+
   // Lookup all unknown selectors sequentially
   const lookupAll4Byte = async () => {
     const unknown = funcs.filter(f => !f.known && lookupResults[f.selector] === undefined);
     if (unknown.length === 0) return;
     setLookupAllLoading(true);
     setLookupAllProgress({ done: 0, total: unknown.length });
+    const newResults = { ...lookupResults };
     for (let i = 0; i < unknown.length; i++) {
       const selector = unknown[i].selector;
       try {
@@ -3032,19 +3055,21 @@ Berikan skor yang jujur. Jika kode benar-benar aman, katakan aman.`;
         if (res.ok) {
           const data = await res.json();
           const sigs: any[] = data.results ?? [];
-          setLookupResults(prev => ({ ...prev, [selector]: sigs.length > 0 ? sigs.map((s: any) => s.text_signature).join(' | ') : '(not found)' }));
+          newResults[selector] = sigs.length > 0 ? sigs.map((s: any) => s.text_signature).join(' | ') : '(not found)';
         } else {
-          setLookupResults(prev => ({ ...prev, [selector]: '(lookup failed)' }));
+          newResults[selector] = '(lookup failed)';
         }
       } catch {
-        setLookupResults(prev => ({ ...prev, [selector]: '(lookup failed — CORS/network)' }));
+        newResults[selector] = '(lookup failed — CORS/network)';
       }
+      setLookupResults({ ...newResults });
       setLookupAllProgress({ done: i + 1, total: unknown.length });
-      // small delay to avoid rate-limiting
       await new Promise(r => setTimeout(r, 120));
     }
     setLookupAllLoading(false);
     setLookupAllProgress(null);
+    // Rebuild ABI dengan semua hasil lookup yang berhasil
+    rebuildAbiWithLookup(funcs, newResults);
   };
 
   const filteredDisasm = filterOp
@@ -3318,6 +3343,33 @@ Berikan skor yang jujur. Jika kode benar-benar aman, katakan aman.`;
           {/* ABI tab */}
           {tab === 'abi' && (
             <div>
+              {/* Banner: masih ada unknown selector yang belum di-lookup */}
+              {funcs.filter(f => !f.known && !lookupResults[f.selector]).length > 0 && (
+                <div style={{ background:'#01a2ff11', border:'1px solid #01a2ff44', borderLeft:'3px solid #01a2ff', padding:'10px 14px', marginBottom:'14px', display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:'12px', color:'#01a2ff', fontWeight:'bold', marginBottom:'2px' }}>
+                      {funcs.filter(f => !f.known && !lookupResults[f.selector]).length} selector belum diidentifikasi
+                    </div>
+                    <div style={{ fontSize:'11px', color:'#555' }}>
+                      Pergi ke tab <strong style={{ color:'#f3ba2f' }}>Fungsi</strong> → klik <strong style={{ color:'#01a2ff' }}>Lookup All</strong> untuk mencari signature dari 4byte.directory, lalu ABI di sini akan otomatis diperbarui.
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => { setTab('funcs'); setTimeout(lookupAll4Byte, 100); }}
+                    disabled={lookupAllLoading}
+                    style={{ background:'#01a2ff22', border:'1px solid #01a2ff', color:'#01a2ff', padding:'7px 14px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px', flexShrink:0, whiteSpace:'nowrap' }}>
+                    {lookupAllLoading
+                      ? <><FaSpinner size={11} style={{ animation:'spin 1s linear infinite' }}/> Lookup... {lookupAllProgress ? `${lookupAllProgress.done}/${lookupAllProgress.total}` : ''}</>
+                      : <><FaGlobe size={11}/> Lookup All Sekarang</>}
+                  </button>
+                </div>
+              )}
+              {/* Banner: semua sudah di-lookup */}
+              {funcs.filter(f => !f.known && !lookupResults[f.selector]).length === 0 && Object.keys(lookupResults).length > 0 && (
+                <div style={{ background:'#4caf5011', border:'1px solid #4caf5044', borderLeft:'3px solid #4caf50', padding:'8px 14px', marginBottom:'14px', fontSize:'12px', color:'#4caf50', display:'flex', alignItems:'center', gap:'8px' }}>
+                  <FaCheckCircle size={11}/> Semua selector telah di-lookup — ABI di bawah sudah lengkap.
+                </div>
+              )}
               <p style={{ fontSize:'12px', color:'#555', marginBottom:'12px' }}>
                 ABI lengkap yang direkonstruksi dari function selector yang dikenal. Selector yang belum dikenal tidak termasuk — gunakan tab Fungsi → Lookup untuk memperluas ABI.
               </p>
@@ -3353,7 +3405,7 @@ Berikan skor yang jujur. Jika kode benar-benar aman, katakan aman.`;
                       ↓ Download abi.json
                     </button>
                     <span style={{ fontSize:'11px', color:'#333' }}>
-                      {abiEntries.length} fungsi · {funcs.filter(f=>!f.known).length} selector tidak dikenal (tidak termasuk)
+                      {abiEntries.length} fungsi · {funcs.filter(f => !f.known && !lookupResults[f.selector]?.match(/^[a-zA-Z_]/)  ).length} selector tidak dikenal (tidak termasuk)
                     </span>
                   </div>
 
