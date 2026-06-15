@@ -1,14 +1,3 @@
-/**
- * TxDecoder.tsx — Ethereum Transaction Decoder
- * Mendukung semua tipe transaksi:
- *   Type 0 (Legacy)
- *   Type 1 (EIP-2930 Access List)
- *   Type 2 (EIP-1559 Fee Market)
- *   Type 3 (EIP-4844 Blob — parsing header)
- *
- * Cara pakai: impor <TxDecoder /> dan render sebagai tab di WalletGenerator.
- * Butuh: know.tsx (KNOWN_4BYTE, KNOWN_TOPICS) ada di path yang sama.
- */
 
 import React, { useState, useCallback } from 'react';
 import { ethers } from 'ethers';
@@ -19,10 +8,6 @@ import {
   FaFileCode, FaTerminal, FaLayerGroup, FaBolt, FaLink,
   FaExclamationTriangle, FaSpinner, FaGlobe,
 } from 'react-icons/fa';
-
-/* ─────────────────────────────────────────────
-   KONSTANTA & HELPER
-───────────────────────────────────────────── */
 
 const TX_TYPES: Record<number, { label: string; color: string; eip: string; desc: string }> = {
   0: { label: 'Legacy',   color: '#888',    eip: 'Pre-EIP-155 / EIP-155', desc: 'Transaksi lama dengan gasPrice flat. Tidak punya proteksi replay chain (Pre-155) atau pakai chainId untuk proteksi (EIP-155).' },
@@ -56,10 +41,6 @@ function copyToClipboard(text: string) {
   navigator.clipboard.writeText(text).catch(() => {});
 }
 
-/* ─────────────────────────────────────────────
-   DECODE CALLDATA
-───────────────────────────────────────────── */
-
 interface DecodedParam {
   name: string;
   type: string;
@@ -77,10 +58,6 @@ interface DecodedCall {
   error?: string;
 }
 
-/**
- * Decode parameter slot sederhana (static types saja).
- * Untuk dynamic types (bytes, string, tuple[]) ditampilkan mentah.
- */
 function decodeSlot(hex32: string, abiType: string): string {
   try {
     const h = hex32.replace(/^0x/, '').padStart(64, '0');
@@ -112,8 +89,6 @@ function decodeCalldata(data: string): DecodedCall {
   const body     = raw.slice(10);
 
   const params: DecodedParam[] = [];
-
-  // Coba parse berdasarkan known signature
   if (knownSig) {
     const inner   = knownSig.slice(knownSig.indexOf('(') + 1, knownSig.lastIndexOf(')'));
     const typeList = inner ? inner.split(',').map(t => t.trim()) : [];
@@ -126,8 +101,6 @@ function decodeCalldata(data: string): DecodedCall {
       const value = isDynamic
         ? `[offset: 0x${BigInt('0x' + slot).toString(16)}] (dynamic — lihat raw)`
         : decodeSlot(slot, abiType);
-
-      // Extra formatting
       let note: string | undefined;
       if (abiType === 'address') note = `checksum: ${ethers.utils.getAddress('0x' + slot.slice(24).padStart(40, '0'))}`;
       if (abiType === 'uint256' && BigInt('0x' + slot) > 10n ** 15n) {
@@ -138,11 +111,9 @@ function decodeCalldata(data: string): DecodedCall {
       offset += 64;
     });
   } else {
-    // Tidak ada signature, coba tebak parameter 32-byte
     for (let i = 0; i < Math.min(body.length / 64, 10); i++) {
       const slot = body.slice(i * 64, (i + 1) * 64);
       if (slot.length < 64) break;
-      // Tebak tipe: jika 24 byte awal zero → mungkin address
       const stripped = slot.replace(/^0{24}/, '');
       let guessType  = 'bytes32';
       let guessVal   = '0x' + slot;
@@ -162,10 +133,6 @@ function decodeCalldata(data: string): DecodedCall {
   return { selector, signature: knownSig, knownSig, params, raw };
 }
 
-/* ─────────────────────────────────────────────
-   DECODE EVENT LOG
-───────────────────────────────────────────── */
-
 interface DecodedLog {
   address: string;
   topic0: string;
@@ -181,7 +148,6 @@ function decodeLog(log: { address: string; topics: string[]; data: string }): De
 
   const decodedTopics: DecodedLog['decodedTopics'] = [];
   if (knownEvent) {
-    // Parse tipe indexed dari signature
     const inner     = knownEvent.sig.slice(knownEvent.sig.indexOf('(') + 1, knownEvent.sig.lastIndexOf(')'));
     const typeList   = inner ? inner.split(',').map(t => t.trim()) : [];
     let topicIndex  = 1; // topics[0] = event sig
@@ -203,10 +169,6 @@ function decodeLog(log: { address: string; topics: string[]; data: string }): De
     decodedTopics,
   };
 }
-
-/* ─────────────────────────────────────────────
-   FETCH & PARSE FULL TRANSACTION
-───────────────────────────────────────────── */
 
 export interface ParsedTx {
   // Identitas
@@ -330,7 +292,6 @@ async function fetchAndParseTx(
   };
 }
 
-/** Parse raw RLP-encoded transaction hex tanpa RPC */
 function parseRawTx(raw: string): ParsedTx {
   try {
     const tx = ethers.utils.parseTransaction(raw);
@@ -358,6 +319,327 @@ function parseRawTx(raw: string): ParsedTx {
   } catch (e: any) {
     throw new Error('Gagal parse raw RLP: ' + e?.message);
   }
+}
+
+interface AbiHint {
+  selector: string;
+  signature: string | null;
+  source: 'known' | 'bytecode';
+}
+
+interface BytecodeAnalysis {
+  totalBytes: number;
+  // Constructor args (setelah STOP 0x00 marker)
+  constructorArgs: string | null;
+  constructorArgCount: number;
+  // 4-byte selectors ditemukan di bytecode
+  detectedSelectors: AbiHint[];
+  // Pola tipikal
+  patterns: { label: string; color: string; desc: string }[];
+  // Init code vs runtime split
+  hasMetadata: boolean;
+  metadataOffset: number | null;
+  swarmHash: string | null;
+  ipfsHash: string | null;
+  // Ukuran bagian
+  initCodeSize: number | null;
+  runtimeSize: number | null;
+}
+
+function extractSelectorsFromBytecode(hex: string): AbiHint[] {
+  const body = hex.replace(/^0x/, '').toLowerCase();
+  const found = new Map<string, AbiHint>();
+
+  for (const [sel, sig] of Object.entries(KNOWN_4BYTE)) {
+    if (body.includes(sel)) {
+      found.set(sel, { selector: sel, signature: sig, source: 'known' });
+    }
+  }
+
+  for (let i = 0; i < body.length - 10; i += 2) {
+    const opcode = body.slice(i, i + 2);
+    if (opcode === '63') { // PUSH4
+      const sel = body.slice(i + 2, i + 10);
+      if (!found.has(sel) && /^[0-9a-f]{8}$/.test(sel)) {
+        found.set(sel, { selector: sel, signature: KNOWN_4BYTE[sel] ?? null, source: 'bytecode' });
+      }
+    }
+  }
+
+  return Array.from(found.values()).slice(0, 40); // max 40
+}
+
+function detectMetadata(hex: string): { offset: number | null; swarmHash: string | null; ipfsHash: string | null; hasMetadata: boolean } {
+  const body = hex.replace(/^0x/, '').toLowerCase();
+  const swarmMatch = body.match(/a165627a7a72305820([0-9a-f]{64})0029/);
+  if (swarmMatch) {
+    const offset = body.indexOf(swarmMatch[0]);
+    return { offset: offset / 2, swarmHash: swarmMatch[1], ipfsHash: null, hasMetadata: true };
+  }
+
+  const ipfsMatch = body.match(/a2646970667358221220([0-9a-f]{64})64736f6c63/);
+  if (ipfsMatch) {
+    const offset = body.indexOf(ipfsMatch[0]);
+    return { offset: offset / 2, ipfsHash: ipfsMatch[1], swarmHash: null, hasMetadata: true };
+  }
+
+  return { offset: null, swarmHash: null, ipfsHash: null, hasMetadata: false };
+}
+
+function detectPatterns(hex: string): BytecodeAnalysis['patterns'] {
+  const body = hex.replace(/^0x/, '').toLowerCase();
+  const out: BytecodeAnalysis['patterns'] = [];
+
+  if (body.includes('363d3d37') || body.includes('5af43d82')) {
+    out.push({ label: 'EIP-1167 Minimal Proxy', color: '#61dfff', desc: 'Clone factory pattern — delegatecall ke implementation contract' });
+  }
+  if (body.includes('f4') && body.includes('calldatacopy'.toLowerCase())) {
+    out.push({ label: 'Proxy (DELEGATECALL)', color: '#836efd', desc: 'Pola proxy: mendelegasikan panggilan ke contract lain' });
+  }
+
+  // Ownership: a9059cbb = transfer, 8da5cb5b = owner()
+  if (body.includes('8da5cb5b')) {
+    out.push({ label: 'Ownable', color: '#f3ba2f', desc: 'Contract punya fungsi owner() — pola kepemilikan' });
+  }
+
+  // Pausable: 5c975abb = paused()
+  if (body.includes('5c975abb')) {
+    out.push({ label: 'Pausable', color: '#ff9800', desc: 'Contract bisa di-pause (Pausable pattern)' });
+  }
+
+  // ERC-20: a9059cbb = transfer, 70a08231 = balanceOf, 18160ddd = totalSupply
+  const erc20Sigs = ['a9059cbb', '70a08231', '18160ddd', 'dd62ed3e'];
+  const erc20Count = erc20Sigs.filter(s => body.includes(s)).length;
+  if (erc20Count >= 3) {
+    out.push({ label: 'ERC-20 Token', color: '#01a2ff', desc: `${erc20Count}/4 fungsi wajib ERC-20 terdeteksi` });
+  }
+
+  // ERC-721: 6352211e = ownerOf, b88d4fde = safeTransferFrom
+  const erc721Sigs = ['6352211e', 'b88d4fde', '42842e0e', 'e985e9c5'];
+  const erc721Count = erc721Sigs.filter(s => body.includes(s)).length;
+  if (erc721Count >= 2) {
+    out.push({ label: 'ERC-721 NFT', color: '#e81899', desc: `${erc721Count}/4 fungsi wajib ERC-721 terdeteksi` });
+  }
+
+  // Lock/Timelock pola: biasanya ada storage timestamp + require(block.timestamp >= ...)
+  // TIMESTAMP opcode = 42, LT = 10, require biasanya JUMPI (57)
+  const timestampOp = '42';
+  const tsIdx = body.indexOf(timestampOp);
+  if (tsIdx !== -1 && body.includes('57')) {
+    // Hitung frekuensi TIMESTAMP opcode
+    const tsCount = (body.match(/(?<=^|(?<=..))42(?=..)/g) ?? []).length;
+    if (tsCount >= 2) {
+      out.push({ label: '⏰ Time-Lock / Vesting', color: '#4caf50', desc: `Opcode TIMESTAMP (0x42) ditemukan ${tsCount}x — kemungkinan ada logika lock/unlock berbasis waktu` });
+    }
+  }
+
+  // Self-destruct: ff
+  if (body.includes('ff')) {
+    out.push({ label: '⚠ SELFDESTRUCT', color: '#f44336', desc: 'Opcode SELFDESTRUCT (0xFF) ada dalam bytecode — contract bisa dihancurkan' });
+  }
+
+  // CREATE2
+  if (body.includes('f5')) {
+    out.push({ label: 'CREATE2', color: '#9c27b0', desc: 'Menggunakan CREATE2 untuk deploy contract dengan alamat deterministik' });
+  }
+
+  return out;
+}
+
+function analyzeBytecode(data: string): BytecodeAnalysis {
+  const body = data.replace(/^0x/, '').toLowerCase();
+  const totalBytes = Math.floor(body.length / 2);
+
+  const { offset: metadataOffset, swarmHash, ipfsHash, hasMetadata } = detectMetadata(body);
+
+  // Estimasi init code vs runtime — cari CODECOPY (39) + RETURN (f3) pola
+  // Ini heuristik, bukan pasti
+  let initCodeSize: number | null = null;
+  let runtimeSize: number | null = null;
+  if (hasMetadata && metadataOffset !== null) {
+    runtimeSize = metadataOffset;
+    initCodeSize = totalBytes - runtimeSize;
+  }
+
+  // Constructor args: jika bytecode panjang dan ada data setelah metadata
+  let constructorArgs: string | null = null;
+  let constructorArgCount = 0;
+  if (hasMetadata && metadataOffset !== null) {
+    // Args biasanya ada di akhir setelah metadata hash
+    const afterMeta = body.slice((metadataOffset + 43) * 2); // +43 bytes metadata
+    if (afterMeta.length >= 64 && /^[0-9a-f]+$/.test(afterMeta)) {
+      constructorArgs = '0x' + afterMeta;
+      constructorArgCount = Math.floor(afterMeta.length / 64);
+    }
+  }
+
+  const detectedSelectors = extractSelectorsFromBytecode(body);
+  const patterns = detectPatterns(body);
+
+  return {
+    totalBytes,
+    constructorArgs,
+    constructorArgCount,
+    detectedSelectors,
+    patterns,
+    hasMetadata,
+    metadataOffset,
+    swarmHash,
+    ipfsHash,
+    initCodeSize,
+    runtimeSize,
+  };
+}
+
+function DeploymentPanel({ data }: { data: string }) {
+  const [rawOpen, setRawOpen] = useState(false);
+  const [abiOpen, setAbiOpen] = useState(true);
+  const analysis = React.useMemo(() => analyzeBytecode(data), [data]);
+
+  return (
+    <div>
+      {/* ── Ringkasan ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '10px', marginBottom: '14px' }}>
+        <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${COLORS.pink}`, padding: '12px' }}>
+          <div style={S.label}>Ukuran Bytecode</div>
+          <div style={{ fontFamily: COLORS.mono, fontSize: '14px', color: COLORS.pink }}>{analysis.totalBytes.toLocaleString()} bytes</div>
+          <div style={{ fontSize: '10px', color: COLORS.muted, marginTop: '4px' }}>{(analysis.totalBytes / 24576 * 100).toFixed(1)}% dari batas 24 KB</div>
+        </div>
+        {analysis.runtimeSize !== null && (
+          <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${COLORS.purple}`, padding: '12px' }}>
+            <div style={S.label}>Runtime Code</div>
+            <div style={{ fontFamily: COLORS.mono, fontSize: '14px', color: COLORS.purple }}>~{analysis.runtimeSize.toLocaleString()} bytes</div>
+          </div>
+        )}
+        <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${COLORS.accent}`, padding: '12px' }}>
+          <div style={S.label}>ABI Hints</div>
+          <div style={{ fontFamily: COLORS.mono, fontSize: '14px', color: COLORS.accent }}>{analysis.detectedSelectors.length} selector</div>
+          <div style={{ fontSize: '10px', color: COLORS.muted, marginTop: '4px' }}>
+            {analysis.detectedSelectors.filter(s => s.signature).length} dikenali
+          </div>
+        </div>
+        {analysis.constructorArgCount > 0 && (
+          <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${COLORS.gold}`, padding: '12px' }}>
+            <div style={S.label}>Constructor Args</div>
+            <div style={{ fontFamily: COLORS.mono, fontSize: '14px', color: COLORS.gold }}>{analysis.constructorArgCount} slot</div>
+          </div>
+        )}
+      </div>
+
+      {/* ── Pola Terdeteksi ── */}
+      {analysis.patterns.length > 0 && (
+        <div style={{ marginBottom: '14px' }}>
+          <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Pola Terdeteksi</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {analysis.patterns.map((p, i) => (
+              <div key={i} style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${p.color}`, padding: '10px 14px', display: 'flex', gap: '10px', alignItems: 'flex-start' }}>
+                <span style={{ ...S.tag(p.color), flexShrink: 0, fontSize: '10px' }}>{p.label}</span>
+                <span style={{ fontSize: '12px', color: COLORS.muted, lineHeight: '1.5' }}>{p.desc}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── ABI Hints (selectors terdeteksi) ── */}
+      {analysis.detectedSelectors.length > 0 && (
+        <div style={{ marginBottom: '14px' }}>
+          <button
+            onClick={() => setAbiOpen(o => !o)}
+            style={{ width: '100%', display: 'flex', alignItems: 'center', gap: '8px', padding: '9px 12px', background: '#070707', border: `1px solid ${COLORS.border}`, cursor: 'pointer', color: COLORS.text, fontSize: '11px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: abiOpen ? '8px' : 0 }}
+          >
+            <FaCode size={10} style={{ color: COLORS.accent }} />
+            ABI Terdeteksi dari Bytecode ({analysis.detectedSelectors.length})
+            <span style={{ marginLeft: 'auto', color: COLORS.muted }}>{abiOpen ? <FaChevronUp size={10} /> : <FaChevronDown size={10} />}</span>
+          </button>
+          {abiOpen && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+              {analysis.detectedSelectors.map((s, i) => (
+                <div key={i} style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${s.signature ? COLORS.accent : COLORS.muted}`, padding: '8px 12px', display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <code style={{ fontFamily: COLORS.mono, fontSize: '12px', color: COLORS.purple, flexShrink: 0 }}>0x{s.selector}</code>
+                  {s.signature ? (
+                    <span style={{ fontFamily: COLORS.mono, fontSize: '12px', color: COLORS.accent }}>{s.signature}</span>
+                  ) : (
+                    <span style={{ fontSize: '11px', color: COLORS.muted, fontStyle: 'italic' }}>Unknown selector</span>
+                  )}
+                  <span style={{ marginLeft: 'auto', ...S.tag(s.source === 'known' ? COLORS.gold : COLORS.muted), fontSize: '10px' }}>
+                    {s.source === 'known' ? '✓ DB' : 'PUSH4'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── Metadata Hash ── */}
+      {analysis.hasMetadata && (
+        <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${COLORS.green}`, padding: '12px 14px', marginBottom: '14px' }}>
+          <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '6px' }}>Metadata Hash (Compiler Fingerprint)</div>
+          {analysis.ipfsHash && (
+            <div style={{ fontFamily: COLORS.mono, fontSize: '12px', color: COLORS.green }}>
+              IPFS: <span style={{ color: COLORS.text }}>0x{analysis.ipfsHash}</span>
+            </div>
+          )}
+          {analysis.swarmHash && (
+            <div style={{ fontFamily: COLORS.mono, fontSize: '12px', color: COLORS.green }}>
+              Swarm: <span style={{ color: COLORS.text }}>0x{analysis.swarmHash}</span>
+            </div>
+          )}
+          {analysis.metadataOffset !== null && (
+            <div style={{ fontSize: '10px', color: COLORS.muted, marginTop: '4px' }}>offset: byte {analysis.metadataOffset}</div>
+          )}
+          <div style={{ fontSize: '11px', color: COLORS.muted, marginTop: '6px', fontStyle: 'italic' }}>
+            Hash ini bisa dipakai untuk verifikasi source code di Etherscan / Sourcify.
+          </div>
+        </div>
+      )}
+
+      {/* ── Constructor Args ── */}
+      {analysis.constructorArgs && (
+        <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${COLORS.gold}`, padding: '12px 14px', marginBottom: '14px' }}>
+          <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
+            Constructor Arguments ({analysis.constructorArgCount} slot ABI-encoded)
+          </div>
+          {Array.from({ length: analysis.constructorArgCount }, (_, i) => {
+            const slot = analysis.constructorArgs!.slice(2 + i * 64, 2 + (i + 1) * 64);
+            // Tebak tipe
+            const stripped = slot.replace(/^0{24}/, '');
+            let guess = 'bytes32';
+            let guessVal: string = '0x' + slot;
+            if (slot.slice(0, 24) === '0'.repeat(24) && stripped.length === 40) {
+              guess = 'address'; guessVal = '0x' + stripped;
+            } else {
+              try {
+                const bn = BigInt('0x' + slot);
+                if (bn < 2n ** 128n) { guess = 'uint256'; guessVal = bn.toString(); }
+              } catch {}
+            }
+            return (
+              <div key={i} style={{ display: 'flex', gap: '10px', marginBottom: '6px', flexWrap: 'wrap', alignItems: 'center' }}>
+                <code style={{ fontFamily: COLORS.mono, fontSize: '11px', color: COLORS.muted, flexShrink: 0 }}>arg[{i}]</code>
+                <code style={{ fontFamily: COLORS.mono, fontSize: '11px', color: COLORS.accent }}>{guess}</code>
+                <span style={{ fontFamily: COLORS.mono, fontSize: '12px', color: COLORS.text, wordBreak: 'break-all' }}>{guessVal}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Raw Bytecode ── */}
+      <button
+        onClick={() => setRawOpen(o => !o)}
+        style={{ background: 'none', border: `1px solid ${COLORS.border}`, color: COLORS.muted, padding: '5px 10px', cursor: 'pointer', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '5px', marginBottom: rawOpen ? '8px' : 0 }}
+      >
+        <FaCode size={10} /> {rawOpen ? 'Sembunyikan' : 'Tampilkan'} Raw Bytecode
+      </button>
+      {rawOpen && (
+        <div style={{ background: '#060606', border: `1px solid ${COLORS.border}`, padding: '12px', fontFamily: COLORS.mono, fontSize: '11px', color: '#555', wordBreak: 'break-all', lineHeight: '1.8', maxHeight: '260px', overflowY: 'auto' }}>
+          {data}
+        </div>
+      )}
+    </div>
+  );
 }
 
 /* ─────────────────────────────────────────────
@@ -928,10 +1210,9 @@ export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.
 
               {/* ── Deployment ── */}
               {result.to === null && result.data && result.data !== '0x' && (
-                <div style={{ ...S.card, borderLeft: `3px solid ${COLORS.pink}`, color: COLORS.pink, fontSize: '12px' }}>
-                  <FaLayerGroup size={11} style={{ marginRight: '7px' }} />
-                  Contract Deployment — bytecode dikirim ke jaringan
-                </div>
+                <Section title="Contract Deployment — Bytecode & ABI Analysis" icon={<FaLayerGroup size={12} />}>
+                  <DeploymentPanel data={result.data} />
+                </Section>
               )}
 
               {/* ── Event Logs ── */}
