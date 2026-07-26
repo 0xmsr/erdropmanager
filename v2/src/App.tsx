@@ -7,6 +7,7 @@ import { NotFound } from './pages/NotFound';
 import { Dashboard } from './pages/Dashboard';
 import { Portfolio } from './pages/Portfolio';
 import { AIAssistant } from './pages/AIAssistant';
+import { Changelog } from './pages/Changelog';
 import { WalletGenerator } from './pages/wallet-gen/Walletgenerator';
 import { Landing } from './pages/Landing';
 import { ToS } from './tos/WalletGen_Tos.tsx';
@@ -26,6 +27,7 @@ function App() {
         <Route path="/wallet-gen" element={<WalletGenerator />} />
         <Route path="/wallet-gen/tos" element={<ToS />} />
         <Route path="/ai" element={<AIAssistant />} />
+        <Route path="/changelog" element={<Changelog />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
     </BrowserRouter>
