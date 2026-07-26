@@ -45,8 +45,8 @@ import {
   runAiCodeSecurityScan,
   AISEC_VERDICT_META,
   compileSolidity,
-} from './SmartContractTools';
-import type { DeployedErc20Token, CreatedSplToken, AiSecResult, CompiledContract } from './SmartContractTools';
+} from './Smartcontracttools';
+import type { DeployedErc20Token, CreatedSplToken, AiSecResult, CompiledContract } from './Smartcontracttools';
 
 interface BIP39Wallet {
   id: string;
