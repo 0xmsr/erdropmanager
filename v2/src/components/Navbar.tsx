@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { path: '/ai',         label: '✦ AI' },
   { path: '/dashboard',  label: 'Dashboard' },
   { path: '/wallet-gen', label: 'WalletGen' },
+  { path: '/changelog',  label: 'Changelog' },
 ];
 
 export const Navbar = () => {
