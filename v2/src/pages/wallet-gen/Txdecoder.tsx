@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback } from 'react';
 import { ethers } from 'ethers';
 import { KNOWN_4BYTE, KNOWN_TOPICS } from './know';
@@ -150,7 +149,7 @@ function decodeLog(log: { address: string; topics: string[]; data: string }): De
   if (knownEvent) {
     const inner     = knownEvent.sig.slice(knownEvent.sig.indexOf('(') + 1, knownEvent.sig.lastIndexOf(')'));
     const typeList   = inner ? inner.split(',').map(t => t.trim()) : [];
-    let topicIndex  = 1; // topics[0] = event sig
+    let topicIndex  = 1;
     typeList.forEach((t, i) => {
       const raw = log.topics?.[topicIndex];
       if (!raw) return;
@@ -171,43 +170,43 @@ function decodeLog(log: { address: string; topics: string[]; data: string }): De
 }
 
 export interface ParsedTx {
-  // Identitas
+
   hash:         string;
   type:         number;
-  // Block
+
   blockNumber:  number | null;
   blockHash:    string | null;
   timestamp:    number | null;
-  // Addresses
+
   from:         string;
   to:           string | null;
-  // Value
+
   value:        bigint;
   nonce:        number;
-  // Gas — Legacy
+
   gasPrice?:    bigint;
-  // Gas — EIP-1559
+
   maxFeePerGas?:         bigint;
   maxPriorityFeePerGas?: bigint;
-  // Gas umum
+
   gasLimit:     bigint;
   gasUsed?:     bigint;
-  // EIP-2930
+
   accessList?: { address: string; storageKeys: string[] }[];
-  // EIP-4844
+
   maxFeePerBlobGas?: bigint;
   blobVersionedHashes?: string[];
-  // Data
+
   data:         string;
-  // Receipt
-  status?:      number; // 1 = sukses, 0 = reverted
+
+  status?:      number;
   logs?:        { address: string; topics: string[]; data: string }[];
-  // Decoded
+
   decodedCall?: DecodedCall;
   decodedLogs?: DecodedLog[];
-  // Chain
+
   chainId?:     number;
-  // Fee aktual
+
   effectiveGasPrice?: bigint;
   fee?:              bigint;
 }
@@ -220,13 +219,13 @@ async function fetchAndParseTx(
   const log = onLog ?? (() => {});
   const trimmed = hashOrRaw.trim();
 
-  // ─── Mode 1: Raw RLP hex ───
+
   if (trimmed.startsWith('0x') && trimmed.length > 66) {
     log('Mendeteksi raw tx RLP, parsing lokal…');
     return parseRawTx(trimmed);
   }
 
-  // ─── Mode 2: TX Hash — fetch dari RPC ───
+
   if (!/^0x[0-9a-fA-F]{64}$/.test(trimmed)) {
     throw new Error('Input harus berupa tx hash (0x…64 hex) atau raw RLP hex');
   }
@@ -250,7 +249,7 @@ async function fetchAndParseTx(
     try {
       const block = await provider.send('eth_getBlockByHash', [tx.blockHash, false]);
       timestamp   = block?.timestamp ? parseInt(block.timestamp, 16) : null;
-    } catch { /* ignore */ }
+    } catch {  }
   }
 
   const type     = parseInt(tx.type ?? '0', 16);
@@ -329,19 +328,19 @@ interface AbiHint {
 
 interface BytecodeAnalysis {
   totalBytes: number;
-  // Constructor args (setelah STOP 0x00 marker)
+
   constructorArgs: string | null;
   constructorArgCount: number;
-  // 4-byte selectors ditemukan di bytecode
+
   detectedSelectors: AbiHint[];
-  // Pola tipikal
+
   patterns: { label: string; color: string; desc: string }[];
-  // Init code vs runtime split
+
   hasMetadata: boolean;
   metadataOffset: number | null;
   swarmHash: string | null;
   ipfsHash: string | null;
-  // Ukuran bagian
+
   initCodeSize: number | null;
   runtimeSize: number | null;
 }
@@ -358,7 +357,7 @@ function extractSelectorsFromBytecode(hex: string): AbiHint[] {
 
   for (let i = 0; i < body.length - 10; i += 2) {
     const opcode = body.slice(i, i + 2);
-    if (opcode === '63') { // PUSH4
+    if (opcode === '63') {
       const sel = body.slice(i + 2, i + 10);
       if (!found.has(sel) && /^[0-9a-f]{8}$/.test(sel)) {
         found.set(sel, { selector: sel, signature: KNOWN_4BYTE[sel] ?? null, source: 'bytecode' });
@@ -366,7 +365,7 @@ function extractSelectorsFromBytecode(hex: string): AbiHint[] {
     }
   }
 
-  return Array.from(found.values()).slice(0, 40); // max 40
+  return Array.from(found.values()).slice(0, 40);
 }
 
 function detectMetadata(hex: string): { offset: number | null; swarmHash: string | null; ipfsHash: string | null; hasMetadata: boolean } {
@@ -397,48 +396,47 @@ function detectPatterns(hex: string): BytecodeAnalysis['patterns'] {
     out.push({ label: 'Proxy (DELEGATECALL)', color: '#836efd', desc: 'Pola proxy: mendelegasikan panggilan ke contract lain' });
   }
 
-  // Ownership: a9059cbb = transfer, 8da5cb5b = owner()
+
   if (body.includes('8da5cb5b')) {
     out.push({ label: 'Ownable', color: '#f3ba2f', desc: 'Contract punya fungsi owner() — pola kepemilikan' });
   }
 
-  // Pausable: 5c975abb = paused()
+
   if (body.includes('5c975abb')) {
     out.push({ label: 'Pausable', color: '#ff9800', desc: 'Contract bisa di-pause (Pausable pattern)' });
   }
 
-  // ERC-20: a9059cbb = transfer, 70a08231 = balanceOf, 18160ddd = totalSupply
+
   const erc20Sigs = ['a9059cbb', '70a08231', '18160ddd', 'dd62ed3e'];
   const erc20Count = erc20Sigs.filter(s => body.includes(s)).length;
   if (erc20Count >= 3) {
     out.push({ label: 'ERC-20 Token', color: '#01a2ff', desc: `${erc20Count}/4 fungsi wajib ERC-20 terdeteksi` });
   }
 
-  // ERC-721: 6352211e = ownerOf, b88d4fde = safeTransferFrom
+
   const erc721Sigs = ['6352211e', 'b88d4fde', '42842e0e', 'e985e9c5'];
   const erc721Count = erc721Sigs.filter(s => body.includes(s)).length;
   if (erc721Count >= 2) {
     out.push({ label: 'ERC-721 NFT', color: '#e81899', desc: `${erc721Count}/4 fungsi wajib ERC-721 terdeteksi` });
   }
 
-  // Lock/Timelock pola: biasanya ada storage timestamp + require(block.timestamp >= ...)
-  // TIMESTAMP opcode = 42, LT = 10, require biasanya JUMPI (57)
+
   const timestampOp = '42';
   const tsIdx = body.indexOf(timestampOp);
   if (tsIdx !== -1 && body.includes('57')) {
-    // Hitung frekuensi TIMESTAMP opcode
+
     const tsCount = (body.match(/(?<=^|(?<=..))42(?=..)/g) ?? []).length;
     if (tsCount >= 2) {
       out.push({ label: '⏰ Time-Lock / Vesting', color: '#4caf50', desc: `Opcode TIMESTAMP (0x42) ditemukan ${tsCount}x — kemungkinan ada logika lock/unlock berbasis waktu` });
     }
   }
 
-  // Self-destruct: ff
+
   if (body.includes('ff')) {
     out.push({ label: '⚠ SELFDESTRUCT', color: '#f44336', desc: 'Opcode SELFDESTRUCT (0xFF) ada dalam bytecode — contract bisa dihancurkan' });
   }
 
-  // CREATE2
+
   if (body.includes('f5')) {
     out.push({ label: 'CREATE2', color: '#9c27b0', desc: 'Menggunakan CREATE2 untuk deploy contract dengan alamat deterministik' });
   }
@@ -452,8 +450,7 @@ function analyzeBytecode(data: string): BytecodeAnalysis {
 
   const { offset: metadataOffset, swarmHash, ipfsHash, hasMetadata } = detectMetadata(body);
 
-  // Estimasi init code vs runtime — cari CODECOPY (39) + RETURN (f3) pola
-  // Ini heuristik, bukan pasti
+
   let initCodeSize: number | null = null;
   let runtimeSize: number | null = null;
   if (hasMetadata && metadataOffset !== null) {
@@ -461,12 +458,12 @@ function analyzeBytecode(data: string): BytecodeAnalysis {
     initCodeSize = totalBytes - runtimeSize;
   }
 
-  // Constructor args: jika bytecode panjang dan ada data setelah metadata
+
   let constructorArgs: string | null = null;
   let constructorArgCount = 0;
   if (hasMetadata && metadataOffset !== null) {
-    // Args biasanya ada di akhir setelah metadata hash
-    const afterMeta = body.slice((metadataOffset + 43) * 2); // +43 bytes metadata
+
+    const afterMeta = body.slice((metadataOffset + 43) * 2);
     if (afterMeta.length >= 64 && /^[0-9a-f]+$/.test(afterMeta)) {
       constructorArgs = '0x' + afterMeta;
       constructorArgCount = Math.floor(afterMeta.length / 64);
@@ -498,7 +495,7 @@ function DeploymentPanel({ data }: { data: string }) {
 
   return (
     <div>
-      {/* ── Ringkasan ── */}
+      {}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '10px', marginBottom: '14px' }}>
         <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${COLORS.pink}`, padding: '12px' }}>
           <div style={S.label}>Ukuran Bytecode</div>
@@ -526,7 +523,7 @@ function DeploymentPanel({ data }: { data: string }) {
         )}
       </div>
 
-      {/* ── Pola Terdeteksi ── */}
+      {}
       {analysis.patterns.length > 0 && (
         <div style={{ marginBottom: '14px' }}>
           <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>Pola Terdeteksi</div>
@@ -541,7 +538,7 @@ function DeploymentPanel({ data }: { data: string }) {
         </div>
       )}
 
-      {/* ── ABI Hints (selectors terdeteksi) ── */}
+      {}
       {analysis.detectedSelectors.length > 0 && (
         <div style={{ marginBottom: '14px' }}>
           <button
@@ -572,7 +569,7 @@ function DeploymentPanel({ data }: { data: string }) {
         </div>
       )}
 
-      {/* ── Metadata Hash ── */}
+      {}
       {analysis.hasMetadata && (
         <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${COLORS.green}`, padding: '12px 14px', marginBottom: '14px' }}>
           <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '6px' }}>Metadata Hash (Compiler Fingerprint)</div>
@@ -595,7 +592,7 @@ function DeploymentPanel({ data }: { data: string }) {
         </div>
       )}
 
-      {/* ── Constructor Args ── */}
+      {}
       {analysis.constructorArgs && (
         <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${COLORS.gold}`, padding: '12px 14px', marginBottom: '14px' }}>
           <div style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
@@ -603,7 +600,7 @@ function DeploymentPanel({ data }: { data: string }) {
           </div>
           {Array.from({ length: analysis.constructorArgCount }, (_, i) => {
             const slot = analysis.constructorArgs!.slice(2 + i * 64, 2 + (i + 1) * 64);
-            // Tebak tipe
+
             const stripped = slot.replace(/^0{24}/, '');
             let guess = 'bytes32';
             let guessVal: string = '0x' + slot;
@@ -626,7 +623,7 @@ function DeploymentPanel({ data }: { data: string }) {
         </div>
       )}
 
-      {/* ── Raw Bytecode ── */}
+      {}
       <button
         onClick={() => setRawOpen(o => !o)}
         style={{ background: 'none', border: `1px solid ${COLORS.border}`, color: COLORS.muted, padding: '5px 10px', cursor: 'pointer', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '5px', marginBottom: rawOpen ? '8px' : 0 }}
@@ -642,9 +639,7 @@ function DeploymentPanel({ data }: { data: string }) {
   );
 }
 
-/* ─────────────────────────────────────────────
-   KOMPONEN UTAMA
-───────────────────────────────────────────── */
+
 
 const COLORS = {
   bg:       '#0a0a0a',
@@ -737,7 +732,7 @@ function Section({ title, icon, children, defaultOpen = true }: { title: string;
   );
 }
 
-/* ─── Tampilan TX Type Badge ─── */
+
 function TypeBadge({ type }: { type: number }) {
   const info = TX_TYPES[type] ?? { label: `Type ${type}`, color: '#888', eip: 'Unknown', desc: 'Tipe transaksi tidak dikenal.' };
   return (
@@ -751,7 +746,7 @@ function TypeBadge({ type }: { type: number }) {
   );
 }
 
-/* ─── Calldata Decoder Display ─── */
+
 function CalldataPanel({ decoded }: { decoded: DecodedCall }) {
   const [rawOpen, setRawOpen] = useState(false);
   const [lookup4, setLookup4] = useState<string | null>(null);
@@ -772,7 +767,7 @@ function CalldataPanel({ decoded }: { decoded: DecodedCall }) {
 
   return (
     <div>
-      {/* Selector row */}
+      {}
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', flexWrap: 'wrap' }}>
         <code style={{ ...S.mono, fontSize: '14px', fontWeight: 'bold', color: COLORS.purple }}>
           0x{decoded.selector}
@@ -802,7 +797,7 @@ function CalldataPanel({ decoded }: { decoded: DecodedCall }) {
         </div>
       )}
 
-      {/* Parameter slots */}
+      {}
       {decoded.params.length > 0 && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
           {decoded.params.map((p, i) => (
@@ -820,7 +815,7 @@ function CalldataPanel({ decoded }: { decoded: DecodedCall }) {
         </div>
       )}
 
-      {/* Raw calldata collapsible */}
+      {}
       <button
         onClick={() => setRawOpen(o => !o)}
         style={{ background: 'none', border: `1px solid ${COLORS.border}`, color: COLORS.muted, padding: '5px 10px', cursor: 'pointer', fontSize: '11px', display: 'flex', alignItems: 'center', gap: '5px', marginBottom: rawOpen ? '8px' : 0 }}
@@ -836,7 +831,7 @@ function CalldataPanel({ decoded }: { decoded: DecodedCall }) {
   );
 }
 
-/* ─── Event Log Display ─── */
+
 function LogPanel({ log, index }: { log: DecodedLog; index: number }) {
   const [open, setOpen] = useState(false);
   const cat  = log.knownEvent?.category ?? 'Unknown';
@@ -909,7 +904,7 @@ function LogPanel({ log, index }: { log: DecodedLog; index: number }) {
   );
 }
 
-/* ─── Gas Fee Explainer ─── */
+
 function GasPanel({ tx }: { tx: ParsedTx }) {
   const typeInfo = TX_TYPES[tx.type];
   return (
@@ -917,7 +912,7 @@ function GasPanel({ tx }: { tx: ParsedTx }) {
       <TypeBadge type={tx.type} />
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '10px' }}>
-        {/* Common */}
+        {}
         <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, padding: '12px' }}>
           <div style={S.label}>Gas Limit</div>
           <div style={{ fontFamily: COLORS.mono, fontSize: '13px', color: COLORS.text }}>{tx.gasLimit.toString()}</div>
@@ -934,7 +929,7 @@ function GasPanel({ tx }: { tx: ParsedTx }) {
           </div>
         )}
 
-        {/* Type 0/1: gasPrice */}
+        {}
         {tx.gasPrice !== undefined && (
           <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid #888`, padding: '12px' }}>
             <div style={S.label}>gasPrice (Legacy)</div>
@@ -943,7 +938,7 @@ function GasPanel({ tx }: { tx: ParsedTx }) {
           </div>
         )}
 
-        {/* Type 2: EIP-1559 */}
+        {}
         {tx.maxFeePerGas !== undefined && (
           <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${COLORS.accent}`, padding: '12px' }}>
             <div style={S.label}>maxFeePerGas (EIP-1559)</div>
@@ -976,7 +971,7 @@ function GasPanel({ tx }: { tx: ParsedTx }) {
           </div>
         )}
 
-        {/* Type 3: Blob */}
+        {}
         {tx.maxFeePerBlobGas !== undefined && (
           <div style={{ background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${COLORS.pink}`, padding: '12px' }}>
             <div style={S.label}>maxFeePerBlobGas (EIP-4844)</div>
@@ -985,7 +980,7 @@ function GasPanel({ tx }: { tx: ParsedTx }) {
         )}
       </div>
 
-      {/* EIP-1559 formula explainer */}
+      {}
       {tx.type === 2 && (
         <div style={{ marginTop: '14px', background: '#070707', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${COLORS.accent}`, padding: '12px 16px' }}>
           <div style={{ fontSize: '11px', color: COLORS.muted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '1px' }}>EIP-1559 Formula</div>
@@ -1001,7 +996,7 @@ function GasPanel({ tx }: { tx: ParsedTx }) {
         </div>
       )}
 
-      {/* Access List */}
+      {}
       {tx.accessList && tx.accessList.length > 0 && (
         <div style={{ marginTop: '14px' }}>
           <div style={{ fontSize: '11px', color: COLORS.muted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '1px' }}>
@@ -1026,7 +1021,7 @@ function GasPanel({ tx }: { tx: ParsedTx }) {
         </div>
       )}
 
-      {/* Blob hashes */}
+      {}
       {tx.blobVersionedHashes && tx.blobVersionedHashes.length > 0 && (
         <div style={{ marginTop: '14px' }}>
           <div style={{ fontSize: '11px', color: COLORS.muted, marginBottom: '8px', textTransform: 'uppercase', letterSpacing: '1px' }}>
@@ -1041,9 +1036,7 @@ function GasPanel({ tx }: { tx: ParsedTx }) {
   );
 }
 
-/* ─────────────────────────────────────────────
-   MAIN TXDECODER COMPONENT
-───────────────────────────────────────────── */
+
 
 interface TxDecoderProps {
   defaultRpc?: string;
@@ -1095,7 +1088,7 @@ export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.
 
   return (
     <div style={{ fontFamily: 'Inter, system-ui, sans-serif', color: COLORS.text }}>
-      {/* Tab switcher */}
+      {}
       <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', borderBottom: `1px solid ${COLORS.border}`, paddingBottom: '10px' }}>
         {(['fetch', 'calldata'] as const).map(t => (
           <button key={t} onClick={() => setTab(t)}
@@ -1105,7 +1098,7 @@ export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.
         ))}
       </div>
 
-      {/* ── TAB: Fetch & Decode TX ── */}
+      {}
       {tab === 'fetch' && (
         <>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '8px', marginBottom: '8px' }}>
@@ -1125,7 +1118,7 @@ export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.
             </button>
           </div>
 
-          {/* RPC selector */}
+          {}
           <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ fontSize: '11px', color: COLORS.muted, flexShrink: 0 }}>RPC:</span>
             {networks.length > 0 ? (
@@ -1141,14 +1134,14 @@ export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.
             )}
           </div>
 
-          {/* Logs */}
+          {}
           {logs.length > 0 && !result && !error && (
             <div style={{ background: '#060606', border: `1px solid ${COLORS.border}`, padding: '10px', marginBottom: '12px' }}>
               {logs.map((l, i) => <div key={i} style={{ fontSize: '11px', color: COLORS.muted, fontFamily: COLORS.mono }}>{l}</div>)}
             </div>
           )}
 
-          {/* Error */}
+          {}
           {error && (
             <div style={{ background: COLORS.red + '11', border: `1px solid ${COLORS.red}44`, color: COLORS.red, padding: '12px 16px', marginBottom: '14px', fontSize: '13px', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
               <FaExclamationTriangle size={14} style={{ flexShrink: 0, marginTop: '1px' }} />
@@ -1156,10 +1149,10 @@ export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.
             </div>
           )}
 
-          {/* Result */}
+          {}
           {result && (
             <div>
-              {/* ── Header Summary ── */}
+              {}
               <div style={{ ...S.card, borderLeft: `3px solid ${statusColor}`, display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
                   <span style={S.tag(statusColor)}>{statusLabel}</span>
@@ -1178,7 +1171,7 @@ export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.
                 )}
               </div>
 
-              {/* ── Identitas ── */}
+              {}
               <Section title="Identitas Transaksi" icon={<FaInfoCircle size={12} />}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0 24px' }}>
                   <Field label="From" value={result.from} color={COLORS.green} copy={result.from} />
@@ -1189,12 +1182,12 @@ export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.
                 </div>
               </Section>
 
-              {/* ── Gas & Fee ── */}
+              {}
               <Section title="Gas & Fee" icon={<FaGasPump size={12} />}>
                 <GasPanel tx={result} />
               </Section>
 
-              {/* ── Calldata ── */}
+              {}
               {result.data && result.data !== '0x' && (
                 <Section title={`Calldata${result.decodedCall?.signature ? ` — ${result.decodedCall.signature}` : ''}`} icon={<FaTerminal size={12} />}>
                   {result.decodedCall && <CalldataPanel decoded={result.decodedCall} />}
@@ -1208,14 +1201,14 @@ export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.
                 </div>
               )}
 
-              {/* ── Deployment ── */}
+              {}
               {result.to === null && result.data && result.data !== '0x' && (
                 <Section title="Contract Deployment — Bytecode & ABI Analysis" icon={<FaLayerGroup size={12} />}>
                   <DeploymentPanel data={result.data} />
                 </Section>
               )}
 
-              {/* ── Event Logs ── */}
+              {}
               {result.decodedLogs && result.decodedLogs.length > 0 && (
                 <Section title={`Event Logs (${result.decodedLogs.length})`} icon={<FaList size={12} />} defaultOpen={false}>
                   {result.decodedLogs.map((log, i) => (
@@ -1224,7 +1217,7 @@ export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.
                 </Section>
               )}
 
-              {/* ── Raw JSON ── */}
+              {}
               <Section title="Raw Data" icon={<FaFileCode size={12} />} defaultOpen={false}>
                 <pre style={{ fontFamily: COLORS.mono, fontSize: '11px', color: '#555', background: '#060606', padding: '12px', overflow: 'auto', margin: 0, maxHeight: '300px', lineHeight: '1.6' }}>
                   {JSON.stringify({
