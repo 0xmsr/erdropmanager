@@ -21,6 +21,28 @@ interface Version {
 
 const CHANGELOG: Version[] = [
   {
+    version: '2.1.9',
+    date: '04 Agu 2026',
+    title: 'Menambahkan fitur Explorer dan menambahkan 2 Network baru di Wallet-Gen dan Sedikit perbaikan',
+    changes: [
+      { type: 'feature', text: 'Menambahkan Network Baru Tron [TRX], Cosmos [ATOM], Axiome [AXM] di wallet-gen versi terbaru' },
+      { type: 'feature', text: 'Menambahkan Explorer (Baru tersedia untuk EVM) di Wallet Gen' },
+      { type: 'fix', text: 'Memperbaiki Bug EVM Token Kreator' },
+    ],
+  },
+  {
+    version: '2.1.6',
+    date: '01 Agu 2026',
+    title: 'Estimasi Fee ETH & Tombol Max Send',
+    changes: [
+      { type: 'feature', text: 'Menambahkan detail estimasi total fee dalam native coin (ETH/BNB/dll) di form Kirim (Send & Receive), dihitung dari Gas Price × Gas Limit' },
+      { type: 'feature', text: 'Menambahkan estimasi fee per opsi Slow/Standard/Fast, serta estimasi live saat memakai Gas Manual' },
+      { type: 'feature', text: 'Menambahkan tombol MAX pada kolom Jumlah — otomatis mengisi saldo maksimum yang bisa dikirim (native dikurangi estimasi gas, token terisi penuh)' },
+      { type: 'fix', text: 'Memperbaiki bug asset yang tidak terdeteksi / tidak berubah di dropdown Asset pada Send & Receive — dropdown kini bersumber dari daftar token yang dikenal (bukan hasil fetch saldo yang bisa telat)' },
+      { type: 'improvement', text: 'Auto-refresh saldo token saat daftar token dikenal berubah (token baru ditambahkan/dideploy) selagi wallet masih terhubung' },
+    ],
+  },
+  {
     version: '2.1.5',
     date: '23 Jul 2026',
     title: 'Support Solana Network',
