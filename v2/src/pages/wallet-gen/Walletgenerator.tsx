@@ -5,14 +5,28 @@ import {
   Transaction as SolTransaction, sendAndConfirmTransaction, LAMPORTS_PER_SOL,
 } from '@solana/web3.js';
 import {
-  TOKEN_PROGRAM_ID, getAssociatedTokenAddress,
+  TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID, getAssociatedTokenAddress,
   createAssociatedTokenAccountInstruction, createTransferInstruction,
   MINT_SIZE, getMinimumBalanceForRentExemptMint,
   createInitializeMintInstruction, createMintToInstruction,
+  createInitializeMetadataPointerInstruction,
+  getMintLen, ExtensionType,
+  createCloseAccountInstruction, createBurnInstruction,
+  getTokenMetadata,
 } from '@solana/spl-token';
+import {
+  createInitializeInstruction as createInitializeTokenMetadataInstruction,
+  createUpdateFieldInstruction as createUpdateTokenMetadataFieldInstruction,
+  pack as packTokenMetadata,
+  type TokenMetadata,
+} from '@solana/spl-token-metadata';
+
+const TOKEN_METADATA_TYPE_SIZE = 2;
+const TOKEN_METADATA_LENGTH_SIZE = 2;
 import {
   PROGRAM_ID as METADATA_PROGRAM_ID,
   createCreateMetadataAccountV3Instruction,
+  Metadata as MplTokenMetadata,
 } from '@metaplex-foundation/mpl-token-metadata';
 import { derivePath as deriveEd25519Path } from 'ed25519-hd-key';
 import bs58 from 'bs58';
@@ -21,6 +35,30 @@ import { Navbar } from '../../components/Navbar';
 import { CustomAlert, CustomConfirm, TxConfirmModal, type TxConfirmDetails } from '../../components/CustomModals';
 import { KNOWN_4BYTE, KNOWN_TOPICS, KNOWN_SELECTORS } from './know'
 import { TxDecoder } from './Txdecoder';
+import {
+  deriveSolanaAddress, getMetadataPda, SPL_META_MAX,
+  SOLANA_NETWORKS, getSolanaConnection, getSolBalanceWithFallback,
+  fetchSolTokenPortfolio,
+} from './network/Solnet';
+import {
+  type TronNetworkCfg, TRON_NETWORKS, sunToTrx, trxToSun,
+  isValidTronAddress, tronToEvmAddr, tronAddressFromPrivateKey, deriveTronAddress,
+  getTronBalanceSun, tronSendTrx, tronReadContract, tronCallContract, tronDeployTrc20,
+  fetchTronTokenPortfolio, tronGetTxInfo, tronAddressHexToBase58,
+  getTronAccountResources, estimateTronNativeFee, estimateTronTrc20Fee,
+  type TronAccountResources, type TronFeeEstimate,
+  tronFriendlyError,
+} from './network/Tronnet';
+import {
+  deriveAxiomeAddress, AXIOME_NETWORKS, getAxmBalanceWithFallback, fetchAxmPortfolio,
+  isValidAxiomeAddress, axiomeAddressFromPrivateKey, sendAxm, axmFriendlyError,
+  estimateAxmFee, type AxmNetworkCfg, type AxmFeeEstimate,
+} from './network/Axiomenet';
+import {
+  deriveCosmosAddress, COSMOS_NETWORKS, getAtomBalanceWithFallback, fetchAtomPortfolio,
+  isValidCosmosAddress, cosmosAddressFromPrivateKey, sendAtom, atomFriendlyError,
+  estimateAtomFee, ATOM_GAS_PRICE_TIERS, type AtomNetworkCfg, type AtomFeeEstimate, type AtomGasMode,
+} from './network/Cosmosnet';
 import {
   FaWallet, FaPlus, FaTrash, FaCopy, FaEye, FaEyeSlash,
   FaKey, FaShieldAlt, FaLink,
@@ -31,7 +69,8 @@ import {
   FaBolt, FaPlay, FaCode, FaGasPump, FaRobot,
   FaSpinner, FaChartBar,
   FaMagic, FaLayerGroup, FaInfoCircle, FaTerminal, FaFileCode, FaList,
-  FaCheck, FaRegCopy, FaCoins, FaRocket, FaHashtag, FaFaucet,
+  FaCheck, FaRegCopy, FaCoins, FaRocket, FaHashtag, FaFaucet, FaUpload,
+  FaCompass,
 } from 'react-icons/fa';
 
 import {
@@ -42,11 +81,9 @@ import {
   safeParseContractArgs,
   parseArgWithAbiType,
   parseTxError,
-  runAiCodeSecurityScan,
-  AISEC_VERDICT_META,
   compileSolidity,
 } from './Smartcontracttools';
-import type { DeployedErc20Token, CreatedSplToken, AiSecResult, CompiledContract } from './Smartcontracttools';
+import type { DeployedErc20Token, CreatedSplToken, CompiledContract } from './Smartcontracttools';
 
 interface BIP39Wallet {
   id: string;
@@ -54,12 +91,15 @@ interface BIP39Wallet {
   mnemonic: string;
   addresses: { index: number; address: string; privateKey: string }[];
   solAddresses: { index: number; address: string; privateKey: string }[];
+  tronAddresses: { index: number; address: string; privateKey: string }[];
+  axmAddresses: { index: number; address: string; privateKey: string }[];
+  atomAddresses: { index: number; address: string; privateKey: string }[];
   createdAt: number;
   tags: string[];
   note: string;
 }
 
-interface RPCNetwork {
+export interface RPCNetwork {
   id: string;
   name: string;
   chainId: number;
@@ -171,7 +211,10 @@ const SEPOLIA_RPCS = [
   'https://eth-sepolia.public.blastapi.io',
 ];
 
-const DEFAULT_NETWORKS: RPCNetwork[] = [
+
+export const RPC_NETWORKS_STORAGE_KEY = 'rpcNetworks';
+
+export const DEFAULT_NETWORKS: RPCNetwork[] = [
   { id:'ethereum',      name:'Ethereum Mainnet',      chainId:1,          symbol:'ETH',    rpcUrls:['https://1rpc.io/eth','https://eth.llamarpc.com'],                                  explorerUrl:'https://etherscan.io',                  color:'#627EEA' },
   { id:'base',          name:'Base',                  chainId:8453,       symbol:'ETH',    rpcUrls:['https://1rpc.io/base','https://mainnet.base.org'],                                 explorerUrl:'https://basescan.org',                  color:'#0052FF' },
   { id:'arbitrum',      name:'Arbitrum One',          chainId:42161,      symbol:'ETH',    rpcUrls:['https://1rpc.io/arb','https://arb1.arbitrum.io/rpc'],                              explorerUrl:'https://arbiscan.io',                   color:'#28A0F0' },
@@ -246,38 +289,67 @@ function deriveAddress(mnemonic: string, index: number): { address: string; priv
   return { address: child.address, privateKey: child.privateKey };
 }
 
-// Solana pakai kurva ed25519 (SLIP-0010), bukan secp256k1 seperti EVM — jadi
-// diturunkan lewat path berbeda (m/44'/501'/x'/0') tapi dari BIP39 seed yang sama.
-function deriveSolanaAddress(mnemonic: string, index: number): { address: string; privateKey: string } {
-  const seedHex = ethers.utils.mnemonicToSeed(mnemonic).slice(2); // buang prefix '0x'
-  const path    = `m/44'/501'/${index}'/0'`;
-  const { key } = deriveEd25519Path(path, seedHex);
-  const keypair = SolKeypair.fromSeed(key);
-  return {
-    address:    keypair.publicKey.toBase58(),
-    privateKey: bs58.encode(keypair.secretKey),
-  };
+
+const PINATA_API_BASE = 'https://api.pinata.cloud';
+const PINATA_GATEWAY   = 'https://gateway.pinata.cloud/ipfs/';
+
+async function pinataUploadFile(file: File | Blob, jwt: string, filename?: string): Promise<string> {
+  const form = new FormData();
+  form.append('file', file, filename || 'image');
+  const res = await fetch(`${PINATA_API_BASE}/pinning/pinFileToIPFS`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${jwt}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`Upload file ke IPFS gagal (${res.status}). ${detail.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  if (!data?.IpfsHash) throw new Error('Upload ke IPFS gagal: respons Pinata tidak berisi IpfsHash.');
+  return `${PINATA_GATEWAY}${data.IpfsHash}`;
 }
 
-// ── Metaplex Token Metadata: derive PDA "metadata" untuk sebuah mint ──
-// Seeds: ["metadata", metadataProgramId, mint] — standar Metaplex Token Metadata Program.
-function getMetadataPda(mint: PublicKey): PublicKey {
-  const [pda] = PublicKey.findProgramAddressSync(
-    [Buffer.from('metadata'), METADATA_PROGRAM_ID.toBuffer(), mint.toBuffer()],
-    METADATA_PROGRAM_ID,
-  );
-  return pda;
+async function pinataUploadJson(json: Record<string, unknown>, jwt: string, name?: string): Promise<string> {
+  const res = await fetch(`${PINATA_API_BASE}/pinning/pinJSONToIPFS`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+    body: JSON.stringify({
+      pinataContent: json,
+      pinataMetadata: { name: name || 'metadata.json' },
+    }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    throw new Error(`Upload metadata JSON ke IPFS gagal (${res.status}). ${detail.slice(0, 150)}`);
+  }
+  const data = await res.json();
+  if (!data?.IpfsHash) throw new Error('Upload ke IPFS gagal: respons Pinata tidak berisi IpfsHash.');
+  return `${PINATA_GATEWAY}${data.IpfsHash}`;
 }
 
-// Batas panjang field yang di-enforce on-chain oleh Metaplex Token Metadata Program.
-// Kalau dilewati, transaksi bakal ditolak program (bukan cuma validasi UI).
-const SPL_META_MAX = { name: 32, symbol: 10, uri: 200 } as const;
+type ChainKind = 'evm' | 'sol' | 'tron' | 'atom' | 'axm';
 
-type ChainKind = 'evm' | 'sol';
 
 const CHAIN_OPTIONS: { id: ChainKind | string; label: string; soon?: boolean }[] = [
-  { id: 'evm', label: 'EVM' },
-  { id: 'sol', label: 'SOL' },
+  { id: 'evm',  label: 'EVM' },
+  { id: 'sol',  label: 'SOL' },
+  { id: 'tron', label: 'TRON' },
+  { id: 'atom', label: 'ATOM' },
+  { id: 'axm',  label: 'AXM' },
+  { id: 'btc', label: 'BTC',  soon: true },
+  { id: 'ton', label: 'TON',  soon: true },
+  { id: 'sui', label: 'SUI',  soon: true },
+  { id: 'apt', label: 'APT',  soon: true },
+];
+
+
+const WALLET_CHAIN_OPTIONS: { id: ChainKind | string; label: string; soon?: boolean }[] = [
+  { id: 'evm',  label: 'EVM' },
+  { id: 'sol',  label: 'SOL' },
+  { id: 'tron', label: 'TRON' },
+  { id: 'atom', label: 'ATOM' },
+  { id: 'axm',  label: 'AXM' },
   { id: 'btc', label: 'BTC',  soon: true },
   { id: 'ton', label: 'TON',  soon: true },
   { id: 'sui', label: 'SUI',  soon: true },
@@ -298,74 +370,9 @@ async function getProvider(network: RPCNetwork): Promise<ethers.providers.JsonRp
   throw new Error(`Tidak dapat connect ke ${network.name}. Cek koneksi / RPC.`);
 }
 
-// ── Solana: daftar network yang bisa dipilih (Mainnet / Testnet / Devnet) ──
-interface SolNetworkCfg {
-  id: string;
-  name: string;
-  symbol: string;
-  color: string;
-  explorerUrl: string;
-  clusterParam: string;   // suffix query utk Solscan, kosong utk mainnet
-  rpcUrls: string[];
-}
-
-const SOLANA_NETWORKS: SolNetworkCfg[] = [
-  {
-    id: 'mainnet',
-    name: 'Solana Mainnet',
-    symbol: 'SOL',
-    color: '#9945FF',
-    explorerUrl: 'https://solscan.io',
-    clusterParam: '',
-    rpcUrls: [
-      'https://api.mainnet-beta.solana.com',
-      'https://solana-rpc.publicnode.com',
-    ],
-  },
-  {
-    id: 'devnet',
-    name: 'Solana Devnet',
-    symbol: 'SOL',
-    color: '#14F195',
-    explorerUrl: 'https://solscan.io',
-    clusterParam: '?cluster=devnet',
-    rpcUrls: [
-      'https://api.devnet.solana.com',
-    ],
-  },
-  {
-    id: 'testnet',
-    name: 'Solana Testnet',
-    symbol: 'SOL',
-    color: '#F1C40F',
-    explorerUrl: 'https://solscan.io',
-    clusterParam: '?cluster=testnet',
-    rpcUrls: [
-      'https://api.testnet.solana.com',
-    ],
-  },
-];
-
-async function getSolanaConnection(net: SolNetworkCfg): Promise<Connection> {
-  for (const rpc of net.rpcUrls) {
-    try {
-      const conn = new Connection(rpc, 'confirmed');
-      await Promise.race([
-        conn.getVersion(),
-        new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 6000)),
-      ]);
-      return conn;
-    } catch { }
-  }
-  throw new Error(`Tidak dapat connect ke ${net.name}. Cek koneksi / RPC.`);
-}
-
-// ── Token Portfolio Scanner: deteksi SEMUA token yang dipegang wallet ──
-// (bukan cuma token yang dibuat sendiri lewat Token Creator), plus harga USD
-// kalau tersedia di Blockscout (EVM) / Jupiter (Solana).
 export interface DetectedToken {
-  chain: 'evm' | 'sol';
-  address: string;   // contract address (EVM) atau mint address (Solana)
+  chain: 'evm' | 'sol' | 'tron' | 'atom' | 'axm';
+  address: string;
   symbol: string;
   name: string;
   decimals: number;
@@ -376,10 +383,8 @@ export interface DetectedToken {
   logo?: string;
 }
 
-// Instance publik Blockscout (gratis, tanpa API key) per network id. Blockscout
-// tidak meng-cover semua chain — kalau network belum ada di map ini, scan EVM
-// akan menampilkan pesan "belum didukung" alih-alih gagal diam-diam.
-const BLOCKSCOUT_HOSTS: Record<string, string> = {
+
+export const BLOCKSCOUT_HOSTS: Record<string, string> = {
   ethereum:      'eth.blockscout.com',
   sepolia:       'eth-sepolia.blockscout.com',
   holesky:       'eth-holesky.blockscout.com',
@@ -394,7 +399,7 @@ const BLOCKSCOUT_HOSTS: Record<string, string> = {
   zksync:        'zksync.blockscout.com',
 };
 
-async function fetchEvmTokenPortfolio(address: string, networkId: string): Promise<DetectedToken[]> {
+export async function fetchEvmTokenPortfolio(address: string, networkId: string): Promise<DetectedToken[]> {
   const host = BLOCKSCOUT_HOSTS[networkId];
   if (!host) {
     throw new Error(
@@ -428,68 +433,46 @@ async function fetchEvmTokenPortfolio(address: string, networkId: string): Promi
   });
 }
 
-async function fetchSolTokenPortfolio(address: string, net: SolNetworkCfg = SOLANA_NETWORKS[0]): Promise<DetectedToken[]> {
-  const conn  = await getSolanaConnection(net);
-  const owner = new PublicKey(address);
-  const resp  = await conn.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID });
-  const holdings = resp.value
-    .map(v => v.account.data.parsed?.info)
-    .filter(info => info && Number(info.tokenAmount?.uiAmount ?? 0) > 0);
-  if (holdings.length === 0) return [];
-
-  // Ambil metadata + harga USD sekaligus dari Jupiter Token API v2 (gratis, tanpa key,
-  // maksimal 100 mint per request).
-  const mints = Array.from(new Set(holdings.map((h: any) => h.mint as string)));
-  const metaMap: Record<string, any> = {};
-  for (let i = 0; i < mints.length; i += 100) {
-    const chunk = mints.slice(i, i + 100);
-    try {
-      const res = await fetch(`https://lite-api.jup.ag/tokens/v2/search?query=${chunk.join(',')}`);
-      if (res.ok) {
-        const arr = await res.json();
-        (Array.isArray(arr) ? arr : []).forEach((t: any) => { metaMap[t.id] = t; });
-      }
-    } catch { /* metadata gagal diambil, tetap tampilkan saldo tanpa nama/harga */ }
-  }
-
-  return holdings.map((h: any) => {
-    const meta    = metaMap[h.mint];
-    const balance = Number(h.tokenAmount.uiAmount);
-    const price   = typeof meta?.usdPrice === 'number' ? meta.usdPrice : null;
-    return {
-      chain: 'sol',
-      address: h.mint,
-      symbol: meta?.symbol || `${h.mint.slice(0,4)}…`,
-      name: meta?.name || 'Unknown SPL Token',
-      decimals: h.tokenAmount.decimals,
-      balance,
-      balanceFormatted: balance.toLocaleString('en-US', { maximumFractionDigits: 6 }),
-      usdPrice: price,
-      usdValue: price !== null ? balance * price : null,
-      logo: meta?.icon,
-    } as DetectedToken;
-  });
-}
-
 export const WalletGenerator: React.FC = () => {
 
   const [wallets,  setWallets]  = useState<BIP39Wallet[]>(() => {
     try {
       const saved: BIP39Wallet[] = JSON.parse(localStorage.getItem('bip39Wallets') || '[]');
-      // Wallet lama (sebelum fitur Solana) belum punya solAddresses — turunkan dari mnemonic yang sama.
+
+      const axmCoinTypeFixed = localStorage.getItem('axmCoinTypeFixV5') === 'done';
+      if (!axmCoinTypeFixed) localStorage.setItem('axmCoinTypeFixV5', 'done');
+
       return saved.map(w => {
-        if (w.solAddresses && w.solAddresses.length > 0) return w;
-        try {
-          const solAddresses = w.addresses.map(a => ({ index: a.index, ...deriveSolanaAddress(w.mnemonic, a.index) }));
-          return { ...w, solAddresses };
-        } catch { return { ...w, solAddresses: w.solAddresses || [] }; }
+        let next = w;
+        if (!next.solAddresses || next.solAddresses.length === 0) {
+          try {
+            const solAddresses = next.addresses.map(a => ({ index: a.index, ...deriveSolanaAddress(next.mnemonic, a.index) }));
+            next = { ...next, solAddresses };
+          } catch { next = { ...next, solAddresses: next.solAddresses || [] }; }
+        }
+
+        if (!next.tronAddresses || next.tronAddresses.length === 0) {
+          try {
+            const tronAddresses = next.addresses.map(a => ({ index: a.index, ...deriveTronAddress(next.mnemonic, a.index) }));
+            next = { ...next, tronAddresses };
+          } catch { next = { ...next, tronAddresses: next.tronAddresses || [] }; }
+        }
+
+        if (!next.axmAddresses || (!axmCoinTypeFixed && next.axmAddresses.length > 0)) {
+          next = { ...next, axmAddresses: [] };
+        }
+
+        if (!next.atomAddresses || next.atomAddresses.length === 0) {
+          next = { ...next, atomAddresses: [] };
+        }
+        return next;
       });
     } catch { return []; }
   });
   const [chainView, setChainView] = useState<Record<string, ChainKind>>({});
   const [networks, setNetworks] = useState<RPCNetwork[]>(() => {
     try {
-      const s = localStorage.getItem('rpcNetworks');
+      const s = localStorage.getItem(RPC_NETWORKS_STORAGE_KEY);
       return s ? JSON.parse(s) : DEFAULT_NETWORKS;
     } catch { return DEFAULT_NETWORKS; }
   });
@@ -514,15 +497,14 @@ export const WalletGenerator: React.FC = () => {
   const [alertData,      setAlertData]      = useState<{isOpen:boolean;msg:string;type:'success'|'error'|'hapus'|'info'}>({isOpen:false,msg:'',type:'info'});
   const [confirmData,    setConfirmData]    = useState<{isOpen:boolean;title:string;message:string;action:(()=>void)|null}>({isOpen:false,title:'',message:'',action:null});
 
-  // ── Dev Mode: skip konfirmasi TX (default OFF = selalu minta konfirmasi) ──
+
   const [devMode, setDevMode] = useState<boolean>(() => localStorage.getItem('devModeSkipTxConfirm') === 'true');
   useEffect(() => { localStorage.setItem('devModeSkipTxConfirm', String(devMode)); }, [devMode]);
 
   const [txConfirmModal, setTxConfirmModal] = useState<{isOpen:boolean; details: TxConfirmDetails|null}>({isOpen:false, details:null});
   const txConfirmResolverRef = useRef<((ok:boolean)=>void)|null>(null);
 
-  // Modul konfirmasi TX — resolve(true) kalau user klik "Kirim Transaksi",
-  // resolve(false) kalau batal. Kalau Dev Mode aktif, langsung lolos tanpa modal.
+
   const requestTxConfirm = useCallback((details: TxConfirmDetails): Promise<boolean> => {
     if (devMode) return Promise.resolve(true);
     return new Promise<boolean>((resolve) => {
@@ -546,13 +528,14 @@ export const WalletGenerator: React.FC = () => {
   const [txLoadingBal,  setTxLoadingBal]  = useState(false);
   const [txSendTo,      setTxSendTo]      = useState('');
   const [txSendAmt,     setTxSendAmt]     = useState('');
+  const [txMaxLoading,  setTxMaxLoading]  = useState(false);
   const [txSending,     setTxSending]     = useState(false);
   const [txConnecting,  setTxConnecting]  = useState(false);
   const [txStatus,      setTxStatus]      = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
   const [txWalletSel,   setTxWalletSel]   = useState('');
 
-  // ── ERC-20 asset selector untuk Kirim (single) di EVM ──
-  const [txAsset,        setTxAsset]        = useState<string>('native'); // 'native' atau contract address token
+
+  const [txAsset,        setTxAsset]        = useState<string>('native');
   const [txTokens,       setTxTokens]       = useState<{address:string;symbol:string;decimals:number;name:string;balance:string}[]>([]);
   const [txTokensLoading,setTxTokensLoading]= useState(false);
   const [txAddTokenAddr, setTxAddTokenAddr] = useState('');
@@ -589,7 +572,7 @@ export const WalletGenerator: React.FC = () => {
   const txWalletRef     = useRef<ethers.Wallet | null>(null);
   const garapImportRef  = useRef<HTMLInputElement>(null);
 
-  // ── Solana Send/Receive ──
+
   const [solNetId,       setSolNetId]       = useState('mainnet');
   const SOLANA_NETWORK = SOLANA_NETWORKS.find(n => n.id === solNetId) ?? SOLANA_NETWORKS[0];
   const [solPrivKey,    setSolPrivKey]    = useState('');
@@ -608,22 +591,39 @@ export const WalletGenerator: React.FC = () => {
   const solConnRef      = useRef<Connection | null>(null);
   const solKeypairRef   = useRef<SolKeypair | null>(null);
 
-  // Mode kirim: single / multi-send / sweep (mirror EVM)
-  const [solMode, setSolMode] = useState<'single'|'multi'|'sweep'>('single');
 
-  // Asset yang dikirim di mode single: 'native' (SOL) atau mint address token SPL
+  const [solMode, setSolMode] = useState<'single'|'multi'|'sweep'|'close'>('single');
+
+
   const [solAsset,          setSolAsset]          = useState<string>('native');
   const [solTokens,         setSolTokens]         = useState<{mint:string; decimals:number; uiAmount:number}[]>([]);
   const [solTokensLoading,  setSolTokensLoading]  = useState(false);
 
-  // Multi Send Solana
+
+  const [solCloseAccounts,   setSolCloseAccounts]   = useState<{
+    pubkey:string; mint:string; decimals:number; uiAmount:number; programId:string; lamports:number;
+
+    name?: string; symbol?: string; image?: string; metaLoaded?: boolean;
+    createdAt?: number | null; createdAtLoaded?: boolean;
+  }[]>([]);
+
+  const solTokenMetaCacheRef = useRef<Map<string, { name?: string; symbol?: string; image?: string }>>(new Map());
+  const [solCloseLoading,    setSolCloseLoading]    = useState(false);
+  const [solClosingId,       setSolClosingId]       = useState<string>('');
+  const [solCloseBurnFirst,  setSolCloseBurnFirst]  = useState<Record<string, boolean>>({});
+  const [solCloseAllRunning, setSolCloseAllRunning] = useState(false);
+  const [solCloseSelected,   setSolCloseSelected]   = useState<Set<string>>(new Set());
+  const [solCloseFilter,     setSolCloseFilter]     = useState<'all'|'empty'|'balance'>('all');
+  const [solCloseSearch,     setSolCloseSearch]     = useState('');
+
+
   const [solMultiRows, setSolMultiRows] = useState<{id:string;to:string;amount:string;status:'idle'|'pending'|'success'|'failed';hash?:string;error?:string}[]>([
     { id: '1', to: '', amount: '', status: 'idle' },
   ]);
   const [solMultiRunning,  setSolMultiRunning]  = useState(false);
   const [solMultiEqualAmt, setSolMultiEqualAmt] = useState('');
 
-  // Sweep Solana
+
   const [solSweepDestAddr,   setSolSweepDestAddr]   = useState('');
   const [solSweepAmtMode,    setSolSweepAmtMode]    = useState<'all'|'fixed'>('all');
   const [solSweepFixedAmt,   setSolSweepFixedAmt]   = useState('');
@@ -633,6 +633,106 @@ export const WalletGenerator: React.FC = () => {
   const [solSweepRunning,    setSolSweepRunning]    = useState(false);
   const [solSweepDelayMs,    setSolSweepDelayMs]    = useState(1200);
   const [solSweepFetchingBal,setSolSweepFetchingBal]= useState(false);
+
+
+  const [tronNetId,       setTronNetId]       = useState('mainnet');
+  const [tronPrivKey,     setTronPrivKey]     = useState('');
+  const [tronConnected,   setTronConnected]   = useState(false);
+  const [tronConnecting,  setTronConnecting]  = useState(false);
+  const [tronAddress,     setTronAddress]     = useState('');
+  const [tronBalance,     setTronBalance]     = useState('—');
+  const [tronLoadingBal,  setTronLoadingBal]  = useState(false);
+  const [tronSendTo,      setTronSendTo]      = useState('');
+  const [tronSendAmt,     setTronSendAmt]     = useState('');
+  const [tronAsset,       setTronAsset]       = useState<string>('native');
+  const [tronAssetBal,    setTronAssetBal]    = useState('—');
+  const [tronAssetBalLoading, setTronAssetBalLoading] = useState(false);
+  const [tronSending,     setTronSending]     = useState(false);
+  const [tronWalletSel,   setTronWalletSel]   = useState('');
+  const [tronStatus,      setTronStatus]      = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
+
+
+  const [tronResources,        setTronResources]        = useState<TronAccountResources | null>(null);
+  const [tronResourcesLoading, setTronResourcesLoading] = useState(false);
+  const [tronFeeEstimate,      setTronFeeEstimate]      = useState<TronFeeEstimate | null>(null);
+  const [tronFeeEstimating,    setTronFeeEstimating]    = useState(false);
+  const [tronFeeEstimateError, setTronFeeEstimateError] = useState<string | null>(null);
+
+  const [tronMode, setTronMode] = useState<'single'|'multi'|'sweep'>('single');
+  const [tronMultiRows,   setTronMultiRows]   = useState<{id:string;to:string;amount:string;status:'idle'|'pending'|'success'|'failed';hash?:string;error?:string}[]>([
+    { id: '1', to: '', amount: '', status: 'idle' },
+  ]);
+  const [tronMultiRunning,  setTronMultiRunning]  = useState(false);
+  const [tronMultiEqualAmt, setTronMultiEqualAmt] = useState('');
+
+  const [tronSweepDestAddr,    setTronSweepDestAddr]    = useState('');
+  const [tronSweepAmtMode,     setTronSweepAmtMode]     = useState<'all'|'fixed'>('all');
+  const [tronSweepFixedAmt,    setTronSweepFixedAmt]    = useState('');
+  const [tronSweepLeaveBuf,    setTronSweepLeaveBuf]    = useState('1');
+  const [tronSweepSources,     setTronSweepSources]     = useState<{id:string;label:string;address:string;privateKey:string;balance?:string;status:'idle'|'pending'|'success'|'failed'|'skipped';hash?:string;error?:string}[]>([]);
+  const [tronSweepManualPK,    setTronSweepManualPK]    = useState('');
+  const [tronSweepRunning,     setTronSweepRunning]     = useState(false);
+  const [tronSweepDelayMs,     setTronSweepDelayMs]     = useState(1500);
+  const [tronSweepFetchingBal, setTronSweepFetchingBal] = useState(false);
+
+
+  const [tcTronNetId,     setTcTronNetId]     = useState('mainnet');
+  const [tcTronWalletSel, setTcTronWalletSel] = useState('');
+  const [tcTronPrivKey,   setTcTronPrivKey]   = useState('');
+  const [tcTronName,      setTcTronName]      = useState('');
+  const [tcTronSymbol,    setTcTronSymbol]    = useState('');
+  const [tcTronDecimals,  setTcTronDecimals]  = useState('6');
+  const [tcTronSupply,    setTcTronSupply]    = useState('1000000');
+  const [tcTronCreating,  setTcTronCreating]  = useState(false);
+  const [tcTronStatus,    setTcTronStatus]    = useState<{type:'idle'|'pending'|'success'|'error';msg:string}>({type:'idle',msg:''});
+  const [trc20Tokens,     setTrc20Tokens]     = useState<{netId:string;address:string;symbol:string;decimals:number;name:string;supply:string;txId:string;createdAt:number;pending?:boolean}[]>(() => {
+    try { return JSON.parse(localStorage.getItem('trc20Tokens') || '[]'); } catch { return []; }
+  });
+  useEffect(() => { localStorage.setItem('trc20Tokens', JSON.stringify(trc20Tokens)); }, [trc20Tokens]);
+
+
+  const [axmNetId,       setAxmNetId]       = useState('axiome-mainnet');
+  const AXIOME_NETWORK = AXIOME_NETWORKS.find(n => n.id === axmNetId) ?? AXIOME_NETWORKS[0];
+  const [axmPrivKey,    setAxmPrivKey]    = useState('');
+  const [axmConnected,  setAxmConnected]  = useState(false);
+  const [axmConnecting, setAxmConnecting] = useState(false);
+  const [axmAddress,    setAxmAddress]    = useState('');
+  const [axmBalance,    setAxmBalance]    = useState('—');
+  const [axmLoadingBal, setAxmLoadingBal] = useState(false);
+  const [axmSendTo,     setAxmSendTo]     = useState('');
+  const [axmSendAmt,    setAxmSendAmt]    = useState('');
+  const [axmSending,    setAxmSending]    = useState(false);
+  const [axmWalletSel,  setAxmWalletSel]  = useState('');
+  const [axmStatus,     setAxmStatus]     = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
+  const [axmFeeEstimate,      setAxmFeeEstimate]      = useState<AxmFeeEstimate | null>(null);
+  const [axmFeeEstimating,    setAxmFeeEstimating]    = useState(false);
+  const [axmFeeEstimateError, setAxmFeeEstimateError] = useState<string | null>(null);
+
+
+  const [axmCw20Input, setAxmCw20Input] = useState('');
+
+
+  const [atomNetId,       setAtomNetId]       = useState('cosmoshub-mainnet');
+  const COSMOS_NETWORK = COSMOS_NETWORKS.find(n => n.id === atomNetId) ?? COSMOS_NETWORKS[0];
+  const [atomPrivKey,    setAtomPrivKey]    = useState('');
+  const [atomConnected,  setAtomConnected]  = useState(false);
+  const [atomConnecting, setAtomConnecting] = useState(false);
+  const [atomAddress,    setAtomAddress]    = useState('');
+  const [atomBalance,    setAtomBalance]    = useState('—');
+  const [atomLoadingBal, setAtomLoadingBal] = useState(false);
+  const [atomSendTo,     setAtomSendTo]     = useState('');
+  const [atomSendAmt,    setAtomSendAmt]    = useState('');
+  const [atomSending,    setAtomSending]    = useState(false);
+  const [atomWalletSel,  setAtomWalletSel]  = useState('');
+  const [atomStatus,     setAtomStatus]     = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
+  const [atomFeeEstimate,      setAtomFeeEstimate]      = useState<AtomFeeEstimate | null>(null);
+  const [atomFeeEstimating,    setAtomFeeEstimating]    = useState(false);
+  const [atomFeeEstimateError, setAtomFeeEstimateError] = useState<string | null>(null);
+
+  const [atomGasMode,     setAtomGasMode]     = useState<AtomGasMode>('standard');
+  const [atomGasManual,   setAtomGasManual]   = useState('');
+  const [atomGasAdvanced, setAtomGasAdvanced] = useState(false);
+  const [atomGasRefreshNonce, setAtomGasRefreshNonce] = useState(0);
 
   const [netForm,      setNetForm]      = useState<Omit<RPCNetwork,'id'>&{rpcRaw:string}>({name:'',chainId:0,symbol:'',rpcUrls:[],rpcRaw:'',explorerUrl:'',color:'#01a2ff'});
   const [netEditId,    setNetEditId]    = useState<string|null>(null);
@@ -651,12 +751,51 @@ export const WalletGenerator: React.FC = () => {
   const [atShowForm,   setAtShowForm]   = useState(false);
 
   useEffect(() => { localStorage.setItem('bip39Wallets',        JSON.stringify(wallets));      }, [wallets]);
-  useEffect(() => { localStorage.setItem('rpcNetworks',         JSON.stringify(networks));     }, [networks]);
+
+
+  useEffect(() => {
+    const need = wallets.filter(w => !w.axmAddresses || w.axmAddresses.length === 0);
+    if (need.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const w of need) {
+        try {
+          const axmAddresses = await Promise.all(
+            w.addresses.map(async a => ({ index: a.index, ...(await deriveAxiomeAddress(w.mnemonic, a.index)) }))
+          );
+          if (cancelled) return;
+          setWallets(prev => prev.map(x => x.id === w.id ? { ...x, axmAddresses } : x));
+        } catch {  }
+      }
+    })();
+    return () => { cancelled = true; };
+
+  }, [wallets]);
+
+
+  useEffect(() => {
+    const need = wallets.filter(w => !w.atomAddresses || w.atomAddresses.length === 0);
+    if (need.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const w of need) {
+        try {
+          const atomAddresses = await Promise.all(
+            w.addresses.map(async a => ({ index: a.index, ...(await deriveCosmosAddress(w.mnemonic, a.index)) }))
+          );
+          if (cancelled) return;
+          setWallets(prev => prev.map(x => x.id === w.id ? { ...x, atomAddresses } : x));
+        } catch {  }
+      }
+    })();
+    return () => { cancelled = true; };
+
+  }, [wallets]);
+
+  useEffect(() => { localStorage.setItem(RPC_NETWORKS_STORAGE_KEY, JSON.stringify(networks));   }, [networks]);
   useEffect(() => { localStorage.setItem('walletAirdropTasks',  JSON.stringify(airdropTasks)); }, [airdropTasks]);
 
-  // ── Deep link: page lain bisa arahkan ke sini via URL hash "#faucetsolana"
-  //    (mis. tombol "Cari Faucet SOL" di page Faucet -> href="/wallet-gen#faucetsolana")
-  //    Otomatis pindah ke tab Transfer, chain Solana, network Devnet, lalu scroll & highlight tombol faucet.
+
   useEffect(() => {
     const hash = window.location.hash.replace('#', '').toLowerCase();
     if (hash === 'faucetsolana') {
@@ -666,7 +805,7 @@ export const WalletGenerator: React.FC = () => {
       setHighlightFaucet(true);
       setTimeout(() => setHighlightFaucet(false), 4000);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+
   }, []);
 
   useEffect(() => {
@@ -719,10 +858,10 @@ export const WalletGenerator: React.FC = () => {
 
   const [execTaskId,    setExecTaskId]    = useState<string|null>(null);
 
-  // ── Token Creator: ERC-20 (EVM) & SPL Token (Solana) ──
+
   const [tcChain, setTcChain] = useState<ChainKind>('evm');
 
-  // -- ERC-20 --
+
   const [tcNetworkId,  setTcNetworkId]  = useState<string>('sepolia');
   const [tcWalletSel,  setTcWalletSel]  = useState('');
   const [tcPrivKey,    setTcPrivKey]    = useState('');
@@ -736,19 +875,16 @@ export const WalletGenerator: React.FC = () => {
     try { return JSON.parse(localStorage.getItem('erc20DeployedTokens') || '[]'); } catch { return []; }
   });
 
-  // -- ERC-20: mode "Kode Solidity Kustom" (alternatif dari template bawaan) --
+
   const [tcEvmMode,        setTcEvmMode]        = useState<'template'|'custom'>('template');
   const [tcCustomSolidity, setTcCustomSolidity]  = useState('');
   const [tcCustomCtorArgs, setTcCustomCtorArgs]  = useState('[]');
   const [tcCompiling,      setTcCompiling]       = useState(false);
   const [tcCompileError,   setTcCompileError]    = useState('');
   const [tcCompiled,       setTcCompiled]        = useState<CompiledContract | null>(null);
-  const [tcSecScanning,    setTcSecScanning]     = useState(false);
-  const [tcSecResult,      setTcSecResult]       = useState<AiSecResult | null>(null);
-  const [tcSecError,       setTcSecError]        = useState('');
-  const [tcRiskAck,        setTcRiskAck]         = useState(false); // checkbox "paham risiko" utk kode berisiko tinggi/kritis
 
-  // -- SPL Token --
+
+  const [tcSolStandard, setTcSolStandard] = useState<'classic'|'token2022'>('classic');
   const [tcSolNetId,     setTcSolNetId]     = useState('mainnet');
   const [tcSolWalletSel, setTcSolWalletSel] = useState('');
   const [tcSolPrivKey,   setTcSolPrivKey]   = useState('');
@@ -756,11 +892,12 @@ export const WalletGenerator: React.FC = () => {
   const [tcSolSymbol,    setTcSolSymbol]    = useState('');
   const [tcSolDecimals,  setTcSolDecimals]  = useState('9');
   const [tcSolSupply,    setTcSolSupply]    = useState('1000000');
-  // -- Metadata on-chain (Metaplex) --
-  const [tcSolAddMeta,     setTcSolAddMeta]     = useState(true); // toggle: sertakan metadata on-chain atau tidak
-  const [tcSolUri,         setTcSolUri]         = useState('');   // URI ke JSON metadata (name/image/description/attributes)
-  const [tcSolImageUrl,    setTcSolImageUrl]    = useState('');   // hanya utk preview lokal, tidak dikirim on-chain langsung
-  const [tcSolDescription, setTcSolDescription] = useState('');   // hanya utk preview lokal, tidak dikirim on-chain langsung
+
+  const [tcSolAddMeta,     setTcSolAddMeta]     = useState(true);
+  const [tcSolImageUrl,    setTcSolImageUrl]    = useState('');
+  const [tcSolDescription, setTcSolDescription] = useState('');
+  const [tcSolPinataJwt,   setTcSolPinataJwt]   = useState(() => localStorage.getItem('tcSolPinataJwt') || '');
+  const [tcSolImageUploading, setTcSolImageUploading] = useState(false);
   const [tcSolCreating,  setTcSolCreating]  = useState(false);
   const [tcSolStatus,    setTcSolStatus]    = useState<{type:'idle'|'pending'|'success'|'error';msg:string}>({type:'idle',msg:''});
   const [splTokens,      setSplTokens]      = useState<CreatedSplToken[]>(() => {
@@ -769,6 +906,7 @@ export const WalletGenerator: React.FC = () => {
 
   useEffect(() => { localStorage.setItem('erc20DeployedTokens', JSON.stringify(erc20Tokens)); }, [erc20Tokens]);
   useEffect(() => { localStorage.setItem('splCreatedTokens',   JSON.stringify(splTokens));   }, [splTokens]);
+  useEffect(() => { localStorage.setItem('tcSolPinataJwt',     tcSolPinataJwt);              }, [tcSolPinataJwt]);
   const [execNetId,     setExecNetId]     = useState<string>('sepolia');
   const [execWalSel,    setExecWalSel]    = useState<string>('');
   const [execPrivKey,   setExecPrivKey]   = useState<string>('');
@@ -784,7 +922,7 @@ export const WalletGenerator: React.FC = () => {
   const [execRawData,   setExecRawData]   = useState('0x');
   const [execGasLimit,  setExecGasLimit]  = useState('');
   const [execSimFailed, setExecSimFailed] = useState(false);
-  const [execReadResult, setExecReadResult] = useState<string | null>(null); // hasil eth_call view/pure
+  const [execReadResult, setExecReadResult] = useState<string | null>(null);
   const [batchModalOpen,   setBatchModalOpen]   = useState(false);
   const [batchNetId,       setBatchNetId]       = useState<string>('sepolia');
   const [batchWallets,     setBatchWallets]     = useState<{id:string;label:string;address:string;privateKey:string}[]>([]);
@@ -820,7 +958,7 @@ export const WalletGenerator: React.FC = () => {
     setTimeout(() => { if (batchLogRef.current) batchLogRef.current.scrollTop = batchLogRef.current.scrollHeight; }, 30);
   };
 
-  // helpers for multi-wallet management
+
   const addBatchWalletFromBIP39 = (val: string) => {
     if (!val || !val.includes(',')) return;
     const [wi, ai] = val.split(',').map(Number);
@@ -828,7 +966,7 @@ export const WalletGenerator: React.FC = () => {
     const addr = w?.addresses.find(a => a.index === ai);
     if (!addr) return;
     const id = `${wi},${ai}`;
-    if (batchWallets.some(bw => bw.id === id)) return; // already added
+    if (batchWallets.some(bw => bw.id === id)) return;
     setBatchWallets(prev => [...prev, { id, label: `[${w.name}] ${addr.address.slice(0,8)}…${addr.address.slice(-4)} (#${addr.index})`, address: addr.address, privateKey: addr.privateKey }]);
   };
 
@@ -841,7 +979,7 @@ export const WalletGenerator: React.FC = () => {
       if (batchWallets.some(bw => bw.id === id)) { setBatchManualPK(''); return; }
       setBatchWallets(prev => [...prev, { id, label: `[Manual] ${w.address.slice(0,8)}…${w.address.slice(-4)}`, address: w.address, privateKey: pk }]);
       setBatchManualPK('');
-    } catch { /* invalid PK */ }
+    } catch {  }
   };
 
   const removeBatchWallet = (id: string) => setBatchWallets(prev => prev.filter(bw => bw.id !== id));
@@ -851,7 +989,7 @@ export const WalletGenerator: React.FC = () => {
     const defaultNet = networks.find(n => n.id === batchNetId);
     if (!defaultNet) { batchAddLog('Network default tidak valid.', 'err'); return; }
 
-    // Check if multi-network mode is active
+
     const multiNetworkMode = tasks.some(t => batchTaskNetworks[t.id] && batchTaskNetworks[t.id] !== batchNetId);
 
     const okBatch = await requestTxConfirm({
@@ -867,7 +1005,7 @@ export const WalletGenerator: React.FC = () => {
     setBatchLoopRound(0);
     setBatchProgress({ walDone:0, walTotal:batchWallets.length, taskDone:0, taskTotal:tasks.length, currentWal:'', currentTask:'' });
 
-    // Provider cache: networkId -> provider
+
     const providerCache: Record<string, ethers.providers.JsonRpcProvider> = {};
 
     const getOrCreateProvider = async (net: RPCNetwork): Promise<ethers.providers.JsonRpcProvider> => {
@@ -879,7 +1017,7 @@ export const WalletGenerator: React.FC = () => {
       return p;
     };
 
-    // Pre-connect all required networks
+
     const requiredNetIds = new Set<string>([batchNetId]);
     tasks.forEach(t => { if (batchTaskNetworks[t.id]) requiredNetIds.add(batchTaskNetworks[t.id]); });
     if (requiredNetIds.size > 1) {
@@ -894,7 +1032,7 @@ export const WalletGenerator: React.FC = () => {
       }
     }
 
-    // Interruptible delay helper
+
     const interruptibleDelay = async (ms: number) => {
       const step = 200;
       let elapsed = 0;
@@ -915,7 +1053,7 @@ export const WalletGenerator: React.FC = () => {
       round++;
       setBatchLoopRound(round);
       const isLooping = batchLoopEnabled;
-      const maxRounds = batchLoopMax; // 0 = infinite
+      const maxRounds = batchLoopMax;
 
       if (isLooping) {
         batchAddLog(`━━━ Round ${round}${maxRounds > 0 ? ` / ${maxRounds}` : ' (∞)'} ━━━`, 'info');
@@ -929,7 +1067,7 @@ export const WalletGenerator: React.FC = () => {
         const bw = batchWallets[wi];
         setBatchProgress(p => ({ ...p, walDone: wi, walTotal: batchWallets.length, currentWal: bw.label, taskDone: 0, taskTotal: tasks.length, currentTask: '' }));
 
-        // Wallet will be re-connected per task if network changes
+
         batchAddLog(`\n[wallet] Wallet [${wi+1}/${batchWallets.length}]: ${bw.address.slice(0,10)}…${bw.address.slice(-4)}`, 'info');
 
       setBatchProgress(p => ({ ...p, taskDone: 0, taskTotal: tasks.length, currentTask: '' }));
@@ -938,7 +1076,7 @@ export const WalletGenerator: React.FC = () => {
         const task = tasks[i];
         setBatchProgress(p => ({ ...p, taskDone: i, taskTotal: tasks.length, currentTask: task.projectName }));
 
-        // Resolve network for this task
+
         const taskNetId = batchTaskNetworks[task.id] || batchNetId;
         const taskNet = networks.find(n => n.id === taskNetId) ?? defaultNet;
         const taskProvider = providerCache[taskNet.id];
@@ -957,7 +1095,7 @@ export const WalletGenerator: React.FC = () => {
           const netLabel = taskNetId !== batchNetId ? ` [${taskNet.name}]` : '';
           batchAddLog(`  [Task ${i+1}/${tasks.length}] ${task.projectName}${netLabel}${attemptLabel}`, 'info');
 
-          // Create wallet connected to the correct network provider
+
           let ethWallet: ethers.Wallet;
           try {
             ethWallet = new ethers.Wallet(bw.privateKey, taskProvider);
@@ -979,7 +1117,7 @@ export const WalletGenerator: React.FC = () => {
                 const data  = iface.encodeFunctionData(task.contractFunc, args);
                 batchAddLog(`  Func: ${task.contractFunc}(${args.join(', ')})`, 'info');
 
-                // ── VIEW / PURE: gunakan provider.call, jangan kirim TX ──
+
                 const mut = (fragment as any).stateMutability as string;
                 if (mut === 'view' || mut === 'pure') {
                   batchAddLog(`  [read-only] Fungsi "${task.contractFunc}" adalah ${mut} — eth_call (tanpa gas/TX).`, 'info');
@@ -991,14 +1129,14 @@ export const WalletGenerator: React.FC = () => {
                       const dec = iface.decodeFunctionResult(task.contractFunc, callResult);
                       decoded = dec.map((v: any) => v.toString()).join(', ');
                     }
-                  } catch { /* pakai raw hex */ }
+                  } catch {  }
                   batchAddLog(`  [result] ${decoded}`, 'ok');
                   taskSuccess = true;
                   setAirdropTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'done', doneAt: Date.now() } : t));
-                  break; // selesai tanpa TX
+                  break;
                 }
 
-                // ── WRITE: lanjut sebagai TX ──
+
                 txRequest = {
                   to: task.contractAddress,
                   value: task.ethValue && task.ethValue !== '0' ? ethers.utils.parseEther(task.ethValue) : ethers.BigNumber.from(0),
@@ -1009,7 +1147,7 @@ export const WalletGenerator: React.FC = () => {
               }
             } else {
               batchAddLog(`  Skip — tidak ada contract address`, 'warn');
-              taskSuccess = true; // skip bukan failure
+              taskSuccess = true;
               break;
             }
 
@@ -1041,7 +1179,7 @@ export const WalletGenerator: React.FC = () => {
             const tx = await ethWallet.sendTransaction(txRequest);
             batchAddLog(`  TX: ${tx.hash.slice(0, 20)}...`, 'ok');
 
-            // Race tx.wait() against stop signal
+
             const receipt = await Promise.race([
               tx.wait(),
               new Promise<never>((_, rej) => {
@@ -1072,7 +1210,7 @@ export const WalletGenerator: React.FC = () => {
               timestamp: Date.now(),
             });
             if (taskNet.explorerUrl) batchAddLog(`  ${taskNet.explorerUrl}/tx/${tx.hash}`, 'info');
-            break; // sukses, keluar dari retry loop
+            break;
           } catch (e: any) {
             const msg: string = e?.message ?? String(e);
             if (msg === '__STOPPED__') {
@@ -1092,7 +1230,7 @@ export const WalletGenerator: React.FC = () => {
               setAirdropTasks(prev => prev.map(t => t.id === task.id ? { ...t, status: 'failed' } : t));
             }
           }
-        } // end retry loop
+        }
 
         if (batchStopRef.current) { batchAddLog('[stopbyuser] Dihentikan oleh user.', 'warn'); break; }
 
@@ -1122,19 +1260,19 @@ export const WalletGenerator: React.FC = () => {
         batchAddLog(`Round ${round} selesai — Sukses: ${roundSuccess} | Gagal: ${roundFail} | Total: ${totalSuccess}[done] ${totalFail}[X]`, roundSuccess > 0 ? 'ok' : 'warn');
       }
 
-      // Stop if user clicked stop
+
       if (batchStopRef.current) break;
 
-      // Stop if not looping
+
       if (!isLooping) break;
 
-      // Stop if max rounds reached
+
       if (maxRounds > 0 && round >= maxRounds) {
         batchAddLog(`[done] Selesai ${maxRounds} round.`, 'ok');
         break;
       }
 
-      // Delay before next round
+
       if (batchLoopDelay > 0) {
         batchAddLog(`⏳ Jeda ${batchLoopDelay / 1000}s sebelum round ${round + 1}...`, 'info');
         await interruptibleDelay(batchLoopDelay);
@@ -1166,7 +1304,7 @@ export const WalletGenerator: React.FC = () => {
     setExecRawTo(task.walletAddress ? '' : '');
     setExecRawVal('0');
     setExecRawData('0x');
-    // pre-fill network from task.network name
+
     const matched = networks.find(n =>
       n.name.toLowerCase().includes(task.network.toLowerCase()) ||
       task.network.toLowerCase().includes(n.name.toLowerCase()) ||
@@ -1212,7 +1350,7 @@ export const WalletGenerator: React.FC = () => {
             const data  = iface.encodeFunctionData(execContract.contractFunc, args);
             execAddLog(`[</>]  Func: ${execContract.contractFunc}(${args.join(', ')})`);
 
-            // ── VIEW / PURE: gunakan eth_call, jangan kirim TX ──
+
             const mut = (fragment as any).stateMutability as string;
             if (mut === 'view' || mut === 'pure') {
               execAddLog(`[read-only] Fungsi "${execContract.contractFunc}" adalah ${mut} — menggunakan eth_call (tidak ada gas/TX).`);
@@ -1220,7 +1358,7 @@ export const WalletGenerator: React.FC = () => {
                 to:   execContract.contractAddress,
                 data,
               });
-              // Decode hasil jika ada outputs
+
               let decoded = callResult;
               try {
                 const outTypes = fragment.outputs ?? [];
@@ -1228,13 +1366,13 @@ export const WalletGenerator: React.FC = () => {
                   const dec = iface.decodeFunctionResult(execContract.contractFunc, callResult);
                   decoded = dec.map((v: any) => v.toString()).join(', ');
                 }
-              } catch { /* pakai raw hex */ }
+              } catch {  }
               execAddLog(`[result] ${decoded}`);
               setExecReadResult(decoded);
               setExecRunning(false);
               return;
             }
-            // ── WRITE: lanjut sebagai TX ──
+
             txRequest = {
               to:    execContract.contractAddress,
               value: execContract.ethValue && execContract.ethValue !== '0'
@@ -1268,19 +1406,19 @@ export const WalletGenerator: React.FC = () => {
       }
 
       if (execGasLimit && parseInt(execGasLimit) > 0) {
-        // User provided manual override — skip simulation entirely
+
         txRequest.gasLimit = ethers.BigNumber.from(execGasLimit);
         execAddLog(`[~] Gas limit manual: ${parseInt(execGasLimit).toLocaleString()}`);
       } else {
         execAddLog('[~] Estimasi gas...');
         try {
           const estimated = await wallet.estimateGas(txRequest);
-          // Add 20% buffer
+
           const withBuffer = estimated.mul(120).div(100);
           txRequest.gasLimit = withBuffer;
           execAddLog(`[~] Gas: ~${estimated.toNumber().toLocaleString()} (+20% buffer → ${withBuffer.toNumber().toLocaleString()})`);
         } catch (gasErr: any) {
-          // Detect revert vs generic failure
+
           const parsed   = parseTxError(gasErr);
           const isRevert = (gasErr?.message ?? '').toLowerCase().includes('revert')
             || (gasErr?.message ?? '').includes('UNPREDICTABLE_GAS_LIMIT');
@@ -1300,7 +1438,7 @@ export const WalletGenerator: React.FC = () => {
           }
 
           setExecRunning(false);
-          return; // stop — don't send a tx that will definitely fail
+          return;
         }
       }
 
@@ -1363,10 +1501,10 @@ export const WalletGenerator: React.FC = () => {
     }
     setExecRunning(false);
   };
-  // MetaMask connect for Auto Garap
+
   const [agWallet,      setAgWallet]      = useState({ address:'', chainId:0, chainName:'', balance:'0', connected:false });
   const [agConnecting,  setAgConnecting]  = useState(false);
-  // Raw TX builder state
+
   const [agRawTo,       setAgRawTo]       = useState('');
   const [agRawVal,      setAgRawVal]      = useState('0');
   const [agRawData,     setAgRawData]     = useState('0x');
@@ -1384,7 +1522,7 @@ export const WalletGenerator: React.FC = () => {
 
   const getInjectProv = (): any => (window as any).ethereum || null;
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
   const agConnectMM = async () => {
     const prov = getInjectProv();
     if (!prov) { agAddLog('[X] MetaMask tidak ditemukan. Install dulu.'); return; }
@@ -1408,13 +1546,13 @@ export const WalletGenerator: React.FC = () => {
     setAgConnecting(false);
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
   const agDisconnectMM = () => {
     setAgWallet({ address:'', chainId:0, chainName:'', balance:'0', connected:false });
     agAddLog('🔌 Disconnected.');
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
   const agSwitchNetwork = async (chainId: number) => {
     const prov = getInjectProv();
     const net  = networks.find(n => n.chainId === chainId);
@@ -1468,7 +1606,7 @@ export const WalletGenerator: React.FC = () => {
     } catch { return 'N/A'; }
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
   const agRunQueue = async () => {
     if (!agWallet.connected && !agSimMode) { agAddLog('[X] Hubungkan MetaMask atau aktifkan Sim Mode.'); return; }
     const pending = agQueue.filter(q => q.status === 'pending');
@@ -1518,11 +1656,11 @@ export const WalletGenerator: React.FC = () => {
     if (agWallet.connected) agRefreshBal();
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
   const agAddToQueue = (item: Omit<TxQueueItem,'id'|'status'>) =>
     setAgQueue(prev => [...prev, { ...item, id: Date.now().toString(), status:'pending' }]);
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
   const agBuildCalldata = () => {
     try {
       const fd = parseAbiFunc(agContract.abi, agContract.functionName);
@@ -1534,7 +1672,7 @@ export const WalletGenerator: React.FC = () => {
     } catch (e: any) { setAgCalldata(`⚠️ Error: ${e?.message}`); }
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
   const agCallRead = async () => {
     const prov = getInjectProv();
     if (!prov) { setAgReadResult('[X] Wallet tidak terhubung'); return; }
@@ -1551,15 +1689,15 @@ export const WalletGenerator: React.FC = () => {
     setAgReading(false);
   };
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
   const agPending  = agQueue.filter(q => q.status === 'pending').length;
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
   const agSuccess  = agQueue.filter(q => q.status === 'success').length;
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
   const agFailed   = agQueue.filter(q => q.status === 'failed').length;
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
   const agNetColor = networks.find(n => n.chainId === agWallet.chainId)?.color ?? '#01a2ff';
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+
   const agExplorer = networks.find(n => n.chainId === agWallet.chainId)?.explorerUrl ?? 'https://etherscan.io';
 
   const checkAllBalances = async () => {
@@ -1589,7 +1727,113 @@ export const WalletGenerator: React.FC = () => {
     setBalChecking(false);
   };
 
-  // ── Token Portfolio: cek SEMUA token (ERC-20 / SPL) yang dipegang 1 address ──
+  const checkAllSolBalances = async () => {
+    const allSol = wallets.flatMap(w => (w.solAddresses || []).map(a => ({ walletName: w.name, ...a })));
+    if (allSol.length === 0) { showAlert('Belum ada address Solana untuk dicek.', 'error'); return; }
+    setBalChecking(true);
+    const init: Record<string, { balance: string; loading: boolean; error: boolean }> = {};
+    allSol.forEach(a => { init[a.address] = { balance: '...', loading: true, error: false }; });
+    setBalResults(prev => ({ ...prev, ...init }));
+    const net = SOLANA_NETWORKS[0];
+
+    const CONCURRENCY = 5;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < allSol.length) {
+        const a = allSol[cursor++];
+        try {
+          const lamports = await getSolBalanceWithFallback(net, a.address);
+          const formatted = (lamports / LAMPORTS_PER_SOL).toFixed(6) + ' SOL';
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: formatted, loading: false, error: false } }));
+        } catch {
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: 'Error', loading: false, error: true } }));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, allSol.length) }, worker));
+    setBalChecking(false);
+  };
+
+  const checkAllTronBalances = async () => {
+    const allTron = wallets.flatMap(w => (w.tronAddresses || []).map(a => ({ walletName: w.name, ...a })));
+    if (allTron.length === 0) { showAlert('Belum ada address Tron untuk dicek.', 'error'); return; }
+    setBalChecking(true);
+    const init: Record<string, { balance: string; loading: boolean; error: boolean }> = {};
+    allTron.forEach(a => { init[a.address] = { balance: '...', loading: true, error: false }; });
+    setBalResults(prev => ({ ...prev, ...init }));
+    const net = TRON_NETWORKS[0];
+    const CONCURRENCY = 5;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < allTron.length) {
+        const a = allTron[cursor++];
+        try {
+          const sun = await getTronBalanceSun(net, a.address);
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: sunToTrx(sun) + ' TRX', loading: false, error: false } }));
+        } catch {
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: 'Error', loading: false, error: true } }));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, allTron.length) }, worker));
+    setBalChecking(false);
+  };
+
+  const checkAllAxmBalances = async () => {
+    const allAxm = wallets.flatMap(w => (w.axmAddresses || []).map(a => ({ walletName: w.name, ...a })));
+    if (allAxm.length === 0) { showAlert('Belum ada address Axiome untuk dicek.', 'error'); return; }
+    const net = AXIOME_NETWORKS[0];
+    if (net.rpcUrls.length === 0) {
+      showAlert('Axiome belum punya RPC endpoint yang dikonfigurasi (isi AXIOME_NETWORKS[].rpcUrls di Axiomenet.ts).', 'error');
+      return;
+    }
+    setBalChecking(true);
+    const init: Record<string, { balance: string; loading: boolean; error: boolean }> = {};
+    allAxm.forEach(a => { init[a.address] = { balance: '...', loading: true, error: false }; });
+    setBalResults(prev => ({ ...prev, ...init }));
+    const CONCURRENCY = 5;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < allAxm.length) {
+        const a = allAxm[cursor++];
+        try {
+          const balance = await getAxmBalanceWithFallback(net, a.address);
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: balance.toFixed(6) + ' AXM', loading: false, error: false } }));
+        } catch {
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: 'Error', loading: false, error: true } }));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, allAxm.length) }, worker));
+    setBalChecking(false);
+  };
+
+  const checkAllAtomBalances = async () => {
+    const allAtom = wallets.flatMap(w => (w.atomAddresses || []).map(a => ({ walletName: w.name, ...a })));
+    if (allAtom.length === 0) { showAlert('Belum ada address Cosmos Hub untuk dicek.', 'error'); return; }
+    const net = COSMOS_NETWORKS[0];
+    setBalChecking(true);
+    const init: Record<string, { balance: string; loading: boolean; error: boolean }> = {};
+    allAtom.forEach(a => { init[a.address] = { balance: '...', loading: true, error: false }; });
+    setBalResults(prev => ({ ...prev, ...init }));
+    const CONCURRENCY = 5;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < allAtom.length) {
+        const a = allAtom[cursor++];
+        try {
+          const balance = await getAtomBalanceWithFallback(net, a.address);
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: balance.toFixed(6) + ' ATOM', loading: false, error: false } }));
+        } catch {
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: 'Error', loading: false, error: true } }));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, allAtom.length) }, worker));
+    setBalChecking(false);
+  };
+
+
   const scanPortfolioFor = useCallback(async (target: { chain: ChainKind; address: string }, netId: string) => {
     setPortfolioLoading(true);
     setPortfolioError('');
@@ -1597,6 +1841,12 @@ export const WalletGenerator: React.FC = () => {
     try {
       const tokens = target.chain === 'sol'
         ? await fetchSolTokenPortfolio(target.address)
+        : target.chain === 'tron'
+        ? await fetchTronTokenPortfolio(target.address, TRON_NETWORKS.find(n => n.id === netId) ?? TRON_NETWORKS[0])
+        : target.chain === 'axm'
+        ? await fetchAxmPortfolio(target.address, AXIOME_NETWORKS.find(n => n.id === netId) ?? AXIOME_NETWORKS[0], axmCw20Input.split(',').map(s => s.trim()).filter(Boolean))
+        : target.chain === 'atom'
+        ? await fetchAtomPortfolio(target.address, COSMOS_NETWORKS.find(n => n.id === netId) ?? COSMOS_NETWORKS[0])
         : await fetchEvmTokenPortfolio(target.address, netId);
       tokens.sort((a, b) => (b.usdValue ?? -1) - (a.usdValue ?? -1));
       setPortfolioTokens(tokens);
@@ -1604,7 +1854,7 @@ export const WalletGenerator: React.FC = () => {
       setPortfolioError(e?.message || 'Gagal mengambil data token.');
     }
     setPortfolioLoading(false);
-  }, []);
+  }, [axmCw20Input]);
 
   const openPortfolio = (chain: ChainKind, address: string, walletName: string) => {
     const target = { chain, address, walletName };
@@ -1630,9 +1880,9 @@ export const WalletGenerator: React.FC = () => {
     <div style={{ position:'fixed', inset:0, background:'#000000cc', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000, padding:'20px' }}
       onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
-        style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${target.chain==='sol'?'#9945FF':'#01a2ff'}`, width:'100%', maxWidth:'560px', maxHeight:'82vh', display:'flex', flexDirection:'column' }}>
+        style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${target.chain==='sol'?'#9945FF':target.chain==='tron'?'#EF0027':target.chain==='axm'?'#75bbe9':target.chain==='atom'?'#2E3148':'#01a2ff'}`, width:'100%', maxWidth:'560px', maxHeight:'82vh', display:'flex', flexDirection:'column' }}>
         <div style={{ padding:'16px 18px', borderBottom:'1px solid #1a1a1a', display:'flex', alignItems:'center', gap:'10px' }}>
-          <FaCoins color={target.chain==='sol'?'#9945FF':'#01a2ff'} />
+          <FaCoins color={target.chain==='sol'?'#9945FF':target.chain==='tron'?'#EF0027':target.chain==='axm'?'#75bbe9':target.chain==='atom'?'#2E3148':'#01a2ff'} />
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ fontWeight:'bold', fontSize:'14px' }}>Portofolio Token</div>
             <div style={{ fontSize:'11px', color:'#555', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
@@ -1656,11 +1906,61 @@ export const WalletGenerator: React.FC = () => {
           </div>
         )}
 
+        {target.chain === 'tron' && (
+          <div style={{ padding:'12px 18px', borderBottom:'1px solid #161616', display:'flex', alignItems:'center', gap:'8px' }}>
+            <FaGlobe size={11} color="#555"/>
+            <div style={{ flex:1, fontSize:'11px', color:'#666', fontFamily:'monospace' }}>
+              Tron Mainnet · via Tronscan (testnet belum didukung)
+            </div>
+            <button onClick={refreshPortfolio} disabled={portfolioLoading}
+              style={{ background:'none', border:'1px solid #333', color:'#888', padding:'6px 10px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
+              <FaSync size={10} style={{ animation: portfolioLoading ? 'spin 1s linear infinite' : undefined }}/> Refresh
+            </button>
+          </div>
+        )}
+
+        {target.chain === 'axm' && (
+          <div style={{ padding:'12px 18px', borderBottom:'1px solid #161616', display:'flex', flexDirection:'column', gap:'8px' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+              <FaGlobe size={11} color="#555"/>
+              <div style={{ flex:1, fontSize:'11px', color:'#666', fontFamily:'monospace' }}>
+                Axiome Chain · saldo AXM native + CW20 manual (belum ada indexer publik)
+              </div>
+              <button onClick={refreshPortfolio} disabled={portfolioLoading}
+                style={{ background:'none', border:'1px solid #333', color:'#888', padding:'6px 10px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
+                <FaSync size={10} style={{ animation: portfolioLoading ? 'spin 1s linear infinite' : undefined }}/> Refresh
+              </button>
+            </div>
+            <div style={{ display:'flex', gap:'6px' }}>
+              <input type="text" placeholder="Contract address CW20 (axm1..., pisah koma kalau lebih dari 1)"
+                value={axmCw20Input} onChange={e => setAxmCw20Input(e.target.value)}
+                style={{ flex:1, background:'#0d0d0d', border:'1px solid #333', color:'#ddd', padding:'6px 8px', fontSize:'11px', fontFamily:'monospace' }} />
+              <button type="button" onClick={refreshPortfolio} disabled={portfolioLoading}
+                style={{ background:'none', border:'1px solid #333', color:'#888', padding:'6px 10px', cursor:'pointer', fontSize:'11px', whiteSpace:'nowrap' }}>
+                Cek CW20
+              </button>
+            </div>
+          </div>
+        )}
+
+        {target.chain === 'atom' && (
+          <div style={{ padding:'12px 18px', borderBottom:'1px solid #161616', display:'flex', alignItems:'center', gap:'8px' }}>
+            <FaGlobe size={11} color="#555"/>
+            <div style={{ flex:1, fontSize:'11px', color:'#666', fontFamily:'monospace' }}>
+              Cosmos Hub · saldo ATOM native (belum ada indexer IBC/token publik)
+            </div>
+            <button onClick={refreshPortfolio} disabled={portfolioLoading}
+              style={{ background:'none', border:'1px solid #333', color:'#888', padding:'6px 10px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
+              <FaSync size={10} style={{ animation: portfolioLoading ? 'spin 1s linear infinite' : undefined }}/> Refresh
+            </button>
+          </div>
+        )}
+
         <div style={{ padding:'14px 18px', overflowY:'auto', flex:1 }}>
           {portfolioLoading && (
             <div style={{ textAlign:'center', color:'#555', padding:'30px 0', fontSize:'12px' }}>
               <FaSpinner style={{ animation:'spin 1s linear infinite', marginBottom:'8px' }} size={18}/>
-              <div>Memindai token{target.chain==='evm' ? ' via Blockscout' : ' via Solana RPC + Jupiter'}...</div>
+              <div>Memindai token{target.chain==='evm' ? ' via Blockscout' : target.chain==='tron' ? ' via Tronscan' : target.chain==='axm' ? ' via Axiome RPC' : target.chain==='atom' ? ' via Cosmos Hub RPC/REST' : ' via Solana RPC + Jupiter'}...</div>
             </div>
           )}
 
@@ -1793,21 +2093,24 @@ export const WalletGenerator: React.FC = () => {
     if (wallets.length === 0) { showAlert('Tidak ada wallet untuk diekspor.', 'error'); return; }
     setCsvExporting(true);
     const rows: string[][] = [
-      ['Wallet Name', 'Address Index', 'Address', 'Private Key', 'Mnemonic Word Count', 'Created At', 'Tags', 'Note'],
+      ['Wallet Name', 'Chain', 'Address Index', 'Address', 'Private Key', 'Mnemonic Word Count', 'Created At', 'Tags', 'Note'],
     ];
     wallets.forEach(w => {
-      w.addresses.forEach(a => {
-        rows.push([
-          w.name,
-          String(a.index),
-          a.address,
-          a.privateKey,
-          String(w.mnemonic.split(' ').length),
-          new Date(w.createdAt).toLocaleString('id-ID'),
-          w.tags.join('; '),
-          w.note,
-        ]);
-      });
+      const pushRows = (chain: string, list: BIP39Wallet['addresses']) => {
+        list.forEach(a => {
+          rows.push([
+            w.name, chain, String(a.index), a.address, a.privateKey,
+            String(w.mnemonic.split(' ').length),
+            new Date(w.createdAt).toLocaleString('id-ID'),
+            w.tags.join('; '), w.note,
+          ]);
+        });
+      };
+      pushRows('EVM', w.addresses);
+      pushRows('SOL', w.solAddresses || []);
+      pushRows('TRON', w.tronAddresses || []);
+      pushRows('AXM', w.axmAddresses || []);
+      pushRows('ATOM', w.atomAddresses || []);
     });
     const csv = rows.map(r => r.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -1850,15 +2153,24 @@ export const WalletGenerator: React.FC = () => {
       }
       const addresses: BIP39Wallet['addresses'] = [];
       const solAddresses: BIP39Wallet['addresses'] = [];
+      const tronAddresses: BIP39Wallet['addresses'] = [];
+      const axmAddresses: BIP39Wallet['addresses'] = [];
+      const atomAddresses: BIP39Wallet['addresses'] = [];
       for (let i = 0; i < addressCount; i++) {
         const { address, privateKey } = deriveAddress(mnemonic, i);
         addresses.push({ index: i, address, privateKey });
         const sol = deriveSolanaAddress(mnemonic, i);
         solAddresses.push({ index: i, address: sol.address, privateKey: sol.privateKey });
+        const tron = deriveTronAddress(mnemonic, i);
+        tronAddresses.push({ index: i, address: tron.address, privateKey: tron.privateKey });
+        const axm = await deriveAxiomeAddress(mnemonic, i);
+        axmAddresses.push({ index: i, address: axm.address, privateKey: axm.privateKey });
+        const atom = await deriveCosmosAddress(mnemonic, i);
+        atomAddresses.push({ index: i, address: atom.address, privateKey: atom.privateKey });
       }
       const newWallet: BIP39Wallet = {
         id: Date.now().toString(), name: walletName.trim() || `Wallet #${wallets.length + 1}`,
-        mnemonic, addresses, solAddresses, createdAt: Date.now(), tags: [], note: '',
+        mnemonic, addresses, solAddresses, tronAddresses, axmAddresses, atomAddresses, createdAt: Date.now(), tags: [], note: '',
       };
       setWallets(prev => [newWallet, ...prev]);
       setExpandedId(newWallet.id);
@@ -1877,6 +2189,12 @@ export const WalletGenerator: React.FC = () => {
       const newAddrs = [...w.addresses];
       const newSolAddrs = [...(w.solAddresses || [])];
       const existingSol = new Set(newSolAddrs.map(a => a.index));
+      const newTronAddrs = [...(w.tronAddresses || [])];
+      const existingTron = new Set(newTronAddrs.map(a => a.index));
+      const newAxmAddrs = [...(w.axmAddresses || [])];
+      const existingAxm = new Set(newAxmAddrs.map(a => a.index));
+      const newAtomAddrs = [...(w.atomAddresses || [])];
+      const existingAtom = new Set(newAtomAddrs.map(a => a.index));
       for (let i = 0; i <= nextIndex; i++) {
         if (!existing.has(i)) {
           const { address, privateKey } = deriveAddress(w.mnemonic, i);
@@ -1886,10 +2204,27 @@ export const WalletGenerator: React.FC = () => {
           const sol = deriveSolanaAddress(w.mnemonic, i);
           newSolAddrs.push({ index: i, address: sol.address, privateKey: sol.privateKey });
         }
+        if (!existingTron.has(i)) {
+          const tron = deriveTronAddress(w.mnemonic, i);
+          newTronAddrs.push({ index: i, address: tron.address, privateKey: tron.privateKey });
+        }
+        if (!existingAxm.has(i)) {
+          const axm = await deriveAxiomeAddress(w.mnemonic, i);
+          newAxmAddrs.push({ index: i, address: axm.address, privateKey: axm.privateKey });
+        }
+        if (!existingAtom.has(i)) {
+          const atom = await deriveCosmosAddress(w.mnemonic, i);
+          newAtomAddrs.push({ index: i, address: atom.address, privateKey: atom.privateKey });
+        }
       }
       newAddrs.sort((a, b) => a.index - b.index);
       newSolAddrs.sort((a, b) => a.index - b.index);
-      setWallets(prev => prev.map(x => x.id === walletId ? { ...x, addresses: newAddrs, solAddresses: newSolAddrs } : x));
+      newTronAddrs.sort((a, b) => a.index - b.index);
+      newAxmAddrs.sort((a, b) => a.index - b.index);
+      newAtomAddrs.sort((a, b) => a.index - b.index);
+      // TON tidak ikut "turunkan address" di sini — algoritma native TON cuma menghasilkan
+      // 1 keypair per mnemonic (persis seperti Tonkeeper), bukan banyak address per index.
+      setWallets(prev => prev.map(x => x.id === walletId ? { ...x, addresses: newAddrs, solAddresses: newSolAddrs, tronAddresses: newTronAddrs, axmAddresses: newAxmAddrs, atomAddresses: newAtomAddrs } : x));
       showAlert('Address berhasil diturunkan!', 'success');
     } catch (e: any) { showAlert('Gagal: ' + e.message, 'error'); }
     setGenerating(false);
@@ -1986,6 +2321,15 @@ export const WalletGenerator: React.FC = () => {
 
   const selectedTxToken = txAsset !== 'native' ? knownTxTokens.find(t => t.address.toLowerCase() === txAsset.toLowerCase()) : undefined;
   const txIsToken = txAsset !== 'native' && !!selectedTxToken;
+
+  // Kalau daftar token dikenal berubah (token baru ditambahkan / dideploy) selagi wallet
+  // sudah connect, auto-refresh saldo tokennya — biar dropdown Asset tidak nyangkut di "?".
+  const knownTxTokenAddrs = knownTxTokens.map(t => t.address.toLowerCase()).sort().join(',');
+  useEffect(() => {
+    if (!txConnected || knownTxTokens.length === 0) return;
+    txFetchTokenBalances();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txConnected, knownTxTokenAddrs]);
 
   const txConnect = async () => {
     const pk = txPrivKey.trim();
@@ -2127,6 +2471,41 @@ export const WalletGenerator: React.FC = () => {
     try { return ethers.utils.parseUnits(gwei.toFixed(9), 'gwei'); } catch { return undefined; }
   };
 
+  // ── Isi otomatis "Jumlah" dengan saldo maksimum yang bisa dikirim ──
+  // Token: seluruh saldo token (gas dibayar terpisah pakai native coin).
+  // Native: saldo dikurangi estimasi biaya gas (gasPrice × gasLimit) biar tidak insufficient funds.
+  const txSetMaxAmount = async () => {
+    const provider = txProviderRef.current;
+    const address = txAddress;
+    if (!provider || !address) { showAlert('Connect wallet dulu.', 'error'); return; }
+    setTxMaxLoading(true);
+    try {
+      if (txIsToken && selectedTxToken) {
+        const c = new ethers.Contract(selectedTxToken.address, ERC20_ABI, provider);
+        const bal: ethers.BigNumber = await c.balanceOf(address);
+        if (bal.lte(0)) {
+          showAlert(`Saldo ${selectedTxToken.symbol} kosong.`, 'error');
+        } else {
+          setTxSendAmt(ethers.utils.formatUnits(bal, selectedTxToken.decimals));
+        }
+      } else {
+        const bal = await provider.getBalance(address);
+        const gasPrice = txGetGasPrice() ?? await provider.getGasPrice();
+        const gasLimit = ethers.BigNumber.from(parseInt(txGasLimit) || 21000);
+        const gasCost = gasPrice.mul(gasLimit);
+        const max = bal.sub(gasCost);
+        if (max.lte(0)) {
+          showAlert('Saldo tidak cukup untuk menutup biaya gas.', 'error');
+        } else {
+          setTxSendAmt(ethers.utils.formatEther(max));
+        }
+      }
+    } catch (e: any) {
+      showAlert('Gagal menghitung jumlah maksimum: ' + e.message, 'error');
+    }
+    setTxMaxLoading(false);
+  };
+
   const txSend = async () => {
     const wallet = txWalletRef.current;
     if (!wallet) return;
@@ -2202,6 +2581,7 @@ export const WalletGenerator: React.FC = () => {
       setSolConnected(true);
       await solRefreshBalance(conn, keypair.publicKey.toBase58());
       await solFetchTokens(conn, keypair.publicKey.toBase58());
+      await solFetchCloseAccounts(conn, keypair.publicKey.toBase58());
     } catch (e: any) { showAlert('Gagal connect: ' + e.message, 'error'); }
     setSolConnecting(false);
   };
@@ -2217,7 +2597,589 @@ export const WalletGenerator: React.FC = () => {
     setSolStatus({ type: 'idle', msg: '' });
     setSolAsset('native');
     setSolTokens([]);
+    setSolCloseAccounts([]);
+    setSolCloseBurnFirst({});
+    setSolCloseSelected(new Set());
+    setSolCloseFilter('all');
+    setSolCloseSearch('');
   };
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ── Tron: Send & Receive (connect, balance, single/multi/sweep TRX) ──
+  // ══════════════════════════════════════════════════════════════════════
+  const tronNetwork = TRON_NETWORKS.find(n => n.id === tronNetId) ?? TRON_NETWORKS[0];
+
+  const tronRefreshBalance = async (netOverride?: TronNetworkCfg, addr?: string) => {
+    const net     = netOverride ?? tronNetwork;
+    const address = addr ?? tronAddress;
+    if (!address) return;
+    setTronLoadingBal(true);
+    try {
+      const sun = await getTronBalanceSun(net, address);
+      setTronBalance(sunToTrx(sun) + ' TRX');
+    } catch { setTronBalance('Error'); }
+    setTronLoadingBal(false);
+  };
+
+  // Saldo token TRC-20 aktif (kalau tronAsset bukan 'native') untuk address yang connect.
+  const tronRefreshAssetBalance = async () => {
+    if (tronAsset === 'native' || !tronAddress) { setTronAssetBal('—'); return; }
+    const token = trc20Tokens.find(t => t.address === tronAsset);
+    if (!token) { setTronAssetBal('—'); return; }
+    setTronAssetBalLoading(true);
+    try {
+      const net = TRON_NETWORKS.find(n => n.id === token.netId) ?? tronNetwork;
+      const iface = new ethers.utils.Interface(ERC20_ABI);
+      const result = await tronReadContract(net, tronAddress, tronAsset, iface, 'balanceOf', [tronToEvmAddr(tronAddress)]);
+      const raw = result[0];
+      setTronAssetBal(ethers.utils.formatUnits(raw, token.decimals) + ' ' + token.symbol);
+    } catch { setTronAssetBal('Error'); }
+    setTronAssetBalLoading(false);
+  };
+  useEffect(() => { tronRefreshAssetBalance(); }, [tronAsset, tronAddress]);
+
+  // Estimasi fee (Bandwidth/Energy) berjalan otomatis & di-debounce tiap kali form
+  // kirim (tujuan/jumlah/asset) berubah — tanpa broadcast, aman dipanggil berkali-kali.
+  useEffect(() => {
+    if (!tronConnected || !tronAddress || tronMode !== 'single') { setTronFeeEstimate(null); setTronFeeEstimateError(null); return; }
+    const to  = tronSendTo.trim();
+    const amt = parseFloat(tronSendAmt);
+    if (!isValidTronAddress(to) || isNaN(amt) || amt <= 0) { setTronFeeEstimate(null); setTronFeeEstimateError(null); return; }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setTronFeeEstimating(true);
+      setTronFeeEstimateError(null);
+      try {
+        let est: TronFeeEstimate;
+        if (tronAsset === 'native') {
+          est = await estimateTronNativeFee(tronNetwork, tronAddress, to, trxToSun(tronSendAmt));
+        } else {
+          const token = trc20Tokens.find(t => t.address === tronAsset);
+          if (!token) throw new Error('Token tidak ditemukan.');
+          const iface = new ethers.utils.Interface(ERC20_ABI);
+          const amountBase = ethers.utils.parseUnits(tronSendAmt || '0', token.decimals);
+          est = await estimateTronTrc20Fee(tronNetwork, tronAddress, tronAsset, iface, tronToEvmAddr(to), amountBase);
+        }
+        if (!cancelled) { setTronFeeEstimate(est); setTronFeeEstimateError(null); }
+      } catch (e: any) {
+        if (!cancelled) { setTronFeeEstimate(null); setTronFeeEstimateError(e?.message || 'Gagal menghitung estimasi fee.'); }
+      }
+      if (!cancelled) setTronFeeEstimating(false);
+    }, 600);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [tronConnected, tronAddress, tronMode, tronAsset, tronSendTo, tronSendAmt, tronNetId]);
+
+  // Ambil kuota Bandwidth & Energy akun (gratis harian + hasil freeze/stake TRX).
+  const tronRefreshResources = async (netOverride?: TronNetworkCfg, addr?: string) => {
+    const net     = netOverride ?? tronNetwork;
+    const address = addr ?? tronAddress;
+    if (!address) return;
+    setTronResourcesLoading(true);
+    try {
+      const res = await getTronAccountResources(net, address);
+      setTronResources(res);
+    } catch { setTronResources(null); }
+    setTronResourcesLoading(false);
+  };
+
+  const tronConnect = async () => {
+    const pk = tronPrivKey.trim();
+    if (!pk) { showAlert('Masukkan private key Tron dulu (hex).', 'error'); return; }
+    setTronConnecting(true);
+    setTronStatus({ type: 'idle', msg: '' });
+    try {
+      const address = tronAddressFromPrivateKey(pk);
+      setTronAddress(address);
+      setTronConnected(true);
+      await tronRefreshBalance(tronNetwork, address);
+      await tronRefreshResources(tronNetwork, address);
+    } catch (e: any) { showAlert('Gagal connect: private key Tron tidak valid. (' + e.message + ')', 'error'); }
+    setTronConnecting(false);
+  };
+
+  const tronDisconnect = () => {
+    setTronConnected(false);
+    setTronAddress('');
+    setTronBalance('—');
+    setTronPrivKey('');
+    setTronWalletSel('');
+    setTronStatus({ type: 'idle', msg: '' });
+    setTronAsset('native');
+    setTronAssetBal('—');
+    setTronResources(null);
+    setTronFeeEstimate(null);
+    setTronFeeEstimateError(null);
+  };
+
+  const switchTronNetwork = async (newId: string) => {
+    setTronNetId(newId);
+    if (!tronConnected || !tronAddress) return;
+    const newNet = TRON_NETWORKS.find(n => n.id === newId) ?? TRON_NETWORKS[0];
+    await tronRefreshBalance(newNet, tronAddress);
+    await tronRefreshResources(newNet, tronAddress);
+  };
+
+  // Faucet Tron testnet (Nile/Shasta) TIDAK punya endpoint airdrop otomatis kayak
+  // Solana devnet (butuh reCAPTCHA manual di halaman faucet resmi) — jadi yang bisa
+  // dibantu di sini cuma nyalin address wallet ke clipboard + buka halaman faucet-nya
+  // di tab baru, biar user tinggal paste & klik Obtain.
+  const openTronFaucet = async () => {
+    if (!tronNetwork.faucetUrl) return;
+    if (tronConnected && tronAddress) {
+      await copyText(tronAddress, 'tron_faucet_addr');
+      showAlert(`Address disalin ke clipboard. Tempel di halaman faucet ${tronNetwork.name} yang baru dibuka.`, 'info');
+    }
+    window.open(tronNetwork.faucetUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleTronWalletSel = (val: string) => {
+    setTronWalletSel(val);
+    if (!val) return;
+    const [wi, ai] = val.split(',').map(Number);
+    const w    = wallets[wi];
+    const addr = w?.tronAddresses?.find(a => a.index === ai);
+    if (addr) setTronPrivKey(addr.privateKey);
+  };
+
+  const tronSend = async () => {
+    if (!tronConnected || !tronAddress) { showAlert('Wallet Tron tidak terhubung.', 'error'); return; }
+    if (!isValidTronAddress(tronSendTo.trim())) { showAlert('Address Tron tujuan tidak valid.', 'error'); return; }
+    const amt = parseFloat(tronSendAmt);
+    if (isNaN(amt) || amt <= 0) { showAlert('Jumlah tidak valid.', 'error'); return; }
+
+    const token = tronAsset !== 'native' ? trc20Tokens.find(t => t.address === tronAsset) : undefined;
+    if (tronAsset !== 'native' && !token) { showAlert('Token tidak ditemukan.', 'error'); return; }
+
+    const okSend = await requestTxConfirm({
+      title: 'Kirim Transaksi',
+      network: tronNetwork.name,
+      to: tronSendTo,
+      value: token ? `${tronSendAmt} ${token.symbol}` : `${tronSendAmt} TRX`,
+    });
+    if (!okSend) return;
+
+    setTronSending(true);
+    setTronStatus({ type: 'pending', msg: `Mengirim transaksi ke ${tronNetwork.name}...` });
+    try {
+      let txId: string;
+      if (token) {
+        const iface = new ethers.utils.Interface(ERC20_ABI);
+        const amountBase = ethers.utils.parseUnits(tronSendAmt, token.decimals);
+        txId = await tronCallContract(tronNetwork, tronAddress, token.address, iface, 'transfer', [tronToEvmAddr(tronSendTo.trim()), amountBase], tronPrivKey);
+      } else {
+        txId = await tronSendTrx(tronNetwork, tronAddress, tronSendTo.trim(), trxToSun(tronSendAmt), tronPrivKey);
+      }
+      setTronStatus({ type: 'success', msg: 'Transaksi terkirim (broadcast sukses)', hash: txId });
+      saveTxHistory({
+        taskName: 'Transfer', description: `Kirim ${tronSendAmt} ${token ? token.symbol : 'TRX'} ke ${shortAddr(tronSendTo)} di ${tronNetwork.name}`,
+        to: tronSendTo, value: tronSendAmt, data: '',
+        status: 'success', txHash: txId, timestamp: Date.now(),
+      });
+      setTronSendTo(''); setTronSendAmt('');
+      await tronRefreshBalance();
+      await tronRefreshAssetBalance();
+    } catch (e: any) { setTronStatus({ type: 'error', msg: tronFriendlyError(e.message) }); }
+    setTronSending(false);
+  };
+
+  // ══ Tron: Multi Send ══
+  const tronMultiAddRow = () =>
+    setTronMultiRows(prev => [...prev, { id: Date.now().toString(), to: '', amount: '', status: 'idle' }]);
+  const tronMultiRemoveRow = (id: string) =>
+    setTronMultiRows(prev => prev.filter(r => r.id !== id));
+  const tronMultiUpdateRow = (id: string, field: 'to'|'amount', val: string) =>
+    setTronMultiRows(prev => prev.map(r => r.id === id ? { ...r, [field]: val } : r));
+  const tronMultiApplyEqual = () => {
+    if (!tronMultiEqualAmt) return;
+    setTronMultiRows(prev => prev.map(r => ({ ...r, amount: tronMultiEqualAmt })));
+  };
+
+  const tronMultiSend = async () => {
+    if (!tronConnected || !tronAddress) { showAlert('Wallet Tron tidak terhubung.', 'error'); return; }
+    const validRows = tronMultiRows.filter(r => isValidTronAddress(r.to) && parseFloat(r.amount) > 0);
+    if (validRows.length === 0) { showAlert('Tidak ada baris valid (address + jumlah).', 'error'); return; }
+
+    const totalAmt = validRows.reduce((a, r) => a + parseFloat(r.amount), 0);
+
+    // Cek dulu total saldo cukup buat semua baris SEBELUM mulai kirim satu-satu — supaya
+    // ketahuan dari awal daripada baru gagal di tengah jalan pas TX ke-berapa.
+    try {
+      const balSun = await getTronBalanceSun(tronNetwork, tronAddress);
+      const totalSun = trxToSun(String(totalAmt));
+      if (totalSun > balSun) {
+        showAlert(`Saldo tidak cukup: total kirim ${totalAmt} TRX, saldo cuma ${sunToTrx(balSun)} TRX.`, 'error');
+        return;
+      }
+    } catch { /* kalau cek saldo gagal, tetap lanjut — validasi per-TX di TronGrid tetap jalan sebagai fallback */ }
+
+    const okMulti = await requestTxConfirm({
+      title: `Multi-Send — ${validRows.length} penerima`,
+      network: tronNetwork.name,
+      value: `${totalAmt} TRX (total)`,
+      extra: 'TX akan dikirim satu per satu ke semua penerima di bawah, tanpa konfirmasi per-baris.',
+    });
+    if (!okMulti) return;
+
+    setTronMultiRunning(true);
+    setTronMultiRows(prev => prev.map(r => ({ ...r, status: 'idle', hash: undefined, error: undefined })));
+    for (const row of validRows) {
+      setTronMultiRows(prev => prev.map(r => r.id === row.id ? { ...r, status: 'pending' } : r));
+      try {
+        const txId = await tronSendTrx(tronNetwork, tronAddress, row.to.trim(), trxToSun(row.amount), tronPrivKey);
+        setTronMultiRows(prev => prev.map(r => r.id === row.id ? { ...r, status: 'success', hash: txId } : r));
+        saveTxHistory({
+          taskName: 'Multi-Send', description: `${row.amount} TRX → ${shortAddr(row.to)} di ${tronNetwork.name}`,
+          to: row.to, value: row.amount, data: '',
+          status: 'success', txHash: txId, timestamp: Date.now(),
+        });
+      } catch (e: any) {
+        setTronMultiRows(prev => prev.map(r => r.id === row.id ? { ...r, status: 'failed', error: tronFriendlyError(e.message)?.slice(0,140) } : r));
+      }
+    }
+    setTronMultiRunning(false);
+    await tronRefreshBalance();
+  };
+
+  // ══ Tron: Sweep ══
+  const tronSweepAddFromBIP39 = (val: string) => {
+    if (!val || !val.includes(',')) return;
+    const [wi, ai] = val.split(',').map(Number);
+    const w    = wallets[wi];
+    const addr = w?.tronAddresses?.find(a => a.index === ai);
+    if (!addr) return;
+    const id = `bip39_${wi}_${ai}`;
+    if (tronSweepSources.some(s => s.id === id)) return;
+    setTronSweepSources(prev => [...prev, {
+      id, label: `[${w.name}] #${ai} ${addr.address.slice(0,10)}…`,
+      address: addr.address, privateKey: addr.privateKey, status: 'idle',
+    }]);
+  };
+
+  const tronSweepAddManualPK = () => {
+    const pk = tronSweepManualPK.trim();
+    if (!pk) return;
+    try {
+      const addr = tronAddressFromPrivateKey(pk);
+      const id   = `manual_${addr}`;
+      if (tronSweepSources.some(s => s.id === id)) { showAlert('Address sudah ada di daftar.', 'error'); return; }
+      setTronSweepSources(prev => [...prev, { id, label: `Manual ${addr.slice(0,10)}…`, address: addr, privateKey: pk, status: 'idle' }]);
+      setTronSweepManualPK('');
+    } catch { showAlert('Private key Tron tidak valid.', 'error'); }
+  };
+
+  const tronSweepRemoveSource = (id: string) =>
+    setTronSweepSources(prev => prev.filter(s => s.id !== id));
+
+  const tronSweepFetchBalances = async () => {
+    if (tronSweepSources.length === 0) return;
+    setTronSweepFetchingBal(true);
+    await Promise.all(tronSweepSources.map(async s => {
+      try {
+        const sun = await getTronBalanceSun(tronNetwork, s.address);
+        setTronSweepSources(prev => prev.map(x => x.id === s.id ? { ...x, balance: sunToTrx(sun) + ' TRX' } : x));
+      } catch {
+        setTronSweepSources(prev => prev.map(x => x.id === s.id ? { ...x, balance: 'Error' } : x));
+      }
+    }));
+    setTronSweepFetchingBal(false);
+  };
+
+  const tronSweepRun = async () => {
+    if (!isValidTronAddress(tronSweepDestAddr)) { showAlert('Address tujuan tidak valid.', 'error'); return; }
+    if (tronSweepSources.length === 0) { showAlert('Belum ada wallet sumber.', 'error'); return; }
+
+    const okSweep = await requestTxConfirm({
+      title: `Sweep — ${tronSweepSources.length} wallet sumber`,
+      network: tronNetwork.name,
+      to: tronSweepDestAddr,
+      extra: tronSweepAmtMode === 'all'
+        ? `Akan mengirim seluruh saldo (disisakan ± ${tronSweepLeaveBuf || '0'} TRX untuk bandwidth/fee) dari tiap wallet sumber.`
+        : `Akan mengirim ${tronSweepFixedAmt || '0'} TRX dari tiap wallet sumber ke address tujuan di atas.`,
+    });
+    if (!okSweep) return;
+
+    setTronSweepRunning(true);
+    setTronSweepSources(prev => prev.map(s => ({ ...s, status: 'idle', hash: undefined, error: undefined })));
+
+    for (const src of tronSweepSources) {
+      setTronSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'pending' } : s));
+      try {
+        const sun = await getTronBalanceSun(tronNetwork, src.address);
+        let sendSun: number;
+        if (tronSweepAmtMode === 'all') {
+          const leaveSun = trxToSun(tronSweepLeaveBuf || '0');
+          sendSun = sun - leaveSun - 1_100_000; // sisakan estimasi biaya bandwidth/aktivasi akun tujuan
+        } else {
+          sendSun = trxToSun(tronSweepFixedAmt);
+          // Mode "fixed" sebelumnya nggak dicek ke saldo aktual sama sekali — kalau saldo wallet
+          // sumber lebih kecil dari jumlah tetap ini, langsung skip di sini daripada baru gagal
+          // di TronGrid dengan pesan mentah "balance is not sufficient".
+          if (sendSun > sun) {
+            setTronSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'skipped', error: `Saldo cuma ${sunToTrx(sun)} TRX, kurang dari ${tronSweepFixedAmt} TRX` } : s));
+            if (tronSweepDelayMs > 0) await new Promise(r => setTimeout(r, tronSweepDelayMs));
+            continue;
+          }
+        }
+        if (sendSun <= 0) {
+          setTronSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'skipped', error: 'Saldo tidak cukup' } : s));
+        } else {
+          const txId = await tronSendTrx(tronNetwork, src.address, tronSweepDestAddr.trim(), sendSun, src.privateKey);
+          setTronSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'success', hash: txId } : s));
+          saveTxHistory({
+            taskName: 'Sweep', description: `Sweep ${sunToTrx(sendSun)} TRX dari ${shortAddr(src.address)} → ${shortAddr(tronSweepDestAddr)} di ${tronNetwork.name}`,
+            to: tronSweepDestAddr, value: sunToTrx(sendSun), data: '',
+            status: 'success', txHash: txId, timestamp: Date.now(),
+          });
+        }
+      } catch (e: any) {
+        setTronSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'failed', error: tronFriendlyError(e.message)?.slice(0,140) } : s));
+      }
+      if (tronSweepDelayMs > 0) await new Promise(r => setTimeout(r, tronSweepDelayMs));
+    }
+    setTronSweepRunning(false);
+    await tronRefreshBalance();
+  };
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ── Axiome (AXM): Send & Receive (connect via private key, cek saldo,
+  //    kirim AXM native) — pola sama seperti Tron di atas, tapi lewat cosmjs
+  //    SigningStargateClient (Axiome = Cosmos SDK, bukan EVM). ──
+  // ══════════════════════════════════════════════════════════════════════
+  const axmRefreshBalance = async (netOverride?: AxmNetworkCfg, addr?: string) => {
+    const net     = netOverride ?? AXIOME_NETWORK;
+    const address = addr ?? axmAddress;
+    if (!address) return;
+    setAxmLoadingBal(true);
+    try {
+      const bal = await getAxmBalanceWithFallback(net, address);
+      setAxmBalance(bal.toLocaleString('en-US', { maximumFractionDigits: 6 }) + ' AXM');
+    } catch { setAxmBalance('Error'); }
+    setAxmLoadingBal(false);
+  };
+
+  const axmConnect = async () => {
+    const pk = axmPrivKey.trim();
+    if (!pk) { showAlert('Masukkan private key Axiome dulu (hex).', 'error'); return; }
+    setAxmConnecting(true);
+    setAxmStatus({ type: 'idle', msg: '' });
+    try {
+      const address = await axiomeAddressFromPrivateKey(pk);
+      setAxmAddress(address);
+      setAxmConnected(true);
+      await axmRefreshBalance(AXIOME_NETWORK, address);
+    } catch (e: any) { showAlert('Gagal connect: private key Axiome tidak valid. (' + e.message + ')', 'error'); }
+    setAxmConnecting(false);
+  };
+
+  const axmDisconnect = () => {
+    setAxmConnected(false);
+    setAxmAddress('');
+    setAxmBalance('—');
+    setAxmPrivKey('');
+    setAxmWalletSel('');
+    setAxmStatus({ type: 'idle', msg: '' });
+  };
+
+  const switchAxmNetwork = async (newId: string) => {
+    setAxmNetId(newId);
+    if (!axmConnected || !axmAddress) return;
+    const newNet = AXIOME_NETWORKS.find(n => n.id === newId) ?? AXIOME_NETWORKS[0];
+    await axmRefreshBalance(newNet, axmAddress);
+  };
+
+  const handleAxmWalletSel = (val: string) => {
+    setAxmWalletSel(val);
+    if (!val) return;
+    const [wi, ai] = val.split(',').map(Number);
+    const w    = wallets[wi];
+    const addr = w?.axmAddresses?.find(a => a.index === ai);
+    if (addr) setAxmPrivKey(addr.privateKey);
+  };
+
+  const axmSend = async () => {
+    if (!axmConnected || !axmAddress) { showAlert('Wallet Axiome tidak terhubung.', 'error'); return; }
+    if (!isValidAxiomeAddress(axmSendTo.trim())) { showAlert('Address Axiome tujuan tidak valid.', 'error'); return; }
+    const amt = parseFloat(axmSendAmt);
+    if (isNaN(amt) || amt <= 0) { showAlert('Jumlah tidak valid.', 'error'); return; }
+
+    const okSend = await requestTxConfirm({
+      title: 'Kirim Transaksi',
+      network: AXIOME_NETWORK.name,
+      to: axmSendTo,
+      value: `${axmSendAmt} AXM`,
+    });
+    if (!okSend) return;
+
+    setAxmSending(true);
+    setAxmStatus({ type: 'pending', msg: `Mengirim transaksi ke ${AXIOME_NETWORK.name}...` });
+    try {
+      const txHash = await sendAxm(AXIOME_NETWORK, axmPrivKey, axmSendTo.trim(), amt);
+      setAxmStatus({ type: 'success', msg: 'Transaksi terkirim (broadcast sukses)', hash: txHash });
+      saveTxHistory({
+        taskName: 'Transfer', description: `Kirim ${axmSendAmt} AXM ke ${shortAddr(axmSendTo)} di ${AXIOME_NETWORK.name}`,
+        to: axmSendTo, value: axmSendAmt, data: '',
+        status: 'success', txHash, timestamp: Date.now(),
+      });
+      setAxmSendTo(''); setAxmSendAmt('');
+      await axmRefreshBalance();
+    } catch (e: any) { setAxmStatus({ type: 'error', msg: axmFriendlyError(e) }); }
+    setAxmSending(false);
+  };
+
+  // Estimasi fee AXM berjalan otomatis & di-debounce tiap kali tujuan/jumlah berubah — pola sama
+  // seperti estimasi fee ATOM di bawah, lewat simulate() dry-run ke node Axiome.
+  useEffect(() => {
+    if (!axmConnected || !axmAddress) { setAxmFeeEstimate(null); setAxmFeeEstimateError(null); return; }
+    const to  = axmSendTo.trim();
+    const amt = parseFloat(axmSendAmt);
+    if (!isValidAxiomeAddress(to) || isNaN(amt) || amt <= 0) { setAxmFeeEstimate(null); setAxmFeeEstimateError(null); return; }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setAxmFeeEstimating(true);
+      setAxmFeeEstimateError(null);
+      try {
+        const est = await estimateAxmFee(AXIOME_NETWORK, axmPrivKey, to, amt);
+        if (!cancelled) { setAxmFeeEstimate(est); setAxmFeeEstimateError(null); }
+      } catch (e: any) {
+        if (!cancelled) { setAxmFeeEstimate(null); setAxmFeeEstimateError(e?.message || 'Gagal menghitung estimasi fee.'); }
+      }
+      if (!cancelled) setAxmFeeEstimating(false);
+    }, 600);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [axmConnected, axmAddress, axmSendTo, axmSendAmt, axmNetId]);
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ── Cosmos Hub (ATOM): Send & Receive — pola identik dengan Axiome di atas,
+  //    tapi lewat Cosmosnet.ts (SigningStargateClient ke Cosmos Hub, coinType
+  //    118 resmi, REST publik CORS-friendly). ──
+  // ══════════════════════════════════════════════════════════════════════
+  const atomRefreshBalance = async (netOverride?: AtomNetworkCfg, addr?: string) => {
+    const net     = netOverride ?? COSMOS_NETWORK;
+    const address = addr ?? atomAddress;
+    if (!address) return;
+    setAtomLoadingBal(true);
+    try {
+      const bal = await getAtomBalanceWithFallback(net, address);
+      setAtomBalance(bal.toLocaleString('en-US', { maximumFractionDigits: 6 }) + ' ATOM');
+    } catch { setAtomBalance('Error'); }
+    setAtomLoadingBal(false);
+  };
+
+  const atomConnect = async () => {
+    const pk = atomPrivKey.trim();
+    if (!pk) { showAlert('Masukkan private key Cosmos dulu (hex).', 'error'); return; }
+    setAtomConnecting(true);
+    setAtomStatus({ type: 'idle', msg: '' });
+    try {
+      const address = await cosmosAddressFromPrivateKey(pk);
+      setAtomAddress(address);
+      setAtomConnected(true);
+      await atomRefreshBalance(COSMOS_NETWORK, address);
+    } catch (e: any) { showAlert('Gagal connect: private key Cosmos tidak valid. (' + e.message + ')', 'error'); }
+    setAtomConnecting(false);
+  };
+
+  const atomDisconnect = () => {
+    setAtomConnected(false);
+    setAtomAddress('');
+    setAtomBalance('—');
+    setAtomPrivKey('');
+    setAtomWalletSel('');
+    setAtomStatus({ type: 'idle', msg: '' });
+    setAtomGasMode('standard');
+    setAtomGasManual('');
+    setAtomGasAdvanced(false);
+  };
+
+  const switchAtomNetwork = async (newId: string) => {
+    setAtomNetId(newId);
+    if (!atomConnected || !atomAddress) return;
+    const newNet = COSMOS_NETWORKS.find(n => n.id === newId) ?? COSMOS_NETWORKS[0];
+    await atomRefreshBalance(newNet, atomAddress);
+  };
+
+  const handleAtomWalletSel = (val: string) => {
+    setAtomWalletSel(val);
+    if (!val) return;
+    const [wi, ai] = val.split(',').map(Number);
+    const w    = wallets[wi];
+    const addr = w?.atomAddresses?.find(a => a.index === ai);
+    if (addr) setAtomPrivKey(addr.privateKey);
+  };
+
+  // Resolve gasPrice (uatom/unit) aktif dari mode yang dipilih user — tier resmi chain-registry
+  // untuk slow/standard/fast, atau angka manual (fallback ke 'standard' kalau manual kosong/invalid).
+  const atomGetGasPriceUatom = (): number => {
+    if (atomGasMode === 'manual') {
+      const v = parseFloat(atomGasManual);
+      return Number.isFinite(v) && v > 0 ? v : ATOM_GAS_PRICE_TIERS.standard;
+    }
+    return ATOM_GAS_PRICE_TIERS[atomGasMode];
+  };
+
+  const atomSend = async () => {
+    if (!atomConnected || !atomAddress) { showAlert('Wallet Cosmos tidak terhubung.', 'error'); return; }
+    if (!isValidCosmosAddress(atomSendTo.trim())) { showAlert('Address Cosmos tujuan tidak valid.', 'error'); return; }
+    const amt = parseFloat(atomSendAmt);
+    if (isNaN(amt) || amt <= 0) { showAlert('Jumlah tidak valid.', 'error'); return; }
+
+    const gasPriceUatom = atomGetGasPriceUatom();
+    const feeLabel = atomFeeEstimate
+      ? `Fee: ~${atomFeeEstimate.feeAtom.toLocaleString('en-US', { maximumFractionDigits: 6 })} ATOM (${atomGasMode === 'manual' ? 'Manual' : atomGasMode[0].toUpperCase() + atomGasMode.slice(1)} · ${gasPriceUatom} uatom/unit)`
+      : `Gas: ${atomGasMode === 'manual' ? 'Manual' : atomGasMode[0].toUpperCase() + atomGasMode.slice(1)} · ${gasPriceUatom} uatom/unit`;
+
+    const okSend = await requestTxConfirm({
+      title: 'Kirim Transaksi',
+      network: COSMOS_NETWORK.name,
+      to: atomSendTo,
+      value: `${atomSendAmt} ATOM`,
+      extra: `${feeLabel}.`,
+    });
+    if (!okSend) return;
+
+    setAtomSending(true);
+    setAtomStatus({ type: 'pending', msg: `Mengirim transaksi ke ${COSMOS_NETWORK.name}...` });
+    try {
+      const txHash = await sendAtom(COSMOS_NETWORK, atomPrivKey, atomSendTo.trim(), amt, '', gasPriceUatom);
+      setAtomStatus({ type: 'success', msg: 'Transaksi terkirim (broadcast sukses)', hash: txHash });
+      saveTxHistory({
+        taskName: 'Transfer', description: `Kirim ${atomSendAmt} ATOM ke ${shortAddr(atomSendTo)} di ${COSMOS_NETWORK.name}`,
+        to: atomSendTo, value: atomSendAmt, data: '',
+        status: 'success', txHash, timestamp: Date.now(),
+      });
+      setAtomSendTo(''); setAtomSendAmt('');
+      await atomRefreshBalance();
+    } catch (e: any) { setAtomStatus({ type: 'error', msg: atomFriendlyError(e) }); }
+    setAtomSending(false);
+  };
+
+  // Estimasi fee ATOM berjalan otomatis & di-debounce tiap kali tujuan/jumlah berubah — pola sama
+  // seperti estimasi fee Tron di atas, tapi lewat simulate() dry-run ke node Cosmos (bukan tabel
+  // Bandwidth/Energy sisi klien), jadi butuh sedikit delay lebih ke RPC dan aman dipanggil berkali-kali.
+  useEffect(() => {
+    if (!atomConnected || !atomAddress) { setAtomFeeEstimate(null); setAtomFeeEstimateError(null); return; }
+    const to  = atomSendTo.trim();
+    const amt = parseFloat(atomSendAmt);
+    if (!isValidCosmosAddress(to) || isNaN(amt) || amt <= 0) { setAtomFeeEstimate(null); setAtomFeeEstimateError(null); return; }
+
+    let cancelled = false;
+    const gasPriceUatom = atomGetGasPriceUatom();
+    const timer = setTimeout(async () => {
+      setAtomFeeEstimating(true);
+      setAtomFeeEstimateError(null);
+      try {
+        const est = await estimateAtomFee(COSMOS_NETWORK, atomPrivKey, to, amt, '', gasPriceUatom);
+        if (!cancelled) { setAtomFeeEstimate(est); setAtomFeeEstimateError(null); }
+      } catch (e: any) {
+        if (!cancelled) { setAtomFeeEstimate(null); setAtomFeeEstimateError(e?.message || 'Gagal menghitung estimasi fee.'); }
+      }
+      if (!cancelled) setAtomFeeEstimating(false);
+    }, 600);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [atomConnected, atomAddress, atomSendTo, atomSendAmt, atomNetId, atomGasMode, atomGasManual, atomGasRefreshNonce]);
 
   // ── SPL Token: fetch saldo token yang dipegang address aktif ──
   const solFetchTokens = async (conn?: Connection | null, addr?: string) => {
@@ -2241,6 +3203,254 @@ export const WalletGenerator: React.FC = () => {
       setSolTokens(tokens);
     } catch { setSolTokens([]); }
     setSolTokensLoading(false);
+  };
+
+  // ── Close Token Account: ambil SEMUA token account milik address aktif (SPL Token
+  //    klasik + Token-2022), termasuk yang saldonya 0 — beda dari solFetchTokens yang
+  //    cuma nampilin saldo > 0 untuk keperluan kirim. Tiap akun nyimpen rent ± 0.00203928
+  //    SOL (dibaca langsung dari lamports akunnya) yang bisa ditarik balik saat ditutup. ──
+  const solFetchCloseAccounts = async (conn?: Connection | null, addr?: string) => {
+    const connection = conn ?? solConnRef.current;
+    const address    = addr ?? solAddress;
+    if (!connection || !address) return;
+    setSolCloseLoading(true);
+    try {
+      const owner = new PublicKey(address);
+      const [legacy, t22] = await Promise.all([
+        connection.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID }),
+        connection.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_2022_PROGRAM_ID }),
+      ]);
+      const mapAccounts = (resp: typeof legacy, programId: PublicKey) => resp.value.map(({ pubkey, account }) => {
+        const info = account.data.parsed.info;
+        return {
+          pubkey:    pubkey.toBase58(),
+          mint:      info.mint as string,
+          decimals:  info.tokenAmount.decimals as number,
+          uiAmount:  (info.tokenAmount.uiAmount ?? 0) as number,
+          programId: programId.toBase58(),
+          lamports:  account.lamports as number,
+        };
+      });
+      const all = [...mapAccounts(legacy, TOKEN_PROGRAM_ID), ...mapAccounts(t22, TOKEN_2022_PROGRAM_ID)];
+      // Urutkan: akun saldo 0 (paling gampang ditutup) di atas, akun bersaldo di bawah.
+      all.sort((a, b) => (a.uiAmount > 0 ? 1 : 0) - (b.uiAmount > 0 ? 1 : 0));
+      setSolCloseAccounts(all);
+      // Default: semua akun kosong langsung tercentang, siap ditutup massal.
+      setSolCloseSelected(new Set(all.filter(a => a.uiAmount === 0).map(a => a.pubkey)));
+      // Lengkapi detail (nama, simbol, gambar, tanggal dibuat) di belakang layar — tiap akun
+      // langsung tampil dengan alamatnya dulu, detailnya nyusul satu per satu saat siap.
+      void solEnrichCloseAccounts(connection, all);
+    } catch { setSolCloseAccounts([]); }
+    setSolCloseLoading(false);
+  };
+
+  // ── Ambil field "image" dari JSON off-chain metadata token (Arweave/IPFS/HTTP gateway) ──
+  const solFetchImageFromUri = async (uri: string): Promise<string | undefined> => {
+    if (!uri || !/^https?:\/\//i.test(uri)) return undefined;
+    try {
+      const res  = await fetch(uri);
+      const json = await res.json();
+      return typeof json?.image === 'string' ? json.image : undefined;
+    } catch { return undefined; }
+  };
+
+  // ── Ambil metadata token (nama, simbol, gambar) untuk sebuah mint. Token-2022 disimpan
+  //    langsung di mint account (extension TokenMetadata); SPL Token klasik disimpan di
+  //    akun terpisah lewat Metaplex Token Metadata Program (PDA "metadata"). Kalau mint
+  //    memang polos tanpa metadata (token lama/anonim), dibiarkan kosong — UI nampilin
+  //    fallback nama "Token Tidak Dikenal" + avatar inisial, bukan blank kosong. ──
+  const solFetchTokenMeta = async (
+    connection: Connection, mint: string, programId: string,
+  ): Promise<{ name?: string; symbol?: string; image?: string }> => {
+    const cached = solTokenMetaCacheRef.current.get(mint);
+    if (cached) return cached;
+    const meta: { name?: string; symbol?: string; image?: string } = {};
+    try {
+      const mintPk = new PublicKey(mint);
+      if (programId === TOKEN_2022_PROGRAM_ID.toBase58()) {
+        const tm = await getTokenMetadata(connection, mintPk).catch(() => null);
+        if (tm) {
+          meta.name   = tm.name?.replace(/\0/g, '').trim() || undefined;
+          meta.symbol = tm.symbol?.replace(/\0/g, '').trim() || undefined;
+          const uri   = tm.uri?.replace(/\0/g, '').trim();
+          if (uri) meta.image = await solFetchImageFromUri(uri);
+        }
+      }
+      if (!meta.name) {
+        // Fallback (atau memang SPL klasik): baca akun Metaplex Token Metadata Program.
+        const metadataPda = getMetadataPda(mintPk);
+        const info = await connection.getAccountInfo(metadataPda);
+        if (info?.data) {
+          const [parsed] = MplTokenMetadata.deserialize(info.data);
+          meta.name   = parsed.data.name?.replace(/\0/g, '').trim() || undefined;
+          meta.symbol = parsed.data.symbol?.replace(/\0/g, '').trim() || undefined;
+          const uri   = parsed.data.uri?.replace(/\0/g, '').trim();
+          if (uri) meta.image = await solFetchImageFromUri(uri);
+        }
+      }
+    } catch { /* token tanpa metadata on-chain — biarkan kosong */ }
+    solTokenMetaCacheRef.current.set(mint, meta);
+    return meta;
+  };
+
+  // ── Perkiraan tanggal akun token dibuat: telusuri mundur riwayat signature akun ATA-nya
+  //    sampai habis (akun token biasanya cuma punya segelintir transaksi), lalu ambil
+  //    blockTime dari signature paling lama yang ketemu. ──
+  const solFetchAccountCreatedAt = async (connection: Connection, ata: string): Promise<number | null> => {
+    try {
+      const pk = new PublicKey(ata);
+      let before: string | undefined;
+      let oldest: { blockTime?: number | null } | null = null;
+      for (let i = 0; i < 5; i++) {
+        const sigs = await connection.getSignaturesForAddress(pk, { limit: 1000, before }, 'confirmed');
+        if (sigs.length === 0) break;
+        oldest = sigs[sigs.length - 1];
+        if (sigs.length < 1000) break;
+        before = sigs[sigs.length - 1].signature;
+      }
+      return oldest?.blockTime ? oldest.blockTime * 1000 : null;
+    } catch { return null; }
+  };
+
+  // ── Jalankan enrichment metadata + tanggal dibuat untuk semua akun, tiap akun update
+  //    state-nya masing-masing begitu datanya siap (bukan nunggu semuanya kelar). ──
+  const solEnrichCloseAccounts = async (connection: Connection, accs: { pubkey: string; mint: string; programId: string }[]) => {
+    accs.forEach(acc => {
+      solFetchTokenMeta(connection, acc.mint, acc.programId).then(meta => {
+        setSolCloseAccounts(prev => prev.map(a => a.pubkey === acc.pubkey ? { ...a, ...meta, metaLoaded: true } : a));
+      });
+      solFetchAccountCreatedAt(connection, acc.pubkey).then(createdAt => {
+        setSolCloseAccounts(prev => prev.map(a => a.pubkey === acc.pubkey ? { ...a, createdAt, createdAtLoaded: true } : a));
+      });
+    });
+  };
+
+  // ── Tutup satu token account: kalau masih ada saldo & user centang "bakar sisa saldo",
+  //    burn dulu baru close dalam 1 transaksi; kalau saldo 0, langsung close. Rent-nya
+  //    (dibayar SOL asli) otomatis balik ke wallet pemilik saat instruksi CloseAccount
+  //    dieksekusi — berlaku sama persis di Mainnet, Testnet, maupun Devnet karena logic-nya
+  //    murni bagian dari SPL Token Program, bukan hal spesifik-cluster. ──
+  const solCloseTokenAccount = async (item: typeof solCloseAccounts[number]) => {
+    const keypair    = solKeypairRef.current;
+    const connection = solConnRef.current;
+    if (!keypair || !connection) { showAlert('Connect wallet Solana dulu.', 'error'); return; }
+
+    const burnFirst = !!solCloseBurnFirst[item.pubkey];
+    if (item.uiAmount > 0 && !burnFirst) {
+      showAlert('Akun token ini masih ada saldo. Centang "Bakar sisa saldo dulu" untuk menutupnya, atau kosongkan saldonya lewat Kirim/Sweep terlebih dahulu.', 'error');
+      return;
+    }
+
+    const programId = new PublicKey(item.programId);
+    const ataPk      = new PublicKey(item.pubkey);
+    const reclaimSol = (item.lamports / LAMPORTS_PER_SOL).toFixed(6);
+
+    const okClose = await requestTxConfirm({
+      title: 'Tutup Akun Token',
+      network: SOLANA_NETWORK.name,
+      to: item.pubkey,
+      value: item.uiAmount > 0
+        ? `Bakar ${item.uiAmount} token (mint ${shortAddr(item.mint)}) lalu tutup akun — reclaim ± ${reclaimSol} SOL rent`
+        : `Tutup akun token kosong (mint ${shortAddr(item.mint)}) — reclaim ± ${reclaimSol} SOL rent`,
+    });
+    if (!okClose) return;
+
+    setSolClosingId(item.pubkey);
+    try {
+      const tx = new SolTransaction();
+      if (item.uiAmount > 0) {
+        const mintPk     = new PublicKey(item.mint);
+        const rawAmount  = BigInt(Math.round(item.uiAmount * 10 ** item.decimals));
+        tx.add(createBurnInstruction(ataPk, mintPk, keypair.publicKey, rawAmount, [], programId));
+      }
+      tx.add(createCloseAccountInstruction(ataPk, keypair.publicKey, keypair.publicKey, [], programId));
+
+      const sig = await sendAndConfirmTransaction(connection, tx, [keypair]);
+      showAlert(`Akun token ditutup. ± ${reclaimSol} SOL rent sudah kembali ke wallet.`, 'success');
+      saveTxHistory({
+        taskName: 'Close Token Account',
+        description: `Tutup akun token (mint ${shortAddr(item.mint)}) di ${SOLANA_NETWORK.name}, reclaim ${reclaimSol} SOL`,
+        to: item.pubkey, value: reclaimSol, data: '',
+        status: 'success', txHash: sig, timestamp: Date.now(),
+      });
+      setSolCloseBurnFirst(prev => { const n = { ...prev }; delete n[item.pubkey]; return n; });
+      setSolCloseSelected(prev => { const n = new Set(prev); n.delete(item.pubkey); return n; });
+      await solFetchCloseAccounts();
+      await solFetchTokens();
+      await solRefreshBalance();
+    } catch (e: any) {
+      showAlert('Gagal menutup akun: ' + e.message, 'error');
+    }
+    setSolClosingId('');
+  };
+
+  // ── Toggle centang satu akun kosong untuk batch-close, plus helper pilih/batalkan semua. ──
+  const solCloseToggleSelect = (pubkey: string) =>
+    setSolCloseSelected(prev => {
+      const n = new Set(prev);
+      if (n.has(pubkey)) n.delete(pubkey); else n.add(pubkey);
+      return n;
+    });
+
+  const solCloseToggleSelectAll = (pubkeys: string[]) =>
+    setSolCloseSelected(prev => {
+      const allSelected = pubkeys.length > 0 && pubkeys.every(p => prev.has(p));
+      if (allSelected) {
+        const n = new Set(prev);
+        pubkeys.forEach(p => n.delete(p));
+        return n;
+      }
+      return new Set([...prev, ...pubkeys]);
+    });
+
+  // ── Tutup semua akun kosong yang dicentang sekaligus (batch), berguna untuk
+  //    "bersih-bersih" wallet & menarik balik seluruh rent yang nyangkut. Hanya akun
+  //    bersaldo 0 yang boleh masuk batch ini — akun bersaldo tetap harus ditutup satu-satu
+  //    lewat tombol "Bakar & Tutup Akun" supaya tidak ada token yang tak sengaja terbakar. ──
+  const solCloseSelectedAccounts = async () => {
+    const keypair    = solKeypairRef.current;
+    const connection = solConnRef.current;
+    if (!keypair || !connection) { showAlert('Connect wallet Solana dulu.', 'error'); return; }
+
+    const targetAccs = solCloseAccounts.filter(a => a.uiAmount === 0 && solCloseSelected.has(a.pubkey));
+    if (targetAccs.length === 0) { showAlert('Belum ada akun kosong yang dicentang untuk ditutup.', 'error'); return; }
+
+    const totalLamports = targetAccs.reduce((s, a) => s + a.lamports, 0);
+    const okAll = await requestTxConfirm({
+      title: `Tutup ${targetAccs.length} Akun Token Terpilih`,
+      network: SOLANA_NETWORK.name,
+      to: solAddress,
+      value: `Reclaim total ± ${(totalLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL rent dari ${targetAccs.length} akun`,
+    });
+    if (!okAll) return;
+
+    setSolCloseAllRunning(true);
+    let closedCount = 0, closedLamports = 0;
+    for (const acc of targetAccs) {
+      try {
+        const tx = new SolTransaction().add(
+          createCloseAccountInstruction(new PublicKey(acc.pubkey), keypair.publicKey, keypair.publicKey, [], new PublicKey(acc.programId))
+        );
+        await sendAndConfirmTransaction(connection, tx, [keypair]);
+        closedCount++; closedLamports += acc.lamports;
+        setSolCloseSelected(prev => { const n = new Set(prev); n.delete(acc.pubkey); return n; });
+      } catch { /* akun gagal ditutup dilewati, lanjut ke berikutnya */ }
+    }
+    saveTxHistory({
+      taskName: 'Close Token Account',
+      description: `Tutup ${closedCount}/${targetAccs.length} akun token terpilih di ${SOLANA_NETWORK.name}, reclaim ${(closedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL`,
+      to: solAddress, value: (closedLamports / LAMPORTS_PER_SOL).toFixed(6), data: '',
+      status: closedCount > 0 ? 'success' : 'failed', timestamp: Date.now(),
+    });
+    showAlert(
+      closedCount > 0
+        ? `${closedCount}/${targetAccs.length} akun berhasil ditutup, ± ${(closedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL rent kembali.`
+        : 'Tidak ada akun yang berhasil ditutup.',
+      closedCount > 0 ? 'success' : 'error'
+    );
+    await solFetchCloseAccounts();
+    await solRefreshBalance();
+    setSolCloseAllRunning(false);
   };
 
   const solRefreshBalance = async (conn?: Connection | null, addr?: string) => {
@@ -2267,6 +3477,7 @@ export const WalletGenerator: React.FC = () => {
       solConnRef.current = conn;
       await solRefreshBalance(conn, solAddress);
       await solFetchTokens(conn, solAddress);
+      await solFetchCloseAccounts(conn, solAddress);
     } catch (e: any) {
       showAlert(`Gagal pindah ke ${newNet.name}: ` + e.message, 'error');
     }
@@ -3103,6 +4314,165 @@ export const WalletGenerator: React.FC = () => {
     if (addr) setTcSolPrivKey(addr.privateKey);
   };
 
+  const handleTcTronWalletSel = (val: string) => {
+    setTcTronWalletSel(val);
+    if (!val) return;
+    const [wi, ai] = val.split(',').map(Number);
+    const w    = wallets[wi];
+    const addr = w?.tronAddresses?.find(a => a.index === ai);
+    if (addr) setTcTronPrivKey(addr.privateKey);
+  };
+
+  // -- Deploy token TRC-20 (pakai ulang bytecode/ABI ERC-20, valid krn ABI Solidity sama) --
+  const deployTrc20Token = async () => {
+    const net = TRON_NETWORKS.find(n => n.id === tcTronNetId) ?? TRON_NETWORKS[0];
+    const pk = tcTronPrivKey.trim();
+    if (!pk) { showAlert('Masukkan private key Tron dulu.', 'error'); return; }
+    const name = tcTronName.trim();
+    const symbol = tcTronSymbol.trim().toUpperCase();
+    const decimals = parseInt(tcTronDecimals) || 0;
+    if (!name || !symbol) { showAlert('Nama & simbol token wajib diisi.', 'error'); return; }
+    if (decimals < 0 || decimals > 18) { showAlert('Decimals harus 0–18.', 'error'); return; }
+    if (!tcTronSupply || parseFloat(tcTronSupply) <= 0) { showAlert('Total supply tidak valid.', 'error'); return; }
+
+    let ownerAddress: string;
+    try { ownerAddress = tronAddressFromPrivateKey(pk); }
+    catch { showAlert('Private key Tron tidak valid.', 'error'); return; }
+
+    const okDeploy = await requestTxConfirm({
+      title: 'Deploy Token TRC-20',
+      network: net.name,
+      value: `${name} (${symbol}) · supply ${tcTronSupply}`,
+      extra: 'Sebelum broadcast, saldo TRX & Energy kamu bakal dicek dulu (constructor deploy ERC-20 butuh Energy cukup besar) — kalau kurang, akan ditolak di sini dengan pesan jelas dulu daripada gagal di tengah jalan. Bytecode-nya pakai ulang template ERC-20 (ABI Solidity identik antara TVM & EVM); kalau tetap gagal karena opcode tidak didukung, coba dulu di testnet (Nile/Shasta).',
+    });
+    if (!okDeploy) return;
+
+    setTcTronCreating(true);
+    setTcTronStatus({ type: 'pending', msg: `Deploy contract ke ${net.name}... (estimasi Energy, lalu broadcast + tunggu konfirmasi block, bisa ~10-90 detik)` });
+    try {
+      const { txId, contractAddress, pending } = await tronDeployTrc20(net, ownerAddress, pk, { name, symbol, decimals, supply: tcTronSupply });
+      // PENTING (bug): dulu kalau tronDeployTrc20 timeout nunggu konfirmasi, dia throw
+      // dan blok "catch" di bawah yang jalan — token-nya nggak pernah masuk trc20Tokens
+      // walau tx-nya sendiri kerap TETAP sukses on-chain beberapa saat kemudian (kejadian
+      // nyata: sukses di Tronscan, tapi hilang dari daftar app). Sekarang kasus "pending"
+      // itu bukan exception lagi, jadi selalu disimpan di sini — dengan address kosong
+      // dulu kalau belum ke-konfirmasi, dan bisa di-refresh manual (tombol di bawah).
+      setTcTronStatus({
+        type: pending ? 'pending' : 'success',
+        msg: pending
+          ? `TX sudah ter-broadcast (txID: ${txId.slice(0, 14)}...) tapi belum sempat ke-konfirmasi dalam waktu tunggu. Kemungkinan besar tetap sukses — token sudah ditambahkan ke daftar di bawah, klik "Cek Status" di situ buat refresh alamat contract-nya setelah beberapa saat.`
+          : (contractAddress ? `Token berhasil dibuat: ${contractAddress}` : 'Deploy terkirim — cek Tronscan untuk contract address.'),
+      });
+      setTrc20Tokens(prev => [{
+        netId: net.id, address: contractAddress, symbol, decimals, name, supply: tcTronSupply,
+        txId, createdAt: Date.now(), pending: !!pending,
+      }, ...prev]);
+      saveTxHistory({
+        taskName: 'Deploy TRC-20', description: `Deploy token ${name} (${symbol}) di ${net.name}${pending ? ' (menunggu konfirmasi)' : ''}`,
+        to: contractAddress || '', value: tcTronSupply, data: '',
+        status: pending ? 'pending' : 'success', txHash: txId, timestamp: Date.now(),
+      });
+      setTcTronName(''); setTcTronSymbol(''); setTcTronSupply('1000000');
+    } catch (e: any) {
+      setTcTronStatus({ type: 'error', msg: tronFriendlyError(e.message) });
+    }
+    setTcTronCreating(false);
+  };
+
+  // -- Refresh status token TRC-20 yang masih "pending" (belum sempat ke-konfirmasi
+  // waktu deploy) — cek ulang gettransactioninfobyid pakai txId yang udah tersimpan,
+  // supaya alamat contract-nya bisa ke-isi tanpa perlu deploy ulang dari nol.
+  const [tcTronRefreshing, setTcTronRefreshing] = useState<string | null>(null);
+  const refreshPendingTrc20 = async (txId: string, netId: string) => {
+    const net = TRON_NETWORKS.find(n => n.id === netId) ?? TRON_NETWORKS[0];
+    setTcTronRefreshing(txId);
+    try {
+      const info = await tronGetTxInfo(net, txId);
+      if (!info.found) { showAlert('Belum ke-konfirmasi juga — coba lagi beberapa saat lagi, atau cek manual di Tronscan.', 'error'); return; }
+      if (!info.success) {
+        setTrc20Tokens(prev => prev.filter(t => t.txId !== txId));
+        showAlert(`Deploy ini ternyata GAGAL on-chain (${info.result}${info.revertReason ? ` — ${info.revertReason}` : ''}) — dihapus dari daftar.`, 'error');
+        return;
+      }
+      const address = info.contractAddressHex ? tronAddressHexToBase58(info.contractAddressHex) : '';
+      setTrc20Tokens(prev => prev.map(t => t.txId === txId ? { ...t, address, pending: false } : t));
+      showAlert(address ? `Terkonfirmasi! Contract address: ${address}` : 'Terkonfirmasi, tapi contract address belum kebaca — cek manual di Tronscan.', 'success');
+    } catch (e: any) {
+      showAlert(tronFriendlyError(e?.message || 'Gagal cek status.'), 'error');
+    }
+    setTcTronRefreshing(null);
+  };
+
+  // -- Bangun JSON metadata SPL Token dari isian form --
+  // JSON ini nanti di-upload ke IPFS (lewat Pinata) dan link gateway-nya (https://) yang
+  // dipakai sebagai `uri` on-chain — bukan data:application/json;base64,... — supaya
+  // explorer/wallet yang fetch metadata via server (bukan browser) bisa benar-benar
+  // resolve JSON & gambarnya.
+  const buildTcSolMetadataJson = (): Record<string, string> => {
+    const name = tcSolName.trim();
+    const symbol = tcSolSymbol.trim().toUpperCase();
+    const description = tcSolDescription.trim();
+    const image = tcSolImageUrl.trim();
+    return { name, symbol, ...(description && { description }), ...(image && { image }) };
+  };
+
+  // Upload JSON metadata (name/symbol/description/image) ke IPFS lewat Pinata, kembalikan
+  // link gateway https://-nya. Dipakai baik oleh standar classic (Metaplex) maupun token2022.
+  const uploadTcSolMetadataJson = async (): Promise<string> => {
+    const jwt = tcSolPinataJwt.trim();
+    if (!jwt) {
+      throw new Error('Isi Pinata JWT API Key dulu (gratis, daftar di app.pinata.cloud/keys) sebelum menyertakan metadata on-chain.');
+    }
+    const json = buildTcSolMetadataJson();
+    return pinataUploadJson(json, jwt, `${json.symbol || 'token'}-metadata.json`);
+  };
+
+  // Upload file gambar mentah (di-resize dulu biar tidak kebesaran) ke IPFS lewat Pinata,
+  // hasilnya link gateway https:// yang dipakai sebagai field "image" di JSON metadata.
+  const handleTcSolImageFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // reset supaya file yang sama bisa dipilih ulang
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { showAlert('File yang dipilih harus berupa gambar.', 'error'); return; }
+    const jwt = tcSolPinataJwt.trim();
+    if (!jwt) { showAlert('Isi Pinata JWT API Key dulu (gratis, daftar di app.pinata.cloud/keys) sebelum upload gambar.', 'error'); return; }
+
+    const reader = new FileReader();
+    reader.onerror = () => showAlert('Gagal membaca file gambar.', 'error');
+    reader.onload = () => {
+      const img = new window.Image();
+      img.onerror = () => showAlert('Gagal memproses file gambar.', 'error');
+      img.onload = async () => {
+        const SIZE = 512; // resize wajar biar upload cepat & hemat kuota, bukan thumbnail super kecil
+        const canvas = document.createElement('canvas');
+        canvas.width = SIZE; canvas.height = SIZE;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { showAlert('Browser tidak mendukung pemrosesan gambar.', 'error'); return; }
+        const s = Math.min(img.width, img.height); // crop tengah jadi persegi
+        ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, SIZE, SIZE);
+        canvas.toBlob(async (blob) => {
+          if (!blob) { showAlert('Gagal mengkompresi gambar.', 'error'); return; }
+          setTcSolImageUploading(true);
+          try {
+            const url = await pinataUploadFile(blob, jwt, file.name || 'logo.jpg');
+            setTcSolImageUrl(url);
+          } catch (err: any) {
+            showAlert(err?.message || 'Gagal upload gambar ke IPFS.', 'error');
+          }
+          setTcSolImageUploading(false);
+        }, 'image/jpeg', 0.85);
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Dipakai UI utk live-preview JSON yang akan di-upload ke IPFS (sama untuk classic & token2022)
+  const tcSolMetaPreview = useMemo(
+    () => ({ json: buildTcSolMetadataJson() }),
+    [tcSolName, tcSolSymbol, tcSolDescription, tcSolImageUrl],
+  );
+
   // -- Kompilasi kode Solidity kustom (mode "Custom") jadi ABI + bytecode --
   const compileTcCustomContract = async () => {
     if (!tcCustomSolidity.trim()) { showAlert('Paste kode Solidity dulu.', 'error'); return; }
@@ -3119,24 +4489,6 @@ export const WalletGenerator: React.FC = () => {
     setTcCompiling(false);
   };
 
-  // -- Scan keamanan AI atas kode Solidity kustom sebelum deploy --
-  // Setiap kali kode diubah, hasil scan lama otomatis di-reset (lihat onChange textarea) supaya
-  // orang tidak bisa "scan sekali lalu ubah kode jadi berbahaya" dan tetap lolos gate deploy.
-  const runTcSecurityScan = async () => {
-    if (!tcCustomSolidity.trim()) { showAlert('Paste kode Solidity dulu.', 'error'); return; }
-    setTcSecScanning(true);
-    setTcSecError('');
-    setTcSecResult(null);
-    setTcRiskAck(false);
-    try {
-      const result = await runAiCodeSecurityScan(tcCustomSolidity, 'solidity');
-      setTcSecResult(result);
-    } catch (e: any) {
-      setTcSecError(e?.message || 'Gagal menganalisis keamanan kode.');
-    }
-    setTcSecScanning(false);
-  };
-
   // -- Deploy kontrak ERC-20 ke jaringan EVM yang dipilih --
   const deployErc20Token = async () => {
     const pk = tcPrivKey.trim();
@@ -3146,11 +4498,6 @@ export const WalletGenerator: React.FC = () => {
     // ══ Mode: Kode Solidity Kustom ══
     if (tcEvmMode === 'custom') {
       if (!tcCompiled) { showAlert('Compile kode Solidity dulu sebelum deploy.', 'error'); return; }
-      if (!tcSecResult) { showAlert('Jalankan scan keamanan dulu sebelum deploy — wajib untuk kode kustom.', 'error'); return; }
-      if ((tcSecResult.verdict === 'HIGH_RISK' || tcSecResult.verdict === 'CRITICAL') && !tcRiskAck) {
-        showAlert('Hasil scan menunjukkan risiko tinggi/kritis. Centang konfirmasi "saya paham risiko" dulu kalau tetap ingin deploy.', 'error');
-        return;
-      }
 
       const ctorFragment = (tcCompiled.abi || []).find((f: any) => f.type === 'constructor');
       let ctorArgs: any[] = [];
@@ -3164,8 +4511,7 @@ export const WalletGenerator: React.FC = () => {
       const ok = await requestTxConfirm({
         title: `Deploy Kontrak Kustom: ${tcCompiled.contractName}`,
         network: tcSelectedNetwork.name,
-        extra: `Verdict scan keamanan: ${AISEC_VERDICT_META[tcSecResult.verdict].label} (skor ${tcSecResult.score}/100). ` +
-          `Constructor args: ${tcCustomCtorArgs || '[]'}. Kode ini BUKAN template audited bawaan — kamu bertanggung jawab penuh atas isi kontrak.`,
+        extra: `Constructor args: ${tcCustomCtorArgs || '[]'}. Kode ini BUKAN template audited bawaan — kamu bertanggung jawab penuh atas isi kontrak.`,
       });
       if (!ok) return;
 
@@ -3205,7 +4551,7 @@ export const WalletGenerator: React.FC = () => {
         setErc20Tokens(prev => [newToken, ...prev]);
         setTcDeployStatus({ type: 'success', msg: `Kontrak berhasil dideploy di ${contract.address}` });
         showAlert(`Kontrak "${tcCompiled.contractName}" berhasil dideploy!`, 'success');
-        setTcCustomSolidity(''); setTcCompiled(null); setTcSecResult(null); setTcRiskAck(false); setTcCustomCtorArgs('[]');
+        setTcCustomSolidity(''); setTcCompiled(null); setTcCustomCtorArgs('[]');
       } catch (e: any) {
         const msg = e?.reason || e?.message || 'Gagal deploy token.';
         setTcDeployStatus({ type: 'error', msg: String(msg).slice(0, 200) });
@@ -3281,34 +4627,157 @@ export const WalletGenerator: React.FC = () => {
     const supplyNum = Number(tcSolSupply);
     if (!tcSolSupply.trim() || isNaN(supplyNum) || supplyNum <= 0) { showAlert('Total supply tidak valid.', 'error'); return; }
 
-    // Validasi batas panjang field metadata (di-enforce keras oleh Metaplex Token Metadata Program on-chain)
     const metaName = tcSolName.trim();
     const metaSymbol = tcSolSymbol.trim().toUpperCase();
-    const metaUri = tcSolUri.trim();
-    if (metaName.length > SPL_META_MAX.name) { showAlert(`Nama token maksimal ${SPL_META_MAX.name} karakter (dibatasi program Metaplex).`, 'error'); return; }
-    if (metaSymbol.length > SPL_META_MAX.symbol) { showAlert(`Symbol token maksimal ${SPL_META_MAX.symbol} karakter (dibatasi program Metaplex).`, 'error'); return; }
-    if (tcSolAddMeta) {
-      if (!metaUri) { showAlert('URI metadata JSON wajib diisi kalau mau menyertakan metadata on-chain (atau matikan toggle metadata).', 'error'); return; }
-      if (metaUri.length > SPL_META_MAX.uri) { showAlert(`URI metadata maksimal ${SPL_META_MAX.uri} karakter (dibatasi program Metaplex) — pakai link pendek/hosting JSON (Arweave, IPFS, GitHub raw, dsb).`, 'error'); return; }
-      try { new URL(metaUri); } catch { showAlert('URI metadata harus berupa URL yang valid (https://... atau ipfs://...).', 'error'); return; }
-    }
+    if (metaName.length > SPL_META_MAX.name) { showAlert(`Nama token maksimal ${SPL_META_MAX.name} karakter.`, 'error'); return; }
+    if (metaSymbol.length > SPL_META_MAX.symbol) { showAlert(`Symbol token maksimal ${SPL_META_MAX.symbol} karakter.`, 'error'); return; }
 
     const tcSolNet = SOLANA_NETWORKS.find(n => n.id === tcSolNetId) ?? SOLANA_NETWORKS[0];
+    const rawAmount = BigInt(Math.round(supplyNum * (10 ** decimals)));
+
+    // ══════════ Standar Token-2022 (Token Extensions, gaya pump.fun) ══════════
+    // Metadata (name/symbol/uri) nempel LANGSUNG di mint account lewat extension
+    // "metadataPointer" + "tokenMetadata". `uri` menunjuk ke JSON off-chain (di-upload ke
+    // IPFS lewat Pinata) yang berisi name/symbol/description/image — sama seperti pola
+    // Metaplex classic — supaya explorer/wallet (Solscan, Phantom, dst) bisa resolve gambar.
+    if (tcSolStandard === 'token2022') {
+      const metaJson = buildTcSolMetadataJson();
+
+      const ok = await requestTxConfirm({
+        title: `Buat Token-2022: ${metaName} (${metaSymbol})`,
+        network: tcSolNet.name,
+        extra: `Decimals: ${decimals} · Total Supply: ${tcSolSupply} ${metaSymbol} — akan di-mint seluruhnya ke wallet ini. ` +
+          `Standar: Token-2022 (Token Extensions, gaya pump.fun) — metadata ditulis LANGSUNG di mint account, tanpa akun Metaplex terpisah.` +
+          (tcSolAddMeta ? ` JSON metadata (name/symbol${metaJson.description ? '/description' : ''}${metaJson.image ? '/image' : ''}) akan di-upload ke IPFS lewat Pinata.` : ''),
+      });
+      if (!ok) return;
+
+      setTcSolCreating(true);
+      try {
+        let metaUri = '';
+        if (tcSolAddMeta) {
+          setTcSolStatus({ type: 'pending', msg: 'Meng-upload metadata ke IPFS (Pinata)...' });
+          metaUri = await uploadTcSolMetadataJson();
+        }
+
+        setTcSolStatus({ type: 'pending', msg: 'Menyiapkan mint account (Token-2022)...' });
+        const connection  = await getSolanaConnection(tcSolNet);
+        const secret      = bs58.decode(pk);
+        const payer       = SolKeypair.fromSecretKey(secret);
+        const mintKeypair = SolKeypair.generate();
+
+        const tokenMetadata: TokenMetadata = {
+          updateAuthority: payer.publicKey,
+          mint: mintKeypair.publicKey,
+          name: metaJson.name,
+          symbol: metaJson.symbol,
+          uri: metaUri,
+          additionalMetadata: [],
+        };
+
+        const mintLen = getMintLen([ExtensionType.MetadataPointer]);
+        const metadataLen = TOKEN_METADATA_TYPE_SIZE + TOKEN_METADATA_LENGTH_SIZE + packTokenMetadata(tokenMetadata).length;
+        const lamports = await connection.getMinimumBalanceForRentExemption(mintLen + metadataLen);
+        const ata = await getAssociatedTokenAddress(mintKeypair.publicKey, payer.publicKey, false, TOKEN_2022_PROGRAM_ID);
+
+        const tx = new SolTransaction().add(
+          SystemProgram.createAccount({
+            fromPubkey: payer.publicKey,
+            newAccountPubkey: mintKeypair.publicKey,
+            space: mintLen,
+            lamports,
+            programId: TOKEN_2022_PROGRAM_ID,
+          }),
+          createInitializeMetadataPointerInstruction(
+            mintKeypair.publicKey, payer.publicKey, mintKeypair.publicKey, TOKEN_2022_PROGRAM_ID,
+          ),
+          createInitializeMintInstruction(
+            mintKeypair.publicKey, decimals, payer.publicKey, payer.publicKey, TOKEN_2022_PROGRAM_ID,
+          ),
+          createInitializeTokenMetadataInstruction({
+            programId: TOKEN_2022_PROGRAM_ID,
+            metadata: mintKeypair.publicKey,
+            updateAuthority: payer.publicKey,
+            mint: mintKeypair.publicKey,
+            mintAuthority: payer.publicKey,
+            name: metaJson.name,
+            symbol: metaJson.symbol,
+            uri: metaUri,
+          }),
+        );
+
+        tx.add(
+          createAssociatedTokenAccountInstruction(payer.publicKey, ata, payer.publicKey, mintKeypair.publicKey, TOKEN_2022_PROGRAM_ID),
+          createMintToInstruction(mintKeypair.publicKey, ata, payer.publicKey, rawAmount, [], TOKEN_2022_PROGRAM_ID),
+        );
+
+        setTcSolStatus({ type: 'pending', msg: 'Mengirim transaksi ke Solana...' });
+        const sig = await sendAndConfirmTransaction(connection, tx, [payer, mintKeypair]);
+
+        const newToken: CreatedSplToken = {
+          id: Date.now().toString(),
+          mint: mintKeypair.publicKey.toBase58(),
+          networkId: tcSolNet.id,
+          networkName: tcSolNet.name,
+          name: metaJson.name,
+          symbol: metaJson.symbol,
+          decimals,
+          initialSupply: tcSolSupply.trim(),
+          mintAuthority: payer.publicKey.toBase58(),
+          txHash: sig,
+          createdAt: Date.now(),
+          hasMetadata: tcSolAddMeta,
+          metadataUri: metaUri || undefined,
+          imageUrl: tcSolImageUrl.trim() || undefined,
+          description: tcSolDescription.trim() || undefined,
+          standard: 'token2022',
+        };
+        setSplTokens(prev => [newToken, ...prev]);
+        setTcSolStatus({ type: 'success', msg: `Token-2022 berhasil dibuat! Mint: ${mintKeypair.publicKey.toBase58()}` });
+        showAlert(`Token-2022 "${metaJson.name}" berhasil dibuat!`, 'success');
+        setTcSolName(''); setTcSolSymbol(''); setTcSolSupply('1000000');
+        setTcSolImageUrl(''); setTcSolDescription('');
+      } catch (e: any) {
+        const msg = e?.message || 'Gagal membuat Token-2022.';
+        setTcSolStatus({ type: 'error', msg: String(msg).slice(0, 200) });
+        showAlert('Gagal: ' + String(msg).slice(0, 160), 'error');
+      }
+      setTcSolCreating(false);
+      return;
+    }
+
+    // ══════════ Standar Classic (SPL Token + Metaplex Token Metadata Program) ══════════
+    // URI metadata TIDAK diambil dari input https://, tapi di-generate otomatis dari form
+    // (nama/symbol/image/deskripsi) menjadi JSON, di-upload ke IPFS lewat Pinata, dan link
+    // gateway https://-nya (bukan data: URI) dipakai sebagai `uri` on-chain — supaya
+    // explorer/wallet yang fetch metadata via server bisa benar-benar resolve gambarnya.
+    const metaJsonPreview = buildTcSolMetadataJson();
 
     const ok = await requestTxConfirm({
       title: `Buat SPL Token: ${tcSolName} (${tcSolSymbol.toUpperCase()})`,
       network: tcSolNet.name,
       extra: `Decimals: ${decimals} · Total Supply: ${tcSolSupply} ${tcSolSymbol.toUpperCase()} — akan di-mint seluruhnya ke wallet ini. ${
         tcSolAddMeta
-          ? `Metadata on-chain (Metaplex) AKAN dibuat: name="${metaName}", symbol="${metaSymbol}", uri="${metaUri}". Wallet/explorer lain akan menampilkan nama & logo token ini dengan benar.`
+          ? `Metadata on-chain (Metaplex) AKAN dibuat: name="${metaName}", symbol="${metaSymbol}" — JSON metadata (${['name','symbol', metaJsonPreview.description && 'description', metaJsonPreview.image && 'image'].filter(Boolean).join('/')}) akan di-upload ke IPFS lewat Pinata lebih dulu, lalu link-nya dipakai sebagai uri. Wallet/explorer lain akan menampilkan nama & logo token ini dengan benar.`
           : 'Metadata on-chain (Metaplex) TIDAK disertakan — nama/symbol hanya tersimpan lokal, wallet lain mungkin menampilkan token ini sebagai "Unknown Token".'
       }`,
     });
     if (!ok) return;
 
     setTcSolCreating(true);
-    setTcSolStatus({ type: 'pending', msg: 'Menyiapkan mint account...' });
     try {
+      let metaUri = '';
+      if (tcSolAddMeta) {
+        setTcSolStatus({ type: 'pending', msg: 'Meng-upload metadata ke IPFS (Pinata)...' });
+        metaUri = await uploadTcSolMetadataJson();
+        if (metaUri.length > SPL_META_MAX.uri) {
+          // Praktis mustahil (link gateway Pinata jauh di bawah 200 char), tapi tetap dijaga
+          // supaya konsisten dengan batas keras program Metaplex on-chain.
+          throw new Error(`URI metadata (${metaUri.length} karakter) melebihi batas ${SPL_META_MAX.uri} karakter dari program Metaplex.`);
+        }
+      }
+
+      setTcSolStatus({ type: 'pending', msg: 'Menyiapkan mint account...' });
       const connection = await getSolanaConnection(tcSolNet);
       const secret      = bs58.decode(pk);
       const payer       = SolKeypair.fromSecretKey(secret);
@@ -3316,7 +4785,6 @@ export const WalletGenerator: React.FC = () => {
 
       const lamports = await getMinimumBalanceForRentExemptMint(connection);
       const ata = await getAssociatedTokenAddress(mintKeypair.publicKey, payer.publicKey);
-      const rawAmount = BigInt(Math.round(supplyNum * (10 ** decimals)));
       const metadataPda = getMetadataPda(mintKeypair.publicKey);
 
       const tx = new SolTransaction().add(
@@ -3384,12 +4852,13 @@ export const WalletGenerator: React.FC = () => {
         metadataPda: tcSolAddMeta ? metadataPda.toBase58() : undefined,
         imageUrl: tcSolImageUrl.trim() || undefined,
         description: tcSolDescription.trim() || undefined,
+        standard: 'classic',
       };
       setSplTokens(prev => [newToken, ...prev]);
       setTcSolStatus({ type: 'success', msg: `SPL Token berhasil dibuat${tcSolAddMeta ? ' (dengan metadata on-chain)' : ''}! Mint: ${mintKeypair.publicKey.toBase58()}` });
       showAlert(`SPL Token "${metaName}" berhasil dibuat!`, 'success');
       setTcSolName(''); setTcSolSymbol(''); setTcSolSupply('1000000');
-      setTcSolUri(''); setTcSolImageUrl(''); setTcSolDescription('');
+      setTcSolImageUrl(''); setTcSolDescription('');
     } catch (e: any) {
       const msg = e?.message || 'Gagal membuat SPL Token.';
       setTcSolStatus({ type: 'error', msg: String(msg).slice(0, 200) });
@@ -3427,11 +4896,17 @@ export const WalletGenerator: React.FC = () => {
       <select value={txAsset} onChange={e => setTxAsset(e.target.value)}
         style={{ width:'100%', fontFamily:'monospace', fontSize:'12px', padding:'10px 12px' }}>
         <option value="native">{selectedNetwork?.symbol ?? 'ETH'} (native)</option>
-        {txTokens.map(t => (
-          <option key={t.address} value={t.address}>
-            {t.symbol} · {shortAddr(t.address)} · saldo {parseFloat(t.balance).toLocaleString(undefined,{maximumFractionDigits:6})}
-          </option>
-        ))}
+        {knownTxTokens.map(t => {
+          const fetched = txTokens.find(x => x.address.toLowerCase() === t.address.toLowerCase());
+          const balLabel = fetched
+            ? parseFloat(fetched.balance).toLocaleString(undefined,{maximumFractionDigits:6})
+            : (txTokensLoading ? '...' : '?');
+          return (
+            <option key={t.address} value={t.address}>
+              {t.symbol} · {shortAddr(t.address)} · saldo {balLabel}
+            </option>
+          );
+        })}
       </select>
       {knownTxTokens.length === 0 && (
         <div style={{ fontSize:'10px', color:'#444', marginTop:'4px' }}>
@@ -3501,14 +4976,37 @@ export const WalletGenerator: React.FC = () => {
       ? txGasPrices[txGasMode as 'slow'|'standard'|'fast']
       : null;
 
+    const nativeSymbol = selectedNetwork?.symbol ?? 'ETH';
+    const effGasLimit = parseInt(txGasLimit) || 21000;
+
+    // Estimasi total fee = gasPrice (Gwei) * gasLimit, dikonversi ke native coin (ETH/BNB/dll).
+    const estimateFeeEth = (gwei: number | null): string | null => {
+      if (gwei === null || !isFinite(gwei) || gwei <= 0) return null;
+      const feeEth = (gwei * effGasLimit) / 1e9;
+      if (feeEth === 0) return null;
+      // Tampilkan lebih banyak desimal kalau nilainya sangat kecil.
+      const decimals = feeEth < 0.0001 ? 8 : feeEth < 0.01 ? 6 : 4;
+      return feeEth.toFixed(decimals);
+    };
+
+    const manualGwei = txGasMode === 'manual' ? parseFloat(txGasManual) : NaN;
+    const currentFeeEth = txGasMode === 'manual'
+      ? estimateFeeEth(isFinite(manualGwei) ? manualGwei : null)
+      : estimateFeeEth(currentGwei);
+
     return (
       <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:'8px', flexWrap:'wrap' }}>
-          <div style={{ display:'flex', alignItems:'center', gap:'8px', fontSize:'12px', color:'#888' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'8px', fontSize:'12px', color:'#888', flexWrap:'wrap' }}>
             <FaGasPump size={11} color="#f3ba2f"/>
             <span>Gas: <strong style={{ color:'#f3ba2f' }}>{modeLabels[txGasMode]}</strong></span>
             {currentGwei !== null && <span style={{ color:'#555', fontFamily:'monospace' }}>~{currentGwei.toFixed(2)} Gwei</span>}
             {txGasMode === 'manual' && <span style={{ color:'#555', fontFamily:'monospace' }}>{txGasManual || '?'} Gwei</span>}
+            {currentFeeEth !== null && (
+              <span style={{ color:'#4caf50', fontFamily:'monospace', background:'#0a1a0a', border:'1px solid #1a2a1a', padding:'2px 6px' }}>
+                ≈ {currentFeeEth} {nativeSymbol}
+              </span>
+            )}
           </div>
           <button onClick={() => setGasAdvanced(p => !p)}
             style={{ background:'none', border:'none', color:'#01a2ff', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'4px' }}>
@@ -3538,7 +5036,14 @@ export const WalletGenerator: React.FC = () => {
                   }}>
                     <div style={{ fontWeight:'bold', marginBottom:'2px' }}>{modeLabels[mode]}</div>
                     {mode !== 'manual' && gpVal !== null && (
-                      <div style={{ fontSize:'10px', color:'#888', fontFamily:'monospace' }}>{gpVal.toFixed(2)} Gwei</div>
+                      <>
+                        <div style={{ fontSize:'10px', color:'#888', fontFamily:'monospace' }}>{gpVal.toFixed(2)} Gwei</div>
+                        {estimateFeeEth(gpVal) !== null && (
+                          <div style={{ fontSize:'9px', color:'#4caf50', fontFamily:'monospace', marginTop:'1px' }}>
+                            ≈{estimateFeeEth(gpVal)} {nativeSymbol}
+                          </div>
+                        )}
+                      </>
                     )}
                     {mode !== 'manual' && gpVal === null && (
                       <div style={{ fontSize:'10px', color:'#333' }}>—</div>
@@ -3561,6 +5066,11 @@ export const WalletGenerator: React.FC = () => {
                     onChange={e => setTxGasLimit(e.target.value)}
                     style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
                 </div>
+                {currentFeeEth !== null && (
+                  <div style={{ gridColumn:'1 / -1', fontSize:'10px', color:'#4caf50', fontFamily:'monospace' }}>
+                    Estimasi total fee ≈ {currentFeeEth} {nativeSymbol}
+                  </div>
+                )}
               </div>
             ) : (
               <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
@@ -3569,6 +5079,100 @@ export const WalletGenerator: React.FC = () => {
                   onChange={e => setTxGasLimit(e.target.value)}
                   style={{ width:'100px', fontFamily:'monospace', fontSize:'12px' }}/>
                 <span style={{ fontSize:'10px', color:'#333' }}>def: 21000 (native tx)</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // ── Selector Gas Cosmos (Slow/Standard/Fast/Manual) — mirror renderGasFeeBox EVM di atas,
+  // tapi satuan uatom/unit gas (bukan Gwei/ETH) & "Refresh Gas" cuma re-trigger simulate() dry-run
+  // (tier Slow/Standard/Fast sendiri tetap dari chain-registry, bukan oracle live seperti EVM). ──
+  const renderAtomGasFeeBox = () => {
+    const modeLabels: Record<AtomGasMode, string> = {
+      slow: 'Slow', standard: 'Standard', fast: 'Fast', manual: 'Manual',
+    };
+    const gasPriceUatom = atomGetGasPriceUatom();
+
+    // Estimasi total fee = gasUnits (dari simulate() terakhir, kalau ada) × gasPrice tier ini.
+    const estimateFeeAtomFor = (priceUatom: number): string | null => {
+      if (!atomFeeEstimate || !isFinite(priceUatom) || priceUatom <= 0) return null;
+      const feeUatom = Math.ceil(atomFeeEstimate.gasUnits * priceUatom);
+      const feeAtom  = feeUatom / Math.pow(10, COSMOS_NETWORK.decimals);
+      const decimals = feeAtom < 0.0001 ? 8 : feeAtom < 0.01 ? 6 : 4;
+      return feeAtom.toFixed(decimals);
+    };
+
+    const currentFeeAtom = estimateFeeAtomFor(gasPriceUatom);
+
+    return (
+      <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px', marginBottom:'16px' }}>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:'8px', flexWrap:'wrap' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'8px', fontSize:'12px', color:'#888', flexWrap:'wrap' }}>
+            <FaGasPump size={11} color="#f3ba2f"/>
+            <span>Gas: <strong style={{ color:'#f3ba2f' }}>{modeLabels[atomGasMode]}</strong></span>
+            <span style={{ color:'#555', fontFamily:'monospace' }}>{gasPriceUatom} uatom/unit</span>
+            {currentFeeAtom !== null && (
+              <span style={{ color:'#4caf50', fontFamily:'monospace', background:'#0a1a0a', border:'1px solid #1a2a1a', padding:'2px 6px' }}>
+                ≈ {currentFeeAtom} ATOM
+              </span>
+            )}
+            {atomFeeEstimating && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
+          </div>
+          <button onClick={() => setAtomGasAdvanced(p => !p)}
+            style={{ background:'none', border:'none', color:'#01a2ff', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'4px' }}>
+            {atomGasAdvanced ? <>Tutup <FaChevronUp size={9}/></> : <>Ubah <FaChevronDown size={9}/></>}
+          </button>
+        </div>
+
+        {atomGasAdvanced && (
+          <div style={{ marginTop:'12px', paddingTop:'12px', borderTop:'1px solid #161616' }}>
+            <div style={{ display:'flex', alignItems:'center', justifyContent:'flex-end', marginBottom:'8px' }}>
+              <button onClick={() => setAtomGasRefreshNonce(n => n + 1)} disabled={atomFeeEstimating}
+                style={{ background:'none', border:'1px solid #333', color:atomFeeEstimating?'#888':'#f3ba2f', padding:'3px 10px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'4px' }}>
+                <FaSync size={9} style={{ animation:atomFeeEstimating?'spin 1s linear infinite':undefined }}/> {atomFeeEstimating ? 'Fetching...' : 'Refresh Gas'}
+              </button>
+            </div>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'6px', marginBottom:'10px' }}>
+              {(['slow','standard','fast','manual'] as const).map(mode => {
+                const gpVal = mode === 'manual' ? null : ATOM_GAS_PRICE_TIERS[mode];
+                const feeForMode = gpVal !== null ? estimateFeeAtomFor(gpVal) : null;
+                return (
+                  <button key={mode} onClick={() => setAtomGasMode(mode)} style={{
+                    padding:'8px 4px', background: atomGasMode===mode ? '#1a1400' : '#0d0d0d',
+                    border:`1px solid ${atomGasMode===mode ? '#f3ba2f' : '#1e1e1e'}`,
+                    color: atomGasMode===mode ? '#f3ba2f' : '#555',
+                    cursor:'pointer', fontSize:'11px', textAlign:'center', transition:'all 0.15s',
+                  }}>
+                    <div style={{ fontWeight:'bold', marginBottom:'2px' }}>{modeLabels[mode]}</div>
+                    {gpVal !== null && (
+                      <>
+                        <div style={{ fontSize:'10px', color:'#888', fontFamily:'monospace' }}>{gpVal} uatom</div>
+                        {feeForMode !== null && (
+                          <div style={{ fontSize:'9px', color:'#4caf50', fontFamily:'monospace', marginTop:'1px' }}>
+                            ≈{feeForMode} ATOM
+                          </div>
+                        )}
+                      </>
+                    )}
+                    {gpVal === null && <div style={{ fontSize:'10px', color:'#333' }}>—</div>}
+                  </button>
+                );
+              })}
+            </div>
+            {atomGasMode === 'manual' && (
+              <div>
+                <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'3px', textTransform:'uppercase' }}>Gas Price (uatom/unit)</label>
+                <input type="number" placeholder="e.g. 0.025" value={atomGasManual} min="0" step="0.001"
+                  onChange={e => setAtomGasManual(e.target.value)}
+                  style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
+                {currentFeeAtom !== null && (
+                  <div style={{ fontSize:'10px', color:'#4caf50', fontFamily:'monospace', marginTop:'6px' }}>
+                    Estimasi total fee ≈ {currentFeeAtom} ATOM
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -4045,11 +5649,16 @@ export const WalletGenerator: React.FC = () => {
         </div>
       )}
 
-      <header>
-        <h1>
+      <header style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:'14px', flexWrap:'wrap' }}>
+        <h1 style={{ margin:0 }}>
           <FaWallet style={{ marginRight:'8px' }}/>WalletGen
           <span style={{ fontSize:'12px', color:'#555', fontWeight:'normal', marginLeft:'8px' }}>v1</span>
         </h1>
+        <Link to="/explorer" style={{ textDecoration:'none' }}>
+          <button style={{ display:'flex', alignItems:'center', gap:'6px', background:'none', border:'1px solid #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', fontWeight:'bold' }}>
+            <FaCompass size={12}/> Explorer
+          </button>
+        </Link>
       </header>
       <Navbar />
 
@@ -4197,12 +5806,40 @@ export const WalletGenerator: React.FC = () => {
                   {networks.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
                 </select>
               </div>
-              <div style={{ display:'flex', gap:'8px', flexShrink:0 }}>
+              <div style={{ display:'flex', gap:'8px', flexShrink:0, flexWrap:'wrap' }}>
                 <button onClick={checkAllBalances} disabled={balChecking || wallets.length === 0}
                   style={{ background: balChecking ? '#1a2a1a' : '#4caf50', color:'#000', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1 }}>
                   {balChecking
                     ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
-                    : <><FaSync size={10}/> Cek Semua Balance</>}
+                    : <><FaSync size={10}/> Cek Semua {networks.find(n => n.id === balCheckNetId)?.symbol || 'EVM'}</>}
+                </button>
+                <button onClick={checkAllSolBalances} disabled={balChecking || wallets.length === 0}
+                  title="Cek saldo SOL semua address Solana yang tersimpan"
+                  style={{ background: balChecking ? '#1a1a2a' : '#9945FF', color:'#000', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1 }}>
+                  {balChecking
+                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
+                    : <><FaSync size={10}/> Cek Semua SOL</>}
+                </button>
+                <button onClick={checkAllTronBalances} disabled={balChecking || wallets.length === 0}
+                  title="Cek saldo TRX semua address Tron yang tersimpan"
+                  style={{ background: balChecking ? '#2a1a1a' : '#EF0027', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1 }}>
+                  {balChecking
+                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
+                    : <><FaSync size={10}/> Cek Semua TRX</>}
+                </button>
+                <button onClick={checkAllAtomBalances} disabled={balChecking || wallets.length === 0}
+                  title="Cek saldo ATOM semua address Cosmos Hub yang tersimpan"
+                  style={{ background: balChecking ? '#15161d' : '#2E3148', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1 }}>
+                  {balChecking
+                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
+                    : <><FaSync size={10}/> Cek Semua ATOM</>}
+                </button>
+                <button onClick={checkAllAxmBalances} disabled={balChecking || wallets.length === 0}
+                  title="Cek saldo AXM semua address Axiome yang tersimpan"
+                  style={{ background: balChecking ? '#181229' : '#75bbe9', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1 }}>
+                  {balChecking
+                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
+                    : <><FaSync size={10}/> Cek Semua AXM</>}
                 </button>
                 <button onClick={exportAllCSV} disabled={csvExporting || wallets.length === 0}
                   style={{ background:'#111', color: wallets.length === 0 ? '#333' : '#f3ba2f', border:`1px solid ${wallets.length === 0 ? '#222' : '#f3ba2f44'}`, padding:'8px 14px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px' }}>
@@ -4235,8 +5872,8 @@ export const WalletGenerator: React.FC = () => {
               const isExpanded      = expandedId === w.id;
               const isMnemonicShown = revealedIds.has(w.id);
               const activeChain: ChainKind = chainView[w.id] || 'evm';
-              const activeList  = activeChain === 'sol' ? (w.solAddresses || []) : w.addresses;
-              const activePath  = activeChain === 'sol' ? "m/44'/501'/x'/0'" : "m/44'/60'/0'/0/x";
+              const activeList  = activeChain === 'sol' ? (w.solAddresses || []) : activeChain === 'tron' ? (w.tronAddresses || []) : activeChain === 'axm' ? (w.axmAddresses || []) : activeChain === 'atom' ? (w.atomAddresses || []) : w.addresses;
+              const activePath  = activeChain === 'sol' ? "m/44'/501'/x'/0'" : activeChain === 'tron' ? "m/44'/195'/0'/0/x" : activeChain === 'axm' ? "m/44'/118'/x'/0/0" : activeChain === 'atom' ? "m/44'/118'/x'/0/0" : "m/44'/60'/0'/0/x";
               return (
                 <div key={w.id} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #01a2ff', overflow:'hidden' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:'10px', padding:'14px 16px', cursor:'pointer' }}
@@ -4300,7 +5937,7 @@ export const WalletGenerator: React.FC = () => {
                           <FaNetworkWired style={{ marginRight:'5px' }}/>Ganti Network
                         </div>
                         <div style={{ display:'flex', flexWrap:'wrap', gap:'6px' }}>
-                          {CHAIN_OPTIONS.map(opt => {
+                          {WALLET_CHAIN_OPTIONS.map(opt => {
                             const isActive = activeChain === opt.id;
                             if (opt.soon) {
                               return (
@@ -4328,11 +5965,27 @@ export const WalletGenerator: React.FC = () => {
                       <div>
                         <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px' }}>
                           <FaShieldAlt style={{ marginRight:'5px' }}/>
-                          Derived Addresses {activeChain === 'sol' ? '(Solana · ed25519)' : '(EIP-55 Checksummed)'}
+                          Derived Addresses {activeChain === 'sol' ? '(Solana · ed25519)' : activeChain === 'tron' ? '(Tron · secp256k1, base58check)' : activeChain === 'axm' ? '(Axiome · secp256k1, bech32 "axm1...")' : activeChain === 'atom' ? '(Cosmos Hub · secp256k1, bech32 "cosmos1...")' : '(EIP-55 Checksummed)'}
                         </div>
+
                         {activeList.length === 0 && activeChain === 'sol' && (
                           <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
                             Belum ada address Solana — klik "Turunkan Address" di bawah untuk generate dari mnemonic yang sama.
+                          </div>
+                        )}
+                        {activeList.length === 0 && activeChain === 'tron' && (
+                          <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
+                            Belum ada address Tron — klik "Turunkan Address" di bawah untuk generate dari mnemonic yang sama.
+                          </div>
+                        )}
+                        {activeList.length === 0 && activeChain === 'axm' && (
+                          <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
+                            Belum ada address Axiome — sedang diturunkan dari mnemonic yang sama (async), atau klik "Turunkan Address" di bawah.
+                          </div>
+                        )}
+                        {activeList.length === 0 && activeChain === 'atom' && (
+                          <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
+                            Belum ada address Cosmos Hub — sedang diturunkan dari mnemonic yang sama (async), atau klik "Turunkan Address" di bawah.
                           </div>
                         )}
                         {activeList.slice().sort((a,b) => a.index - b.index).map(addr => {
@@ -4357,7 +6010,7 @@ export const WalletGenerator: React.FC = () => {
                                   style={{ background:'none', border:'none', color:'#555', cursor:'pointer', padding:'4px', flexShrink:0 }}>
                                   <FaCoins size={12}/>
                                 </button>
-                                {activeChain === 'evm' && balResults[addr.address] && (
+                                {balResults[addr.address] && (
                                   <span style={{ fontSize:'10px', fontFamily:'monospace', color: balResults[addr.address].error ? '#f44336' : '#4caf50', whiteSpace:'nowrap', flexShrink:0 }}>
                                     {balResults[addr.address].loading ? '...' : balResults[addr.address].balance}
                                   </span>
@@ -4383,12 +6036,13 @@ export const WalletGenerator: React.FC = () => {
                             </div>
                           );
                         })}
-                        <button onClick={() => deriveMore(w.id, w.addresses.length)} disabled={generating}
+                        <button onClick={() => deriveMore(w.id, activeList.length)} disabled={generating}
                           style={{ background:'#0d0d1a', border:'1px solid #1e1e3a', color:'#4a4aff', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px', marginTop:'4px', opacity:generating?0.5:1 }}>
-                          <FaPlus size={10}/> Turunkan Address #{w.addresses.length}
+                          <FaPlus size={10}/> Turunkan Address #{activeList.length}
                         </button>
                       </div>
                     </div>
+
                   )}
                 </div>
               );
@@ -4415,13 +6069,14 @@ export const WalletGenerator: React.FC = () => {
                     </button>
                   );
                 }
+                const chainColor = opt.id === 'sol' ? '#9945FF' : opt.id === 'tron' ? '#EF0027' : opt.id === 'axm' ? '#75bbe9' : '#01a2ff';
                 return (
                   <button key={opt.id}
                     onClick={() => setTxChain(opt.id as ChainKind)}
                     style={{
-                      background:   isActive ? (opt.id === 'sol' ? '#9945FF' : '#01a2ff') : 'none',
-                      color:        isActive ? '#000' : '#888',
-                      border:       `1px solid ${isActive ? (opt.id === 'sol' ? '#9945FF' : '#01a2ff') : '#333'}`,
+                      background:   isActive ? chainColor : 'none',
+                      color:        isActive ? (opt.id === 'tron' || opt.id === 'axm' ? '#fff' : '#000') : '#888',
+                      border:       `1px solid ${isActive ? chainColor : '#333'}`,
                       padding:'8px 16px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
                     }}>
                     {opt.label}
@@ -4566,9 +6221,15 @@ export const WalletGenerator: React.FC = () => {
                         style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
                     </div>
                     <div>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>
-                        Jumlah {txAsset === 'native' ? (selectedNetwork?.symbol ?? 'ETH') : (knownTxTokens.find(t=>t.address.toLowerCase()===txAsset.toLowerCase())?.symbol ?? 'token')}
-                      </label>
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'5px' }}>
+                        <label style={{ fontSize:'11px', color:'#555' }}>
+                          Jumlah {txAsset === 'native' ? (selectedNetwork?.symbol ?? 'ETH') : (knownTxTokens.find(t=>t.address.toLowerCase()===txAsset.toLowerCase())?.symbol ?? 'token')}
+                        </label>
+                        <button onClick={txSetMaxAmount} disabled={txMaxLoading || !txConnected}
+                          style={{ background:'none', border:'1px solid #333', color:txMaxLoading?'#555':'#01a2ff', padding:'2px 8px', cursor:(txMaxLoading||!txConnected)?'not-allowed':'pointer', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.5px', opacity:!txConnected?0.4:1 }}>
+                          {txMaxLoading ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : 'MAX'}
+                        </button>
+                      </div>
                       <input type="number" placeholder="0.001" step="0.0001" min="0" value={txSendAmt}
                         onChange={e => setTxSendAmt(e.target.value)}
                         style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace' }}/>
@@ -5015,6 +6676,7 @@ export const WalletGenerator: React.FC = () => {
                         ['single', <FaPaperPlane key="i" size={11}/>, 'Kirim'],
                         ['multi',  <FaLayerGroup key="i" size={11}/>, 'Multi Send'],
                         ['sweep',  <FaExchangeAlt key="i" size={11}/>, 'Sweep'],
+                        ['close',  <FaTrash key="i" size={11}/>, 'Tutup Akun'],
                       ] as const).map(([m, icon, label]) => (
                         <button key={m} onClick={() => setSolMode(m)} style={{
                           flex:1, padding:'9px 8px', background: solMode===m ? SOLANA_NETWORK.color : 'transparent',
@@ -5027,7 +6689,7 @@ export const WalletGenerator: React.FC = () => {
                       ))}
                     </div>
 
-                    {renderSolAssetSelector()}
+                    {solMode !== 'close' && renderSolAssetSelector()}
 
                     {/* ── Kirim (single) ── */}
                     {solMode === 'single' && (
@@ -5303,6 +6965,262 @@ export const WalletGenerator: React.FC = () => {
                         </button>
                       </div>
                     )}
+
+                    {/* ── Tutup Akun Token (Close Token Account) ──
+                        Menutup token account (ATA / Token-2022) SPL untuk menarik kembali
+                        rent (± 0.002 SOL/akun) yang terkunci di dalamnya. Selalu mengikuti
+                        cluster aktif (SOLANA_NETWORK) — jadi otomatis berfungsi baik di
+                        Mainnet, Testnet, maupun Devnet tanpa perlu konfigurasi tambahan. */}
+                    {solMode === 'close' && (() => {
+                      const emptyAccs    = solCloseAccounts.filter(a => a.uiAmount === 0);
+                      const balanceAccs  = solCloseAccounts.filter(a => a.uiAmount > 0);
+                      const totalReclaim = solCloseAccounts.reduce((s, a) => s + a.lamports, 0) / LAMPORTS_PER_SOL;
+                      const selectedEmpty      = emptyAccs.filter(a => solCloseSelected.has(a.pubkey));
+                      const selectedReclaim    = selectedEmpty.reduce((s, a) => s + a.lamports, 0) / LAMPORTS_PER_SOL;
+                      const allEmptySelected   = emptyAccs.length > 0 && emptyAccs.every(a => solCloseSelected.has(a.pubkey));
+                      const q = solCloseSearch.trim().toLowerCase();
+                      const visibleAccs = solCloseAccounts
+                        .filter(a => solCloseFilter === 'all' ? true : solCloseFilter === 'empty' ? a.uiAmount === 0 : a.uiAmount > 0)
+                        .filter(a => !q || a.mint.toLowerCase().includes(q) || a.pubkey.toLowerCase().includes(q));
+
+                      return (
+                        <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+                          {/* Info banner */}
+                          <div style={{ display:'flex', gap:'9px', fontSize:'11px', color:'#777', lineHeight:1.6, background:'#0a0a0a', border:'1px solid #1e1e1e', padding:'10px 12px' }}>
+                            <FaInfoCircle size={12} style={{ color:'#555', flexShrink:0, marginTop:'2px' }}/>
+                            <div>
+                              Setiap token account SPL (baik <strong style={{ color:'#ccc' }}>SPL Token</strong> klasik maupun <strong style={{ color:'#ccc' }}>Token-2022</strong>)
+                              menahan rent ± <strong style={{ color:'#ccc' }}>0.00203928 SOL</strong>. Menutup akun kosong mengembalikan rent itu ke wallet ini.
+                              Akun yang masih bersaldo harus dikosongkan dulu — kirim ke wallet lain, atau bakar langsung dari sini.
+                            </div>
+                          </div>
+
+                          {/* Kartu ringkasan */}
+                          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:'8px' }}>
+                            {[
+                              { label: 'Total Akun',      value: solCloseAccounts.length,                 color: '#ccc' },
+                              { label: 'Siap Ditutup',    value: emptyAccs.length,                        color: '#4caf50' },
+                              { label: 'Reclaim Tersedia',value: `± ${totalReclaim.toFixed(5)} SOL`,       color: SOLANA_NETWORK.color },
+                            ].map(card => (
+                              <div key={card.label} style={{ background:'#0a0a0a', border:'1px solid #1e1e1e', padding:'10px 12px', textAlign:'center' }}>
+                                <div style={{ fontSize: typeof card.value === 'number' ? '18px' : '13px', fontWeight:'bold', color: card.color, fontFamily:'monospace' }}>
+                                  {card.value}
+                                </div>
+                                <div style={{ fontSize:'9px', color:'#555', textTransform:'uppercase', letterSpacing:'0.5px', marginTop:'3px' }}>
+                                  {card.label}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+
+                          {/* Toolbar: filter + search + refresh */}
+                          <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+                            <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', padding:'2px', flexShrink:0 }}>
+                              {([
+                                ['all',     `Semua (${solCloseAccounts.length})`],
+                                ['empty',   `Kosong (${emptyAccs.length})`],
+                                ['balance', `Bersaldo (${balanceAccs.length})`],
+                              ] as const).map(([f, label]) => (
+                                <button key={f} onClick={() => setSolCloseFilter(f)} style={{
+                                  padding:'6px 10px', background: solCloseFilter===f ? '#1a1a1a' : 'transparent',
+                                  border:'none', color: solCloseFilter===f ? '#ccc' : '#555',
+                                  cursor:'pointer', fontSize:'10px', fontWeight:'bold', whiteSpace:'nowrap',
+                                }}>
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                            <input type="text" placeholder="Cari mint / ATA address..." value={solCloseSearch}
+                              onChange={e => setSolCloseSearch(e.target.value)}
+                              style={{ flex:1, minWidth:'160px', fontFamily:'monospace', fontSize:'11px', padding:'7px 10px' }}/>
+                            <button onClick={() => solFetchCloseAccounts()} disabled={solCloseLoading}
+                              style={{ background:'none', border:'1px solid #333', color:'#888', padding:'7px 12px', cursor: solCloseLoading?'wait':'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', flexShrink:0 }}>
+                              <FaSync size={9} style={{ animation:solCloseLoading?'spin 1s linear infinite':undefined }}/> Refresh
+                            </button>
+                          </div>
+
+                          {/* Loading skeleton */}
+                          {solCloseLoading && solCloseAccounts.length === 0 && (
+                            <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+                              {[0,1,2].map(i => (
+                                <div key={i} style={{ height:'52px', background:'#0a0a0a', border:'1px solid #1e1e1e', opacity:0.5 - i*0.1,
+                                  animation:'pulse 1.4s ease-in-out infinite' }}/>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Empty state */}
+                          {!solCloseLoading && solCloseAccounts.length === 0 && (
+                            <div style={{ textAlign:'center', padding:'32px 0', color:'#333' }}>
+                              <FaCoins size={22} style={{ color:'#222', marginBottom:'8px' }}/>
+                              <p style={{ fontSize:'12px', margin:0 }}>
+                                Tidak ada token account SPL di wallet ini pada cluster {SOLANA_NETWORK.name}.
+                              </p>
+                            </div>
+                          )}
+
+                          {/* Tidak ada hasil filter/pencarian, tapi datanya ada */}
+                          {!solCloseLoading && solCloseAccounts.length > 0 && visibleAccs.length === 0 && (
+                            <p style={{ color:'#333', fontSize:'12px', textAlign:'center', padding:'16px 0', margin:0 }}>
+                              Tidak ada akun yang cocok dengan filter/pencarian saat ini.
+                            </p>
+                          )}
+
+                          {/* Pilih semua akun kosong */}
+                          {emptyAccs.length > 1 && solCloseFilter !== 'balance' && (
+                            <label style={{ display:'flex', alignItems:'center', gap:'7px', fontSize:'11px', color:'#888', cursor:'pointer', userSelect:'none' }}>
+                              <input type="checkbox" checked={allEmptySelected}
+                                onChange={() => solCloseToggleSelectAll(emptyAccs.map(a => a.pubkey))}/>
+                              Pilih semua akun kosong ({emptyAccs.length})
+                            </label>
+                          )}
+
+                          {/* Daftar akun */}
+                          {visibleAccs.length > 0 && (
+                            <div style={{ display:'flex', flexDirection:'column', gap:'8px', maxHeight:'420px', overflowY:'auto', paddingRight:'2px' }}>
+                              {visibleAccs.map(acc => {
+                                const isClosing  = solClosingId === acc.pubkey;
+                                const hasBalance = acc.uiAmount > 0;
+                                const burnFirst  = !!solCloseBurnFirst[acc.pubkey];
+                                const isSelected = solCloseSelected.has(acc.pubkey);
+                                const reclaimSol = (acc.lamports / LAMPORTS_PER_SOL).toFixed(6);
+                                const isToken22  = acc.programId === TOKEN_2022_PROGRAM_ID.toBase58();
+                                const accentColor= hasBalance ? '#f4a300' : '#4caf50';
+                                // ── Nama tampilan: pakai nama/simbol on-chain kalau ketemu, kalau nggak ada
+                                //    metadata (token polos) jatuh ke label netral — bukan dibiarkan kosong. ──
+                                const displayName  = acc.name || acc.symbol || (acc.metaLoaded ? 'Token Tidak Dikenal' : '');
+                                const avatarLetter = (acc.name || acc.symbol || acc.mint).trim().charAt(0).toUpperCase() || '?';
+                                const createdLabel = acc.createdAtLoaded
+                                  ? (acc.createdAt
+                                      ? new Date(acc.createdAt).toLocaleDateString('id-ID', { day:'2-digit', month:'short', year:'numeric' })
+                                      : 'tidak diketahui')
+                                  : null;
+                                return (
+                                  <div key={acc.pubkey} style={{
+                                    padding:'11px 12px', background:'#0a0a0a', borderTop:'1px solid #1e1e1e', borderRight:'1px solid #1e1e1e', borderBottom:'1px solid #1e1e1e',
+                                    borderLeft:`3px solid ${accentColor}55`,
+                                    display:'flex', flexDirection:'column', gap:'9px',
+                                  }}>
+                                    <div style={{ display:'flex', alignItems:'flex-start', gap:'10px' }}>
+                                      {!hasBalance && (
+                                        <input type="checkbox" checked={isSelected} onChange={() => solCloseToggleSelect(acc.pubkey)}
+                                          style={{ marginTop:'3px', flexShrink:0, cursor:'pointer' }}/>
+                                      )}
+                                      {/* Avatar: logo token kalau ada, kalau nggak avatar inisial berwarna —
+                                          supaya kartu akun kosong nggak nampak blank hitam polos. */}
+                                      <div style={{
+                                        width:'30px', height:'30px', borderRadius:'50%', flexShrink:0, marginTop:'1px',
+                                        overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center',
+                                        background: acc.image ? '#111' : `${accentColor}22`,
+                                        border:`1px solid ${accentColor}55`,
+                                      }}>
+                                        {acc.image
+                                          ? <img src={acc.image} alt="" style={{ width:'100%', height:'100%', objectFit:'cover' }}
+                                              onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}/>
+                                          : <span style={{ fontSize:'12px', fontWeight:'bold', color: accentColor }}>{avatarLetter}</span>}
+                                      </div>
+                                      <div style={{ minWidth:0, flex:1 }}>
+                                        <div style={{ display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap' }}>
+                                          <span style={{ fontSize:'12px', color:'#eee', fontWeight:'bold' }}>
+                                            {displayName || <span style={{ display:'inline-block', width:'70px', height:'10px', background:'#1a1a1a', borderRadius:'2px' }}/>}
+                                          </span>
+                                          {acc.symbol && acc.name && (
+                                            <span style={{ fontSize:'10px', color:'#777' }}>{acc.symbol}</span>
+                                          )}
+                                          <span style={{
+                                            fontSize:'9px', fontWeight:'bold', padding:'1px 6px',
+                                            color: isToken22 ? '#c792ea' : '#569cd6',
+                                            background: isToken22 ? '#c792ea1a' : '#569cd61a',
+                                            border:`1px solid ${isToken22 ? '#c792ea33' : '#569cd633'}`,
+                                          }}>
+                                            {isToken22 ? 'Token-2022' : 'SPL Token'}
+                                          </span>
+                                        </div>
+                                        <div style={{ display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap', marginTop:'3px' }}>
+                                          <span style={{ fontSize:'11px', color:'#ccc', fontFamily:'monospace' }}>Mint {shortAddr(acc.mint)}</span>
+                                          <button onClick={() => copyText(acc.mint, `close_mint_${acc.pubkey}`)}
+                                            style={{ background:'none', border:'none', color: copiedKey===`close_mint_${acc.pubkey}` ? '#4caf50' : '#444', cursor:'pointer', padding:'2px', display:'flex' }}>
+                                            {copiedKey===`close_mint_${acc.pubkey}` ? <FaCheckCircle size={9}/> : <FaCopy size={9}/>}
+                                          </button>
+                                        </div>
+                                        <div style={{ display:'flex', alignItems:'center', gap:'6px', marginTop:'3px' }}>
+                                          <span style={{ fontSize:'10px', color:'#555', fontFamily:'monospace' }}>ATA {shortAddr(acc.pubkey)}</span>
+                                          <button onClick={() => copyText(acc.pubkey, `close_ata_${acc.pubkey}`)}
+                                            style={{ background:'none', border:'none', color: copiedKey===`close_ata_${acc.pubkey}` ? '#4caf50' : '#333', cursor:'pointer', padding:'2px', display:'flex' }}>
+                                            {copiedKey===`close_ata_${acc.pubkey}` ? <FaCheckCircle size={9}/> : <FaCopy size={9}/>}
+                                          </button>
+                                        </div>
+                                        <div style={{ fontSize:'10px', color:'#555', marginTop:'3px' }}>
+                                          Dibuat: {createdLabel ?? <span style={{ display:'inline-block', width:'60px', height:'8px', background:'#1a1a1a', borderRadius:'2px', verticalAlign:'middle' }}/>}
+                                        </div>
+                                      </div>
+                                      <div style={{ textAlign:'right', flexShrink:0 }}>
+                                        <div style={{ fontSize:'11px', color: hasBalance ? '#ffb300' : '#4caf50', fontWeight:'bold' }}>
+                                          saldo {acc.uiAmount}
+                                        </div>
+                                        <div style={{ fontSize:'10px', color:'#666' }}>reclaim ± {reclaimSol} SOL</div>
+                                      </div>
+                                    </div>
+
+                                    {hasBalance && (
+                                      <label style={{ display:'flex', alignItems:'center', gap:'6px', fontSize:'10px', color:'#f4a300', cursor:'pointer' }}>
+                                        <input type="checkbox" checked={burnFirst}
+                                          onChange={e => setSolCloseBurnFirst(prev => ({ ...prev, [acc.pubkey]: e.target.checked }))}/>
+                                        Bakar sisa saldo dulu, lalu tutup akun (tindakan permanen — token akan hilang)
+                                      </label>
+                                    )}
+
+                                    <button onClick={() => solCloseTokenAccount(acc)}
+                                      disabled={isClosing || solCloseAllRunning || (hasBalance && !burnFirst)}
+                                      style={{
+                                        padding:'9px', fontSize:'11px', fontWeight:'bold',
+                                        background: isClosing ? '#1a0000' : (hasBalance && !burnFirst) ? 'transparent' : '#f44336',
+                                        color: isClosing ? '#f44336' : '#fff',
+                                        border: `1px solid ${(hasBalance && !burnFirst) ? '#333' : '#f44336'}`,
+                                        cursor: isClosing ? 'wait' : (hasBalance && !burnFirst) ? 'not-allowed' : 'pointer',
+                                        opacity: (hasBalance && !burnFirst) ? 0.4 : 1,
+                                        display:'flex', alignItems:'center', justifyContent:'center', gap:'6px',
+                                      }}>
+                                      {isClosing
+                                        ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Menutup...</>
+                                        : <><FaTrash size={10}/> {hasBalance ? 'Bakar & Tutup Akun' : 'Tutup Akun'}</>}
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          {/* Bar aksi batch — nempel di bawah daftar, aktif kalau ada akun kosong yang dicentang */}
+                          {emptyAccs.length > 0 && (
+                            <div style={{
+                              display:'flex', alignItems:'center', justifyContent:'space-between', gap:'12px', flexWrap:'wrap',
+                              background:'#0a0a0a', border:'1px solid #1e1e1e', padding:'10px 12px',
+                            }}>
+                              <div style={{ fontSize:'11px', color:'#888' }}>
+                                {selectedEmpty.length > 0
+                                  ? <>{selectedEmpty.length} akun dipilih · reclaim ± <strong style={{ color:'#4caf50' }}>{selectedReclaim.toFixed(6)} SOL</strong></>
+                                  : 'Belum ada akun kosong yang dipilih.'}
+                              </div>
+                              <button onClick={solCloseSelectedAccounts} disabled={solCloseAllRunning || !!solClosingId || selectedEmpty.length === 0}
+                                style={{
+                                  padding:'10px 16px', fontWeight:'bold', fontSize:'12px',
+                                  cursor: (solCloseAllRunning || selectedEmpty.length===0) ? (solCloseAllRunning?'wait':'not-allowed') : 'pointer',
+                                  background: solCloseAllRunning ? '#001a00' : selectedEmpty.length===0 ? 'transparent' : '#00e676',
+                                  color: solCloseAllRunning ? '#00e676' : selectedEmpty.length===0 ? '#555' : '#000',
+                                  border: `1px solid ${solCloseAllRunning ? '#00e67644' : selectedEmpty.length===0 ? '#333' : '#00e676'}`,
+                                  display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
+                                  opacity: !!solClosingId ? 0.5 : 1, flexShrink:0,
+                                }}>
+                                {solCloseAllRunning
+                                  ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Menutup...</>
+                                  : <><FaTrash/> Tutup {selectedEmpty.length || ''} Akun Terpilih</>}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* ── Riwayat Transaksi Solana ── */}
@@ -5338,6 +7256,668 @@ export const WalletGenerator: React.FC = () => {
 
                   <div style={{ textAlign:'center' }}>
                     <button onClick={solDisconnect}
+                      style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
+                      Disconnect Wallet
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {txChain === 'tron' && (
+            <>
+              <div style={{ marginBottom:'16px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
+                <select value={tronNetId} onChange={e => switchTronNetwork(e.target.value)}
+                  style={{ flex:'1 1 260px', fontFamily:'monospace', fontSize:'13px', padding:'10px 12px', background:'#0d0d0d', border:'1px solid #1e1e1e', color:'#ccc' }}>
+                  {TRON_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
+                </select>
+                {!tronNetwork.isMainnet && (
+                  <span style={{ fontSize:'10px', color:'#F1C40F', border:'1px solid #4a3f10', background:'#1a1608', padding:'4px 8px', whiteSpace:'nowrap' }}>
+                    ⚠ Jaringan TEST — TRX di sini tidak bernilai, minta dari faucet Nile/Shasta
+                  </span>
+                )}
+                {!tronNetwork.isMainnet && tronNetwork.faucetUrl && (
+                  <button onClick={openTronFaucet}
+                    style={{ fontSize:'11px', color:'#000', background:'#F1C40F', border:'none', padding:'6px 10px', cursor:'pointer', display:'flex', alignItems:'center', gap:'5px', whiteSpace:'nowrap', fontWeight:'bold' }}>
+                    <FaFaucet size={10}/> Faucet {tronNetwork.name.replace('Tron ', '').replace(' Testnet', '')}
+                  </button>
+                )}
+                <a href={`${tronNetwork.explorerUrl}`} target="_blank" rel="noreferrer"
+                  style={{ fontSize:'11px', color:'#EF0027', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
+                  <FaLink size={9}/> Explorer
+                </a>
+              </div>
+
+              {!tronConnected ? (
+                <div className="form-container" style={{ maxWidth:'420px', margin:'32px auto' }}>
+                  <h2 style={{ textAlign:'center', marginBottom:'18px', fontSize:'15px' }}>
+                    <FaPlug style={{ marginRight:'8px' }}/>Connect ke {tronNetwork.name}
+                  </h2>
+                  {wallets.some(w => (w.tronAddresses||[]).length > 0) && (
+                    <div style={{ marginBottom:'14px' }}>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Tron tersimpan</label>
+                      <select value={tronWalletSel} onChange={e => handleTronWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
+                        <option value="">-- Pilih address --</option>
+                        {wallets.flatMap((w, wi) =>
+                          (w.tronAddresses||[]).map(a => (
+                            <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
+                              {w.name} · #{a.index} · {a.address.slice(0,14)}...
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+                  )}
+                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
+                    <FaKey style={{ marginRight:'4px' }}/>Private Key (hex)
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="0x... atau hex tanpa prefix"
+                    value={tronPrivKey}
+                    onChange={e => { setTronPrivKey(e.target.value); setTronWalletSel(''); }}
+                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}
+                  />
+                  <button onClick={tronConnect} disabled={tronConnecting || !tronPrivKey.trim()}
+                    style={{ width:'100%', padding:'12px', background:tronConnecting?'#2a1a1a':tronNetwork.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:!tronPrivKey.trim()?0.5:1 }}>
+                    {tronConnecting
+                      ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Connecting...</>
+                      : <><FaPlug/> Connect</>}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+
+                  {/* ── Balance / Receive card ── */}
+                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${tronNetwork.color}`, padding:'20px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'16px' }}>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px' }}>Saldo</div>
+                        <div style={{ fontSize:'22px', fontWeight:'bold', fontFamily:'monospace' }}>
+                          {tronLoadingBal ? <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> : tronBalance}
+                        </div>
+                      </div>
+                      <button onClick={() => { tronRefreshBalance(); tronRefreshResources(); }} disabled={tronLoadingBal}
+                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
+                        <FaSync size={11} style={{ animation:tronLoadingBal?'spin 1s linear infinite':undefined }}/> Refresh
+                      </button>
+                    </div>
+                    <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #1a1a1a' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                        <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'8px 10px' }}>
+                          {tronAddress}
+                        </code>
+                        <button onClick={() => copyText(tronAddress, 'tron_recv')} style={{ background:'none', border:'1px solid #333', color:copiedKey==='tron_recv'?'#4caf50':'#888', cursor:'pointer', padding:'8px 10px' }}>
+                          {copiedKey==='tron_recv' ? <FaCheckCircle size={12}/> : <FaCopy size={12}/>}
+                        </button>
+                        <button onClick={() => setQrAddress(tronAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
+                          <FaQrcode size={12}/>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── Resources card: Bandwidth & Energy ── */}
+                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
+                      <h3 style={{ fontSize:'13px', margin:0 }}><FaBolt style={{ marginRight:'6px', color:'#F1C40F' }}/>Resources</h3>
+                      <button onClick={() => tronRefreshResources()} disabled={tronResourcesLoading}
+                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'5px 10px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
+                        <FaSync size={10} style={{ animation:tronResourcesLoading?'spin 1s linear infinite':undefined }}/> Refresh
+                      </button>
+                    </div>
+
+                    {tronResourcesLoading && !tronResources ? (
+                      <div style={{ textAlign:'center', color:'#555', padding:'10px 0', fontSize:'12px' }}>
+                        <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Memuat kuota resource...
+                      </div>
+                    ) : !tronResources ? (
+                      <div style={{ textAlign:'center', color:'#444', padding:'10px 0', fontSize:'12px' }}>Gagal memuat resource. Coba refresh.</div>
+                    ) : (
+                      <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+                        {([
+                          { label: 'Bandwidth', icon: <FaNetworkWired size={11} color="#01a2ff"/>, used: tronResources.freeNetUsed + tronResources.netUsed, limit: tronResources.freeNetLimit + tronResources.netLimit, color:'#01a2ff' },
+                          { label: 'Energy',    icon: <FaBolt size={11} color="#F1C40F"/>,          used: tronResources.energyUsed,                                limit: tronResources.energyLimit,                             color:'#F1C40F' },
+                        ] as const).map(r => {
+                          const pct = r.limit > 0 ? Math.min(100, (r.used / r.limit) * 100) : 0;
+                          const avail = Math.max(0, r.limit - r.used);
+                          return (
+                            <div key={r.label}>
+                              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px', fontSize:'11px' }}>
+                                <span style={{ display:'flex', alignItems:'center', gap:'6px', color:'#888' }}>{r.icon} {r.label}</span>
+                                <span style={{ fontFamily:'monospace', color:'#666' }}>
+                                  {avail.toLocaleString('en-US')} tersedia · {r.used.toLocaleString('en-US')}/{r.limit.toLocaleString('en-US')}
+                                </span>
+                              </div>
+                              <div style={{ height:'6px', background:'#1a1a1a', overflow:'hidden' }}>
+                                <div style={{ height:'100%', width:`${pct}%`, background:r.color, transition:'width .3s' }}/>
+                              </div>
+                            </div>
+                          );
+                        })}
+                        <div style={{ fontSize:'10px', color:'#555' }}>
+                          Kuota gratis pulih tiap 24 jam. Kurang? Selisihnya di-"burn" pakai TRX saat kirim, atau tambah kuota lewat Freeze TRX (governance) di Tronscan.
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* ── Mode toggle: Single / Multi / Sweep ── */}
+                  <div style={{ display:'flex', gap:'8px' }}>
+                    {([['single','Kirim'],['multi','Multi-Send'],['sweep','Sweep']] as const).map(([m, label]) => (
+                      <button key={m} onClick={() => setTronMode(m)}
+                        style={{ flex:1, padding:'9px', background:tronMode===m?tronNetwork.color:'none', color:tronMode===m?'#fff':'#888', border:`1px solid ${tronMode===m?tronNetwork.color:'#333'}`, cursor:'pointer', fontSize:'12px', fontWeight:'bold' }}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {tronMode === 'single' && (
+                    <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
+                      <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaPaperPlane style={{ marginRight:'6px' }}/>Kirim TRX</h3>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Asset</label>
+                      <select value={tronAsset} onChange={e => setTronAsset(e.target.value)}
+                        style={{ width:'100%', fontFamily:'monospace', fontSize:'13px', marginBottom:'6px' }}>
+                        <option value="native">TRX (native)</option>
+                        {trc20Tokens.filter(t => t.netId === tronNetId && t.address).map(t => (
+                          <option key={t.address} value={t.address}>{t.symbol} — {t.name}</option>
+                        ))}
+                      </select>
+                      {tronAsset !== 'native' && (
+                        <div style={{ fontSize:'11px', color:'#888', marginBottom:'12px' }}>
+                          Saldo: {tronAssetBalLoading ? '...' : tronAssetBal}
+                        </div>
+                      )}
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
+                      <input placeholder="T..." value={tronSendTo} onChange={e => setTronSendTo(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
+                        Jumlah ({tronAsset === 'native' ? 'TRX' : (trc20Tokens.find(t=>t.address===tronAsset)?.symbol || 'Token')})
+                      </label>
+                      <input type="number" placeholder="0.0" value={tronSendAmt} onChange={e => setTronSendAmt(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'16px' }}/>
+
+                      {(tronFeeEstimating || tronFeeEstimate) && (
+                        <div style={{ background:'#0a0a0a', border:'1px solid #1a1a1a', padding:'10px 12px', marginBottom:'16px', fontSize:'11px' }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:'6px', color:'#666', marginBottom: tronFeeEstimate ? '8px' : 0, textTransform:'uppercase', letterSpacing:'0.5px', fontSize:'10px' }}>
+                            <FaGasPump size={10}/> Estimasi Fee
+                            {tronFeeEstimating && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
+                          </div>
+                          {tronFeeEstimate && (
+                            <>
+                              {tronFeeEstimate.destinationIsNew && (
+                                <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', color:'#ffaa00', marginBottom:'8px', paddingBottom:'8px', borderBottom:'1px solid #1a1a1a' }}>
+                                  <FaExclamationTriangle size={10} style={{ marginTop:'2px', flexShrink:0 }}/>
+                                  <span>Address tujuan belum pernah aktif di jaringan Tron — ada fee aktivasi ekstra ~{sunToTrx(tronFeeEstimate.newAccountFeeSun)} TRX yang otomatis dipotong, di luar bandwidth biasa.</span>
+                                </div>
+                              )}
+                              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
+                                <span style={{ color:'#888' }}><FaNetworkWired size={9} style={{ marginRight:'5px' }}/>Bandwidth</span>
+                                <span style={{ fontFamily:'monospace', color: tronFeeEstimate.bandwidthNeeded <= tronFeeEstimate.bandwidthAvailable ? '#4caf50' : '#ffaa00' }}>
+                                  {tronFeeEstimate.bandwidthNeeded} / {tronFeeEstimate.bandwidthAvailable} tersedia
+                                </span>
+                              </div>
+                              {tronFeeEstimate.newAccountFeeSun > 0 && (
+                                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
+                                  <span style={{ color:'#888' }}><FaRocket size={9} style={{ marginRight:'5px' }}/>Fee aktivasi akun baru</span>
+                                  <span style={{ fontFamily:'monospace', color:'#ffaa00' }}>
+                                    ~{sunToTrx(tronFeeEstimate.newAccountFeeSun)} TRX
+                                  </span>
+                                </div>
+                              )}
+                              {tronFeeEstimate.energyNeeded > 0 && (
+                                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
+                                  <span style={{ color:'#888' }}><FaBolt size={9} style={{ marginRight:'5px' }}/>Energy</span>
+                                  <span style={{ fontFamily:'monospace', color: tronFeeEstimate.energyNeeded <= tronFeeEstimate.energyAvailable ? '#4caf50' : '#ffaa00' }}>
+                                    {tronFeeEstimate.energyNeeded} / {tronFeeEstimate.energyAvailable} tersedia
+                                  </span>
+                                </div>
+                              )}
+                              <div style={{ display:'flex', justifyContent:'space-between', paddingTop:'6px', borderTop:'1px solid #1a1a1a' }}>
+                                <span style={{ color:'#888' }}>Total biaya</span>
+                                <span style={{ fontFamily:'monospace', fontWeight:'bold', color: tronFeeEstimate.coveredByFree ? '#4caf50' : '#ffaa00' }}>
+                                  {tronFeeEstimate.coveredByFree ? 'Gratis (dicover kuota)' : `~${sunToTrx(tronFeeEstimate.feeSun)} TRX`}
+                                </span>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )}
+
+                      {tronFeeEstimateError && (
+                        <div style={{ background:'#2a0d0d', border:'1px solid #5a1e1e', color:'#ff8888', padding:'10px 12px', marginBottom:'16px', fontSize:'11px', display:'flex', gap:'8px', alignItems:'flex-start' }}>
+                          <FaExclamationTriangle style={{ marginTop:'1px', flexShrink:0 }} size={11}/>
+                          <span>{tronFeeEstimateError}</span>
+                        </div>
+                      )}
+
+                      <button onClick={tronSend} disabled={tronSending || !tronSendTo.trim() || !tronSendAmt || !!tronFeeEstimateError}
+                        style={{ width:'100%', padding:'12px', background:tronSending?'#2a1a1a':tronNetwork.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!tronSendTo.trim()||!tronSendAmt||!!tronFeeEstimateError)?0.5:1 }}>
+                        {tronSending
+                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
+                          : <><FaPaperPlane/> Kirim {tronAsset === 'native' ? 'TRX' : (trc20Tokens.find(t=>t.address===tronAsset)?.symbol || 'Token')}</>}
+                      </button>
+                      {tronStatus.type !== 'idle' && (
+                        <div style={{
+                          marginTop:'14px', padding:'12px', fontSize:'12px',
+                          background: tronStatus.type==='error' ? '#2a0d0d' : tronStatus.type==='success' ? '#0d2a0d' : '#1a1a0d',
+                          border: `1px solid ${tronStatus.type==='error' ? '#5a1e1e' : tronStatus.type==='success' ? '#1e5a1e' : '#5a5a1e'}`,
+                          color: tronStatus.type==='error' ? '#ff8888' : tronStatus.type==='success' ? '#88ff88' : '#ffff88',
+                        }}>
+                          {tronStatus.msg}
+                          {tronStatus.hash && (
+                            <a href={`${tronNetwork.explorerUrl}/transaction/${tronStatus.hash}`} target="_blank" rel="noreferrer"
+                              style={{ display:'block', marginTop:'6px', color:'#EF0027', wordBreak:'break-all' }}>
+                              <FaLink size={9}/> {tronStatus.hash}
+                            </a>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {tronMode === 'multi' && (
+                    <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
+                      <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaLayerGroup style={{ marginRight:'6px' }}/>Multi-Send TRX</h3>
+                      <div style={{ display:'flex', gap:'8px', marginBottom:'12px' }}>
+                        <input placeholder="Samakan semua jumlah (TRX)" value={tronMultiEqualAmt} onChange={e => setTronMultiEqualAmt(e.target.value)}
+                          style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}/>
+                        <button onClick={tronMultiApplyEqual} style={{ background:'none', border:'1px solid #333', color:'#888', padding:'0 14px', cursor:'pointer', fontSize:'12px' }}>Terapkan</button>
+                      </div>
+                      {tronMultiRows.map(row => (
+                        <div key={row.id} style={{ display:'flex', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
+                          <input placeholder="Address tujuan" value={row.to} onChange={e => tronMultiUpdateRow(row.id, 'to', e.target.value)}
+                            style={{ flex:2, fontFamily:'monospace', fontSize:'12px' }}/>
+                          <input placeholder="Jumlah" type="number" value={row.amount} onChange={e => tronMultiUpdateRow(row.id, 'amount', e.target.value)}
+                            style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}/>
+                          <span style={{ fontSize:'10px', width:'70px', flexShrink:0, color: row.status==='success'?'#4caf50':row.status==='failed'?'#f44336':row.status==='pending'?'#ffaa00':'#444' }}>
+                            {row.status==='idle' ? '' : row.status}
+                          </span>
+                          <button onClick={() => tronMultiRemoveRow(row.id)} disabled={tronMultiRows.length<=1}
+                            style={{ background:'none', border:'none', color:'#f44336', cursor:'pointer', padding:'6px' }}><FaTrash size={11}/></button>
+                        </div>
+                      ))}
+                      <button onClick={tronMultiAddRow} style={{ background:'none', border:'1px dashed #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', marginBottom:'16px' }}>
+                        <FaPlus size={10}/> Tambah Baris
+                      </button>
+                      <button onClick={tronMultiSend} disabled={tronMultiRunning}
+                        style={{ width:'100%', padding:'12px', background:tronMultiRunning?'#2a1a1a':tronNetwork.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold' }}>
+                        {tronMultiRunning ? 'Mengirim...' : `Kirim ke ${tronMultiRows.filter(r=>isValidTronAddress(r.to)&&parseFloat(r.amount)>0).length} Penerima`}
+                      </button>
+                    </div>
+                  )}
+
+                  {tronMode === 'sweep' && (
+                    <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
+                      <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaExchangeAlt style={{ marginRight:'6px' }}/>Sweep TRX</h3>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan (kumpulkan ke sini)</label>
+                      <input placeholder="T..." value={tronSweepDestAddr} onChange={e => setTronSweepDestAddr(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
+                      <div style={{ display:'flex', gap:'8px', marginBottom:'12px' }}>
+                        <select value={tronSweepAmtMode} onChange={e => setTronSweepAmtMode(e.target.value as any)} style={{ fontSize:'12px' }}>
+                          <option value="all">Sapu Semua Saldo</option>
+                          <option value="fixed">Jumlah Tetap</option>
+                        </select>
+                        {tronSweepAmtMode === 'all' ? (
+                          <input placeholder="Sisakan (TRX)" value={tronSweepLeaveBuf} onChange={e => setTronSweepLeaveBuf(e.target.value)} style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}/>
+                        ) : (
+                          <input placeholder="Jumlah tetap (TRX)" value={tronSweepFixedAmt} onChange={e => setTronSweepFixedAmt(e.target.value)} style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}/>
+                        )}
+                      </div>
+
+                      <div style={{ display:'flex', gap:'8px', marginBottom:'10px' }}>
+                        <select value="" onChange={e => tronSweepAddFromBIP39(e.target.value)} style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}>
+                          <option value="">-- Tambah dari Wallet BIP39 --</option>
+                          {wallets.flatMap((w, wi) =>
+                            (w.tronAddresses||[]).map(a => (
+                              <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>{w.name} · #{a.index} · {a.address.slice(0,14)}...</option>
+                            ))
+                          )}
+                        </select>
+                      </div>
+                      <div style={{ display:'flex', gap:'8px', marginBottom:'14px' }}>
+                        <input placeholder="Atau tempel private key manual" value={tronSweepManualPK} onChange={e => setTronSweepManualPK(e.target.value)}
+                          style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}/>
+                        <button onClick={tronSweepAddManualPK} style={{ background:'none', border:'1px solid #333', color:'#888', padding:'0 14px', cursor:'pointer', fontSize:'12px' }}>Tambah</button>
+                      </div>
+
+                      {tronSweepSources.length > 0 && (
+                        <>
+                          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'8px' }}>
+                            <span style={{ fontSize:'11px', color:'#555' }}>{tronSweepSources.length} wallet sumber</span>
+                            <button onClick={tronSweepFetchBalances} disabled={tronSweepFetchingBal}
+                              style={{ background:'none', border:'1px solid #333', color:'#888', padding:'4px 10px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
+                              <FaSync size={10} style={{ animation:tronSweepFetchingBal?'spin 1s linear infinite':undefined }}/> Cek Saldo Semua
+                            </button>
+                          </div>
+                          {tronSweepSources.map(s => (
+                            <div key={s.id} style={{ display:'flex', alignItems:'center', gap:'8px', padding:'8px 0', borderBottom:'1px solid #141414', fontSize:'11px' }}>
+                              <span style={{ flex:1, color:'#888', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.label}</span>
+                              <span style={{ color:'#4caf50', fontFamily:'monospace' }}>{s.balance ?? '—'}</span>
+                              <span style={{ width:'60px', color: s.status==='success'?'#4caf50':s.status==='failed'?'#f44336':s.status==='skipped'?'#ffaa00':s.status==='pending'?'#ffaa00':'#444' }}>{s.status==='idle'?'':s.status}</span>
+                              <button onClick={() => tronSweepRemoveSource(s.id)} style={{ background:'none', border:'none', color:'#f44336', cursor:'pointer', padding:'4px' }}><FaTrash size={10}/></button>
+                            </div>
+                          ))}
+                        </>
+                      )}
+
+                      <button onClick={tronSweepRun} disabled={tronSweepRunning || tronSweepSources.length===0}
+                        style={{ width:'100%', marginTop:'16px', padding:'12px', background:tronSweepRunning?'#2a1a1a':tronNetwork.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', opacity:tronSweepSources.length===0?0.5:1 }}>
+                        {tronSweepRunning ? 'Menyapu...' : `Sweep dari ${tronSweepSources.length} Wallet`}
+                      </button>
+                    </div>
+                  )}
+
+                  <div style={{ textAlign:'center' }}>
+                    <button onClick={tronDisconnect}
+                      style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
+                      Disconnect Wallet
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {txChain === 'axm' && (
+            <>
+              <div style={{ marginBottom:'16px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
+                <select value={axmNetId} onChange={e => switchAxmNetwork(e.target.value)}
+                  style={{ flex:'1 1 260px', fontFamily:'monospace', fontSize:'13px', padding:'10px 12px', background:'#0d0d0d', border:'1px solid #1e1e1e', color:'#ccc' }}>
+                  {AXIOME_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
+                </select>
+                <a href={`${AXIOME_NETWORK.explorerUrl}`} target="_blank" rel="noreferrer"
+                  style={{ fontSize:'11px', color:'#75bbe9', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
+                  <FaLink size={9}/> Explorer
+                </a>
+              </div>
+
+              {AXIOME_NETWORK.rpcUrls.length === 0 && (
+                <div style={{ background:'#1a1608', border:'1px solid #4a3f10', color:'#F1C40F', padding:'12px 14px', marginBottom:'16px', fontSize:'11px', display:'flex', gap:'8px', alignItems:'flex-start' }}>
+                  <FaExclamationTriangle size={12} style={{ marginTop:'1px', flexShrink:0 }}/>
+                  <span>Belum ada RPC/REST Axiome yang dikonfigurasi — isi <code>AXIOME_NETWORKS[].rpcUrls</code> / <code>restUrls</code> di <code>Axiomenet.ts</code> dengan endpoint node yang kamu punya akses (kirim & cek saldo butuh ini).</span>
+                </div>
+              )}
+
+              {!axmConnected ? (
+                <div className="form-container" style={{ maxWidth:'420px', margin:'32px auto' }}>
+                  <h2 style={{ textAlign:'center', marginBottom:'18px', fontSize:'15px' }}>
+                    <FaPlug style={{ marginRight:'8px' }}/>Connect ke {AXIOME_NETWORK.name}
+                  </h2>
+                  {wallets.some(w => (w.axmAddresses||[]).length > 0) && (
+                    <div style={{ marginBottom:'14px' }}>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Axiome tersimpan</label>
+                      <select value={axmWalletSel} onChange={e => handleAxmWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
+                        <option value="">-- Pilih address --</option>
+                        {wallets.flatMap((w, wi) =>
+                          (w.axmAddresses||[]).map(a => (
+                            <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
+                              {w.name} · #{a.index} · {a.address.slice(0,14)}...
+                            </option>
+                          ))
+                        )}
+                      </select>
+
+                    </div>
+                  )}
+                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
+                    <FaKey style={{ marginRight:'4px' }}/>Private Key (hex)
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="0x... atau hex tanpa prefix"
+                    value={axmPrivKey}
+                    onChange={e => { setAxmPrivKey(e.target.value); setAxmWalletSel(''); }}
+                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}
+                  />
+                  <button onClick={axmConnect} disabled={axmConnecting || !axmPrivKey.trim()}
+                    style={{ width:'100%', padding:'12px', background:axmConnecting?'#2a1a1a':AXIOME_NETWORK.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:!axmPrivKey.trim()?0.5:1 }}>
+                    {axmConnecting
+                      ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Connecting...</>
+                      : <><FaPlug/> Connect</>}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+
+                  {/* ── Balance / Receive card ── */}
+                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${AXIOME_NETWORK.color}`, padding:'20px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'16px' }}>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px' }}>Saldo</div>
+                        <div style={{ fontSize:'22px', fontWeight:'bold', fontFamily:'monospace' }}>
+                          {axmLoadingBal ? <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> : axmBalance}
+                        </div>
+                      </div>
+                      <button onClick={() => axmRefreshBalance()} disabled={axmLoadingBal}
+                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
+                        <FaSync size={11} style={{ animation:axmLoadingBal?'spin 1s linear infinite':undefined }}/> Refresh
+                      </button>
+                    </div>
+                    <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #1a1a1a' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                        <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'8px 10px' }}>
+                          {axmAddress}
+                        </code>
+                        <button onClick={() => copyText(axmAddress, 'axm_recv')} style={{ background:'none', border:'1px solid #333', color:copiedKey==='axm_recv'?'#4caf50':'#888', cursor:'pointer', padding:'8px 10px' }}>
+                          {copiedKey==='axm_recv' ? <FaCheckCircle size={12}/> : <FaCopy size={12}/>}
+                        </button>
+                        <button onClick={() => setQrAddress(axmAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
+                          <FaQrcode size={12}/>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
+                    <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaPaperPlane style={{ marginRight:'6px' }}/>Kirim AXM</h3>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
+                      <input placeholder="axm1..." value={axmSendTo} onChange={e => setAxmSendTo(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Jumlah (AXM)</label>
+                      <input type="number" placeholder="0.0" value={axmSendAmt} onChange={e => setAxmSendAmt(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'16px' }}/>
+
+                      {(axmFeeEstimating || axmFeeEstimate || axmFeeEstimateError) && (
+                        <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px', marginBottom:'16px' }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:'6px', color:'#666', marginBottom: (axmFeeEstimate || axmFeeEstimateError) ? '8px' : 0, textTransform:'uppercase', letterSpacing:'0.5px', fontSize:'10px' }}>
+                            <FaGasPump size={10}/> Estimasi Fee
+                            {axmFeeEstimating && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
+                          </div>
+                          {axmFeeEstimate && (
+                            <div style={{ display:'flex', flexWrap:'wrap', gap:'6px 16px', fontSize:'11px' }}>
+                              <span style={{ color:'#888' }}>Gas: <span style={{ fontFamily:'monospace', color:'#ccc' }}>{axmFeeEstimate.gasUnits.toLocaleString('en-US')}</span> unit</span>
+                              <span style={{ color:'#888' }}>Harga: <span style={{ fontFamily:'monospace', color:'#ccc' }}>{axmFeeEstimate.gasPriceUaxm}</span> uaxm/unit</span>
+                              <span style={{ fontFamily:'monospace', fontWeight:'bold', color:'#4caf50' }}>
+                                ≈ {axmFeeEstimate.feeAxm.toLocaleString('en-US', { maximumFractionDigits: 6 })} AXM
+                              </span>
+                            </div>
+                          )}
+                          {axmFeeEstimateError && (
+                            <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', color:'#ffaa00', fontSize:'11px' }}>
+                              <FaExclamationTriangle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
+                              <span>{axmFeeEstimateError}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      <button onClick={axmSend} disabled={axmSending || !axmSendTo.trim() || !axmSendAmt || AXIOME_NETWORK.rpcUrls.length===0}
+                        style={{ width:'100%', padding:'12px', background:axmSending?'#2a1a1a':AXIOME_NETWORK.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!axmSendTo.trim()||!axmSendAmt||AXIOME_NETWORK.rpcUrls.length===0)?0.5:1 }}>
+                        {axmSending
+                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
+                          : <><FaPaperPlane/> Kirim AXM</>}
+                      </button>
+                      {axmStatus.type !== 'idle' && (
+                        <div style={{
+                          marginTop:'14px', padding:'12px', fontSize:'12px',
+                          background: axmStatus.type==='error' ? '#2a0d0d' : axmStatus.type==='success' ? '#0d2a0d' : '#1a1a0d',
+                          border: `1px solid ${axmStatus.type==='error' ? '#5a1e1e' : axmStatus.type==='success' ? '#1e5a1e' : '#5a5a1e'}`,
+                          color: axmStatus.type==='error' ? '#ff8888' : axmStatus.type==='success' ? '#88ff88' : '#ffff88',
+                        }}>
+                          {axmStatus.msg}
+                          {axmStatus.hash && (
+                            <a href={`${AXIOME_NETWORK.explorerUrl}/tx/${axmStatus.hash}`} target="_blank" rel="noreferrer"
+                              style={{ display:'block', marginTop:'6px', color:'#75bbe9', wordBreak:'break-all' }}>
+                              <FaLink size={9}/> {axmStatus.hash}
+                            </a>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                  <div style={{ textAlign:'center' }}>
+                    <button onClick={axmDisconnect}
+                      style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
+                      Disconnect Wallet
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {txChain === 'atom' && (
+            <>
+              <div style={{ marginBottom:'16px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
+                <select value={atomNetId} onChange={e => switchAtomNetwork(e.target.value)}
+                  style={{ flex:'1 1 260px', fontFamily:'monospace', fontSize:'13px', padding:'10px 12px', background:'#0d0d0d', border:'1px solid #1e1e1e', color:'#ccc' }}>
+                  {COSMOS_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
+                </select>
+                <a href={`${COSMOS_NETWORK.explorerUrl}`} target="_blank" rel="noreferrer"
+                  style={{ fontSize:'11px', color:'#2E3148', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
+                  <FaLink size={9}/> Explorer
+                </a>
+              </div>
+
+              {COSMOS_NETWORK.rpcUrls.length === 0 && (
+                <div style={{ background:'#1a1608', border:'1px solid #4a3f10', color:'#F1C40F', padding:'12px 14px', marginBottom:'16px', fontSize:'11px', display:'flex', gap:'8px', alignItems:'flex-start' }}>
+                  <FaExclamationTriangle size={12} style={{ marginTop:'1px', flexShrink:0 }}/>
+                  <span>Belum ada RPC/REST Cosmos Hub yang dikonfigurasi — isi <code>COSMOS_NETWORKS[].rpcUrls</code> / <code>restUrls</code> di <code>Cosmosnet.ts</code> dengan endpoint node yang kamu punya akses (kirim & cek saldo butuh ini).</span>
+                </div>
+              )}
+
+              {!atomConnected ? (
+                <div className="form-container" style={{ maxWidth:'420px', margin:'32px auto' }}>
+                  <h2 style={{ textAlign:'center', marginBottom:'18px', fontSize:'15px' }}>
+                    <FaPlug style={{ marginRight:'8px' }}/>Connect ke {COSMOS_NETWORK.name}
+                  </h2>
+                  {wallets.some(w => (w.atomAddresses||[]).length > 0) && (
+                    <div style={{ marginBottom:'14px' }}>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Cosmos tersimpan</label>
+                      <select value={atomWalletSel} onChange={e => handleAtomWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
+                        <option value="">-- Pilih address --</option>
+                        {wallets.flatMap((w, wi) =>
+                          (w.atomAddresses||[]).map(a => (
+                            <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
+                              {w.name} · #{a.index} · {a.address.slice(0,14)}...
+                            </option>
+                          ))
+                        )}
+                      </select>
+
+                    </div>
+                  )}
+                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
+                    <FaKey style={{ marginRight:'4px' }}/>Private Key (hex)
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="0x... atau hex tanpa prefix"
+                    value={atomPrivKey}
+                    onChange={e => { setAtomPrivKey(e.target.value); setAtomWalletSel(''); }}
+                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}
+                  />
+                  <button onClick={atomConnect} disabled={atomConnecting || !atomPrivKey.trim()}
+                    style={{ width:'100%', padding:'12px', background:atomConnecting?'#2a1a1a':COSMOS_NETWORK.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:!atomPrivKey.trim()?0.5:1 }}>
+                    {atomConnecting
+                      ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Connecting...</>
+                      : <><FaPlug/> Connect</>}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+
+                  {/* ── Balance / Receive card ── */}
+                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${COSMOS_NETWORK.color}`, padding:'20px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'16px' }}>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px' }}>Saldo</div>
+                        <div style={{ fontSize:'22px', fontWeight:'bold', fontFamily:'monospace' }}>
+                          {atomLoadingBal ? <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> : atomBalance}
+                        </div>
+                      </div>
+                      <button onClick={() => atomRefreshBalance()} disabled={atomLoadingBal}
+                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
+                        <FaSync size={11} style={{ animation:atomLoadingBal?'spin 1s linear infinite':undefined }}/> Refresh
+                      </button>
+                    </div>
+                    <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #1a1a1a' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                        <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'8px 10px' }}>
+                          {atomAddress}
+                        </code>
+                        <button onClick={() => copyText(atomAddress, 'atom_recv')} style={{ background:'none', border:'1px solid #333', color:copiedKey==='atom_recv'?'#4caf50':'#888', cursor:'pointer', padding:'8px 10px' }}>
+                          {copiedKey==='atom_recv' ? <FaCheckCircle size={12}/> : <FaCopy size={12}/>}
+                        </button>
+                        <button onClick={() => setQrAddress(atomAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
+                          <FaQrcode size={12}/>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
+                    <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaPaperPlane style={{ marginRight:'6px' }}/>Kirim ATOM</h3>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
+                      <input placeholder="cosmos1..." value={atomSendTo} onChange={e => setAtomSendTo(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Jumlah (ATOM)</label>
+                      <input type="number" placeholder="0.0" value={atomSendAmt} onChange={e => setAtomSendAmt(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'16px' }}/>
+
+                      {renderAtomGasFeeBox()}
+
+                      {atomFeeEstimateError && (
+                        <div style={{ background:'#1a1608', border:'1px solid #4a3f10', padding:'10px 12px', marginBottom:'16px', display:'flex', gap:'6px', alignItems:'flex-start', color:'#ffaa00', fontSize:'11px' }}>
+                          <FaExclamationTriangle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
+                          <span>{atomFeeEstimateError}</span>
+                        </div>
+                      )}
+
+                      {atomFeeEstimate && (
+                        <div style={{ fontSize:'10px', color:'#555', marginTop:'-10px', marginBottom:'16px' }}>
+                          Estimasi gas: <span style={{ fontFamily:'monospace', color:'#888' }}>{atomFeeEstimate.gasUnits.toLocaleString('en-US')}</span> unit (dari simulate() dry-run)
+                        </div>
+                      )}
+
+                      <button onClick={atomSend} disabled={atomSending || !atomSendTo.trim() || !atomSendAmt || COSMOS_NETWORK.rpcUrls.length===0}
+                        style={{ width:'100%', padding:'12px', background:atomSending?'#2a1a1a':COSMOS_NETWORK.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!atomSendTo.trim()||!atomSendAmt||COSMOS_NETWORK.rpcUrls.length===0)?0.5:1 }}>
+                        {atomSending
+                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
+                          : <><FaPaperPlane/> Kirim ATOM</>}
+                      </button>
+                      {atomStatus.type !== 'idle' && (
+                        <div style={{
+                          marginTop:'14px', padding:'12px', fontSize:'12px',
+                          background: atomStatus.type==='error' ? '#2a0d0d' : atomStatus.type==='success' ? '#0d2a0d' : '#1a1a0d',
+                          border: `1px solid ${atomStatus.type==='error' ? '#5a1e1e' : atomStatus.type==='success' ? '#1e5a1e' : '#5a5a1e'}`,
+                          color: atomStatus.type==='error' ? '#ff8888' : atomStatus.type==='success' ? '#88ff88' : '#ffff88',
+                        }}>
+                          {atomStatus.msg}
+                          {atomStatus.hash && (
+                            <a href={`${COSMOS_NETWORK.explorerUrl}/tx/${atomStatus.hash}`} target="_blank" rel="noreferrer"
+                              style={{ display:'block', marginTop:'6px', color:'#2E3148', wordBreak:'break-all' }}>
+                              <FaLink size={9}/> {atomStatus.hash}
+                            </a>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                  <div style={{ textAlign:'center' }}>
+                    <button onClick={atomDisconnect}
                       style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
                       Disconnect Wallet
                     </button>
@@ -6078,6 +8658,12 @@ export const WalletGenerator: React.FC = () => {
                 border: `1px solid ${tcChain === 'sol' ? '#9945FF' : '#333'}`,
                 padding:'8px 16px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
               }}>SPL Token (Solana)</button>
+              <button onClick={() => setTcChain('tron')} style={{
+                background: tcChain === 'tron' ? '#EF0027' : 'none',
+                color: tcChain === 'tron' ? '#fff' : '#888',
+                border: `1px solid ${tcChain === 'tron' ? '#EF0027' : '#333'}`,
+                padding:'8px 16px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
+              }}>TRC-20 (Tron)</button>
             </div>
           </div>
 
@@ -6183,7 +8769,7 @@ export const WalletGenerator: React.FC = () => {
                   </label>
                   <textarea
                     value={tcCustomSolidity}
-                    onChange={e => { setTcCustomSolidity(e.target.value); setTcCompiled(null); setTcCompileError(''); setTcSecResult(null); setTcSecError(''); setTcRiskAck(false); }}
+                    onChange={e => { setTcCustomSolidity(e.target.value); setTcCompiled(null); setTcCompileError(''); }}
                     placeholder={'// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\ncontract MyToken {\n  string public name = "My Token";\n  string public symbol = "MTK";\n  ...\n}'}
                     rows={12}
                     style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px', background:'#0a0a0a', color:'#ccc', border:'1px solid #262626', padding:'10px', resize:'vertical', marginBottom:'8px' }}
@@ -6196,11 +8782,7 @@ export const WalletGenerator: React.FC = () => {
                   <div style={{ display:'flex', gap:'8px', marginBottom:'12px', flexWrap:'wrap' }}>
                     <button onClick={compileTcCustomContract} disabled={tcCompiling || !tcCustomSolidity.trim()}
                       className="btn-manage" style={{ flex:'1 1 160px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: tcCompiling ? 0.6 : 1 }}>
-                      {tcCompiling ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Compiling...</> : <><FaTerminal/> Compile</>}
-                    </button>
-                    <button onClick={runTcSecurityScan} disabled={tcSecScanning || !tcCustomSolidity.trim()}
-                      className="btn-manage" style={{ flex:'1 1 160px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: tcSecScanning ? 0.6 : 1 }}>
-                      {tcSecScanning ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Menganalisis...</> : <><FaShieldAlt/> Scan Keamanan</>}
+                      {tcCompiling ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Compiling... (percobaan pertama unduh compiler ~10-15MB dari CDN, bisa beberapa detik)</> : <><FaTerminal/> Compile</>}
                     </button>
                   </div>
 
@@ -6217,45 +8799,6 @@ export const WalletGenerator: React.FC = () => {
                     </div>
                   )}
 
-                  {tcSecError && (
-                    <div style={{ marginBottom:'12px', padding:'10px 12px', fontSize:'11px', color:'#ff6666', border:'1px solid #f4433644', borderLeft:'3px solid #f44336' }}>
-                      {tcSecError}
-                    </div>
-                  )}
-                  {tcSecResult && (
-                    <div style={{ marginBottom:'12px', padding:'12px', border:`1px solid ${AISEC_VERDICT_META[tcSecResult.verdict].color}44`, borderLeft:`3px solid ${AISEC_VERDICT_META[tcSecResult.verdict].color}` }}>
-                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'8px', flexWrap:'wrap', gap:'6px' }}>
-                        <span style={{ fontSize:'12px', fontWeight:'bold', color:AISEC_VERDICT_META[tcSecResult.verdict].color, display:'flex', alignItems:'center', gap:'6px' }}>
-                          <FaShieldAlt/> {AISEC_VERDICT_META[tcSecResult.verdict].label}
-                        </span>
-                        <span style={{ fontSize:'11px', color:'#888' }}>Skor: {tcSecResult.score}/100</span>
-                      </div>
-                      <p style={{ fontSize:'11px', color:'#aaa', margin:'0 0 8px' }}>{tcSecResult.summary}</p>
-                      {tcSecResult.findings.length > 0 && (
-                        <div style={{ display:'flex', flexDirection:'column', gap:'6px', marginBottom:'8px' }}>
-                          {tcSecResult.findings.map((f, i) => {
-                            const sevColor: Record<string,string> = { critical:'#f44336', high:'#ff9800', medium:'#F1C40F', low:'#8bc34a', info:'#555' };
-                            return (
-                              <div key={i} style={{ fontSize:'10px', padding:'6px 8px', background:'#0a0a0a', border:'1px solid #1a1a1a' }}>
-                                <span style={{ color:sevColor[f.severity]||'#888', fontWeight:'bold', textTransform:'uppercase' }}>[{f.severity}]</span>{' '}
-                                <span style={{ color:'#ccc' }}>{f.title}</span>
-                                {f.location && <span style={{ color:'#555' }}> — {f.location}</span>}
-                                <div style={{ color:'#777', marginTop:'3px' }}>{f.description}</div>
-                                {f.recommendation && <div style={{ color:'#4caf50', marginTop:'3px' }}>↳ {f.recommendation}</div>}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                      {(tcSecResult.verdict === 'HIGH_RISK' || tcSecResult.verdict === 'CRITICAL') && (
-                        <label style={{ display:'flex', alignItems:'flex-start', gap:'8px', fontSize:'11px', color:'#ff9800', cursor:'pointer', marginTop:'8px', padding:'8px', background:'#1a1206', border:'1px solid #4a3f10' }}>
-                          <input type="checkbox" checked={tcRiskAck} onChange={e => setTcRiskAck(e.target.checked)} style={{ marginTop:'2px' }}/>
-                          Saya sudah membaca temuan di atas dan tetap ingin melanjutkan deploy dengan risiko ini sepenuhnya di tanggung jawab saya.
-                        </label>
-                      )}
-                    </div>
-                  )}
-
                   {tcCompiled && (
                     <div style={{ marginBottom:'14px' }}>
                       <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
@@ -6268,9 +8811,8 @@ export const WalletGenerator: React.FC = () => {
 
                   <p style={{ fontSize:'11px', color:'#444', margin:'4px 0 14px' }}>
                     <FaInfoCircle style={{ marginRight:'4px' }}/>
-                    Wajib compile dan scan keamanan dulu sebelum tombol deploy aktif. Hasil scan dari AI bersifat
-                    bantuan (bukan audit formal) — tetap review kode sendiri sebelum deploy ke mainnet, apalagi
-                    kalau kontrak akan memegang dana orang lain.
+                    Wajib compile dulu sebelum tombol deploy aktif. Tetap review kode sendiri sebelum deploy
+                    ke mainnet, apalagi kalau kontrak akan memegang dana orang lain.
                   </p>
                 </>
                 )}
@@ -6289,7 +8831,7 @@ export const WalletGenerator: React.FC = () => {
                 )}
 
                 <button onClick={deployErc20Token}
-                  disabled={tcDeploying || (tcEvmMode === 'custom' && (!tcCompiled || !tcSecResult || (['HIGH_RISK','CRITICAL'].includes(tcSecResult?.verdict||'') && !tcRiskAck)))}
+                  disabled={tcDeploying || (tcEvmMode === 'custom' && !tcCompiled)}
                   className="btn-manage btn-import"
                   style={{ width:'100%', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity: tcDeploying ? 0.6 : 1 }}>
                   {tcDeploying ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Deploying...</> : <><FaRocket/> {tcEvmMode === 'custom' ? 'Deploy Kontrak' : 'Deploy Token'}</>}
@@ -6406,27 +8948,61 @@ export const WalletGenerator: React.FC = () => {
 
                   {tcSolAddMeta && (
                     <>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                        URI Metadata JSON <span style={{ color:'#666' }}>(wajib, maks {SPL_META_MAX.uri} karakter)</span>
-                      </label>
-                      <input placeholder="https://... atau ipfs://... (link ke file metadata.json)" value={tcSolUri}
-                        onChange={e => setTcSolUri(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px', marginBottom:'4px' }}/>
                       <p style={{ fontSize:'10px', color:'#555', margin:'0 0 12px' }}>
-                        URI harus mengarah ke file JSON standar Metaplex (berisi <code>name</code>, <code>symbol</code>,{' '}
-                        <code>image</code>, <code>description</code>). Host di Arweave/Irys, IPFS (nft.storage/Pinata), atau
-                        GitHub raw. Field gambar &amp; deskripsi di bawah ini hanya untuk pratinjau lokal — tidak otomatis
-                        diunggah, jadi pastikan isinya sama dengan file JSON yang kamu host.
+                        Isi form di bawah. Saat token dibuat, data ini dirangkai jadi JSON lalu di-upload ke{' '}
+                        <strong style={{ color:'#888' }}>IPFS lewat Pinata</strong> — link gateway https://-nya (bukan base64
+                        data URI) yang dipakai sebagai <code>uri</code> on-chain, supaya explorer/wallet (Solscan, Solana
+                        Explorer, Phantom, dst) bisa benar-benar menampilkan logo & deskripsi token ini.
                       </p>
+
+                      <div style={{ marginBottom:'12px' }}>
+                        <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
+                          Pinata JWT API Key <span style={{ color:'#444' }}>(gratis — daftar &amp; buat di app.pinata.cloud/keys)</span>
+                        </label>
+                        <input type="password" placeholder="eyJhbGciOi..." value={tcSolPinataJwt}
+                          onChange={e => setTcSolPinataJwt(e.target.value)}
+                          style={{ width:'100%', boxSizing:'border-box' }}/>
+                        <p style={{ fontSize:'10px', color:'#555', margin:'6px 0 0' }}>
+                          Disimpan lokal di browser kamu saja, dipakai buat upload gambar & JSON metadata ke IPFS.
+                        </p>
+                        <p style={{ fontSize:'10px', color:'#555', margin:'6px 0 0' }}>
+                          <strong style={{ color:'#888' }}>Cara buat key-nya:</strong> di app.pinata.cloud/keys klik{' '}
+                          <strong>New Key</strong>, lalu nyalain toggle <strong>Admin</strong> (paling gampang) — atau kalau
+                          mau lebih terbatas, cukup centang scope <strong>pinFileToIPFS</strong> dan{' '}
+                          <strong>pinJSONToIPFS</strong> di bagian Pinning. Copy yang <strong>JWT</strong>-nya (bukan
+                          API Key/Secret biasa), lalu tempel di kolom di atas.
+                        </p>
+                        <p style={{ fontSize:'10px', color:'#f4a300', margin:'6px 0 0' }}>
+                          ⚠ Kalau lupa centang scope-nya, upload akan gagal dengan error 403 "NO_SCOPES_FOUND" — key-nya
+                          valid tapi nggak punya izin nge-pin file/JSON.
+                        </p>
+                      </div>
 
                       <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
                         <div>
-                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Image URL (opsional, pratinjau)</label>
-                          <input placeholder="https://.../logo.png" value={tcSolImageUrl} onChange={e => setTcSolImageUrl(e.target.value)}
+                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Image URL (opsional)</label>
+                          <input placeholder="https://.../logo.png" value={tcSolImageUrl}
+                            onChange={e => setTcSolImageUrl(e.target.value)}
                             style={{ width:'100%', boxSizing:'border-box' }}/>
+                          <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'6px' }}>
+                            <label className="btn-manage" style={{ fontSize:'10px', padding:'4px 8px', cursor:'pointer', display:'inline-flex', alignItems:'center', gap:'6px', opacity: tcSolImageUploading ? 0.6 : 1, pointerEvents: tcSolImageUploading ? 'none' : 'auto' }}>
+                              <FaUpload size={10}/> {tcSolImageUploading ? 'Meng-upload ke IPFS...' : 'Upload dari file'}
+                              <input type="file" accept="image/*" onChange={handleTcSolImageFile} style={{ display:'none' }} disabled={tcSolImageUploading}/>
+                            </label>
+                            {tcSolImageUrl.trim() && (
+                              <button type="button" onClick={() => setTcSolImageUrl('')}
+                                style={{ fontSize:'10px', color:'#f44336', background:'none', border:'none', cursor:'pointer', padding:0 }}>
+                                Hapus
+                              </button>
+                            )}
+                          </div>
+                          <p style={{ fontSize:'10px', color:'#555', margin:'6px 0 0' }}>
+                            Isi salah satu: tempel link URL gambar yang sudah di-hosting, atau upload file dari komputer/HP
+                            (otomatis diupload ke IPFS lewat Pinata — butuh JWT API Key di atas).
+                          </p>
                         </div>
                         <div>
-                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Deskripsi (opsional, pratinjau)</label>
+                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Deskripsi (opsional)</label>
                           <input placeholder="Deskripsi singkat token" value={tcSolDescription} onChange={e => setTcSolDescription(e.target.value)}
                             style={{ width:'100%', boxSizing:'border-box' }}/>
                         </div>
@@ -6437,9 +9013,21 @@ export const WalletGenerator: React.FC = () => {
                           <img src={tcSolImageUrl.trim()} alt="preview logo token"
                             style={{ width:'36px', height:'36px', borderRadius:'50%', objectFit:'cover', border:'1px solid #262626' }}
                             onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}/>
-                          <span style={{ fontSize:'10px', color:'#555' }}>Pratinjau logo (dari Image URL di atas)</span>
+                          <span style={{ fontSize:'10px', color:'#555' }}>Pratinjau logo</span>
                         </div>
                       )}
+
+                      <div style={{ marginTop:'12px' }}>
+                        <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
+                          Preview JSON metadata (akan di-upload ke IPFS saat token dibuat)
+                        </label>
+                        <pre style={{
+                          margin:0, padding:'8px 10px', background:'#000', border:'1px solid #1e1e1e',
+                          fontSize:'11px', color:'#8bc34a', whiteSpace:'pre-wrap', wordBreak:'break-all',
+                        }}>
+                          {JSON.stringify(tcSolMetaPreview.json, null, 2)}
+                        </pre>
+                      </div>
                     </>
                   )}
                 </div>
@@ -6544,11 +9132,154 @@ export const WalletGenerator: React.FC = () => {
               )}
             </>
           )}
+
+          {tcChain === 'tron' && (
+            <div style={{ display:'flex', flexDirection:'column', gap:'16px' }}>
+              <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:'2px solid #EF0027', padding:'20px' }}>
+                <h3 style={{ fontSize:'13px', marginBottom:'16px' }}><FaCoins style={{ marginRight:'6px' }}/>Deploy Token TRC-20</h3>
+
+                <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Network</label>
+                <select value={tcTronNetId} onChange={e => setTcTronNetId(e.target.value)}
+                  style={{ width:'100%', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}>
+                  {TRON_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
+                </select>
+                {!(TRON_NETWORKS.find(n => n.id === tcTronNetId)?.isMainnet) && (
+                  <div style={{ fontSize:'10px', color:'#F1C40F', border:'1px solid #4a3f10', background:'#1a1608', padding:'6px 10px', marginBottom:'14px' }}>
+                    ⚠ Disarankan test deploy di jaringan ini dulu sebelum ke Mainnet — bytecode ERC-20 memakai opcode yang belum tentu didukung semua versi TVM.
+                  </div>
+                )}
+
+                {wallets.some(w => (w.tronAddresses||[]).length > 0) && (
+                  <>
+                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Deploy dari Wallet Tron tersimpan</label>
+                    <select value={tcTronWalletSel} onChange={e => handleTcTronWalletSel(e.target.value)}
+                      style={{ width:'100%', fontFamily:'monospace', fontSize:'12px', marginBottom:'14px' }}>
+                      <option value="">-- Pilih address --</option>
+                      {wallets.flatMap((w, wi) =>
+                        (w.tronAddresses||[]).map(a => (
+                          <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
+                            {w.name} · #{a.index} · {a.address.slice(0,14)}...
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </>
+                )}
+
+                <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
+                  <FaKey style={{ marginRight:'4px' }}/>Atau Private Key (hex) manual
+                </label>
+                <input
+                  type="password"
+                  placeholder="0x... atau hex tanpa prefix"
+                  value={tcTronPrivKey}
+                  onChange={e => { setTcTronPrivKey(e.target.value); setTcTronWalletSel(''); }}
+                  style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'18px' }}
+                />
+
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+                  <div>
+                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Nama Token</label>
+                    <input placeholder="mis. My Awesome Token" value={tcTronName} onChange={e => setTcTronName(e.target.value)}
+                      style={{ width:'100%', boxSizing:'border-box', fontSize:'13px' }}/>
+                  </div>
+                  <div>
+                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Simbol</label>
+                    <input placeholder="mis. MAT" value={tcTronSymbol} onChange={e => setTcTronSymbol(e.target.value.toUpperCase())}
+                      style={{ width:'100%', boxSizing:'border-box', fontSize:'13px', textTransform:'uppercase' }}/>
+                  </div>
+                </div>
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'18px' }}>
+                  <div>
+                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Decimals</label>
+                    <input type="number" min={0} max={18} value={tcTronDecimals} onChange={e => setTcTronDecimals(e.target.value)}
+                      style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px' }}/>
+                  </div>
+                  <div>
+                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Total Supply</label>
+                    <input type="number" min={0} value={tcTronSupply} onChange={e => setTcTronSupply(e.target.value)}
+                      style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px' }}/>
+                  </div>
+                </div>
+
+                <button onClick={deployTrc20Token} disabled={tcTronCreating || !tcTronPrivKey.trim() || !tcTronName.trim() || !tcTronSymbol.trim()}
+                  style={{ width:'100%', padding:'13px', background:tcTronCreating?'#2a1a1a':'#EF0027', color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!tcTronPrivKey.trim()||!tcTronName.trim()||!tcTronSymbol.trim())?0.5:1 }}>
+                  {tcTronCreating
+                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Deploying...</>
+                    : <><FaRocket/> Deploy Token</>}
+                </button>
+
+                {tcTronStatus.type !== 'idle' && (
+                  <div style={{
+                    marginTop:'14px', padding:'12px', fontSize:'12px', wordBreak:'break-all',
+                    background: tcTronStatus.type==='error' ? '#2a0d0d' : tcTronStatus.type==='success' ? '#0d2a0d' : '#1a1a0d',
+                    border: `1px solid ${tcTronStatus.type==='error' ? '#5a1e1e' : tcTronStatus.type==='success' ? '#1e5a1e' : '#5a5a1e'}`,
+                    color: tcTronStatus.type==='error' ? '#ff8888' : tcTronStatus.type==='success' ? '#88ff88' : '#ffff88',
+                  }}>
+                    {tcTronStatus.msg}
+                  </div>
+                )}
+              </div>
+
+              {trc20Tokens.length > 0 && (
+                <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
+                  <h3 style={{ fontSize:'12px', color:'#888', marginBottom:'14px', textTransform:'uppercase', letterSpacing:'1px' }}>
+                    Token TRC-20 yang Sudah Dibuat
+                  </h3>
+                  <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+                    {trc20Tokens.map((t, i) => {
+                      const tNet = TRON_NETWORKS.find(n => n.id === t.netId) ?? TRON_NETWORKS[0];
+                      return (
+                        <div key={t.txId + i} style={{ border:'1px solid #1a1a1a', padding:'12px 14px' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px', flexWrap:'wrap', gap:'8px' }}>
+                            <div>
+                              <strong style={{ fontSize:'13px' }}>{t.name}</strong>{' '}
+                              <span style={{ fontSize:'11px', color:'#EF0027' }}>{t.symbol}</span>
+                              <span style={{ fontSize:'10px', color:'#444', marginLeft:'8px' }}>{tNet.name} · decimals {t.decimals} · supply {t.supply}</span>
+                            </div>
+                            {t.address && (
+                              <button onClick={() => copyText(t.address, `trc20_${i}`)}
+                                style={{ background:'none', border:'1px solid #333', color:copiedKey===`trc20_${i}`?'#4caf50':'#888', cursor:'pointer', padding:'6px 10px', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
+                                {copiedKey===`trc20_${i}` ? <FaCheckCircle size={10}/> : <FaCopy size={10}/>} {t.address.slice(0,10)}...
+                              </button>
+                            )}
+                          </div>
+                          <div style={{ display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
+                            {t.address ? (
+                              <a href={`${tNet.explorerUrl}/token20/${t.address}`} target="_blank" rel="noreferrer"
+                                style={{ fontSize:'11px', color:'#EF0027', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px' }}>
+                                <FaLink size={10}/> Lihat di Tronscan
+                              </a>
+                            ) : (
+                              <a href={`${tNet.explorerUrl}/transaction/${t.txId}`} target="_blank" rel="noreferrer"
+                                style={{ fontSize:'11px', color:'#555', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px' }}>
+                                <FaLink size={10}/> Lihat TX Deploy
+                              </a>
+                            )}
+                            {t.pending && (
+                              <>
+                                <span style={{ fontSize:'10px', color:'#F1C40F' }}>⏳ Menunggu konfirmasi</span>
+                                <button onClick={() => refreshPendingTrc20(t.txId, t.netId)} disabled={tcTronRefreshing === t.txId}
+                                  style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'5px 9px', fontSize:'10px', display:'flex', alignItems:'center', gap:'5px', opacity: tcTronRefreshing === t.txId ? 0.6 : 1 }}>
+                                  {tcTronRefreshing === t.txId ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Mengecek...</> : <><FaSync size={10}/> Cek Status</>}
+                                </button>
+                              </>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
 
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 0.6; } }
       `}</style>
 
       <footer className="app-footer" style={{ marginTop: '40px' }}>
