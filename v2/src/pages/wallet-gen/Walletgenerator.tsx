@@ -5795,54 +5795,54 @@ export const WalletGenerator: React.FC = () => {
             <span style={{ fontSize:'12px', color:'#555', alignSelf:'center' }}>{wallets.length} wallet tersimpan</span>
           </div>
 
-          <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:'2px solid #4caf50', padding:'16px', marginBottom:'16px' }}>
+          <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:'2px solid #4caf50', padding:'16px', marginBottom:'16px', boxSizing:'border-box', maxWidth:'100%', overflow:'hidden' }}>
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'10px' }}>
-              <div style={{ display:'flex', alignItems:'center', gap:'8px', flex:1, flexWrap:'wrap' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:'8px', flex:'1 1 240px', minWidth:0, flexWrap:'wrap' }}>
                 <span style={{ fontSize:'11px', color:'#4caf50', textTransform:'uppercase', letterSpacing:'1px', whiteSpace:'nowrap', display:'flex', alignItems:'center', gap:'5px' }}>
                   <FaChartBar size={11}/> Cek Balance Semua Wallet
                 </span>
                 <select value={balCheckNetId} onChange={e => { setBalCheckNetId(e.target.value); setBalResults({}); }}
-                  style={{ fontSize:'12px', padding:'5px 8px', fontFamily:'monospace', minWidth:'180px' }}>
+                  style={{ fontSize:'12px', padding:'5px 8px', fontFamily:'monospace', minWidth:'140px', maxWidth:'100%', boxSizing:'border-box' }}>
                   {networks.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
                 </select>
               </div>
-              <div style={{ display:'flex', gap:'8px', flexShrink:0, flexWrap:'wrap' }}>
+              <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', width:'100%', boxSizing:'border-box' }}>
                 <button onClick={checkAllBalances} disabled={balChecking || wallets.length === 0}
-                  style={{ background: balChecking ? '#1a2a1a' : '#4caf50', color:'#000', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1 }}>
+                  style={{ background: balChecking ? '#1a2a1a' : '#4caf50', color:'#000', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
                   {balChecking
                     ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
                     : <><FaSync size={10}/> Cek Semua {networks.find(n => n.id === balCheckNetId)?.symbol || 'EVM'}</>}
                 </button>
                 <button onClick={checkAllSolBalances} disabled={balChecking || wallets.length === 0}
                   title="Cek saldo SOL semua address Solana yang tersimpan"
-                  style={{ background: balChecking ? '#1a1a2a' : '#9945FF', color:'#000', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1 }}>
+                  style={{ background: balChecking ? '#1a1a2a' : '#9945FF', color:'#000', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
                   {balChecking
                     ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
                     : <><FaSync size={10}/> Cek Semua SOL</>}
                 </button>
                 <button onClick={checkAllTronBalances} disabled={balChecking || wallets.length === 0}
                   title="Cek saldo TRX semua address Tron yang tersimpan"
-                  style={{ background: balChecking ? '#2a1a1a' : '#EF0027', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1 }}>
+                  style={{ background: balChecking ? '#2a1a1a' : '#EF0027', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
                   {balChecking
                     ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
                     : <><FaSync size={10}/> Cek Semua TRX</>}
                 </button>
                 <button onClick={checkAllAtomBalances} disabled={balChecking || wallets.length === 0}
                   title="Cek saldo ATOM semua address Cosmos Hub yang tersimpan"
-                  style={{ background: balChecking ? '#15161d' : '#2E3148', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1 }}>
+                  style={{ background: balChecking ? '#15161d' : '#2E3148', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
                   {balChecking
                     ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
                     : <><FaSync size={10}/> Cek Semua ATOM</>}
                 </button>
                 <button onClick={checkAllAxmBalances} disabled={balChecking || wallets.length === 0}
                   title="Cek saldo AXM semua address Axiome yang tersimpan"
-                  style={{ background: balChecking ? '#181229' : '#75bbe9', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1 }}>
+                  style={{ background: balChecking ? '#181229' : '#75bbe9', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
                   {balChecking
                     ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
                     : <><FaSync size={10}/> Cek Semua AXM</>}
                 </button>
                 <button onClick={exportAllCSV} disabled={csvExporting || wallets.length === 0}
-                  style={{ background:'#111', color: wallets.length === 0 ? '#333' : '#f3ba2f', border:`1px solid ${wallets.length === 0 ? '#222' : '#f3ba2f44'}`, padding:'8px 14px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px' }}>
+                  style={{ background:'#111', color: wallets.length === 0 ? '#333' : '#f3ba2f', border:`1px solid ${wallets.length === 0 ? '#222' : '#f3ba2f44'}`, padding:'8px 14px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
                   {csvExporting ? '...' : <><FaFileExport size={10}/> Export CSV</>}
                 </button>
               </div>
