@@ -7,18 +7,9 @@ import {
   FaSpinner, FaTerminal, FaTrash,
 } from 'react-icons/fa';
 
-// ═══════════════════════════════════════════════════════════════════════
-// SmartContractTools.tsx
-// Berisi semua tooling seputar smart contract yang tadinya menyatu di
-// Walletgenerator.tsx: ABI/gas config (SmartContractConfig), decoder
-// calldata, lookup event topic/4byte, dan bytecode explorer (disassembler,
-// pattern detector, AI security scan). Fitur inti wallet generator sendiri
-// tetap ada di Walletgenerator.tsx dan meng-import komponen/util dari sini.
-// ═══════════════════════════════════════════════════════════════════════
 
-// ABI + bytecode di bawah ini dikompilasi dari kontrak SimpleERC20.sol (Solidity ^0.8.24,
-// optimizer 200 runs) — ERC-20 standar dengan constructor(name, symbol, decimals, initialSupply),
-// plus mint (owner-only), burn, dan transferOwnership/renounceOwnership.
+
+
 export const ERC20_ABI = [{"inputs":[{"name":"_name","type":"string"},{"name":"_symbol","type":"string"},{"name":"_decimals","type":"uint8"},{"name":"_initialSupply","type":"uint256"}],"stateMutability":"nonpayable","type":"constructor"},{"anonymous":false,"inputs":[{"indexed":true,"name":"owner","type":"address"},{"indexed":true,"name":"spender","type":"address"},{"indexed":false,"name":"value","type":"uint256"}],"name":"Approval","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"name":"from","type":"address"},{"indexed":false,"name":"value","type":"uint256"}],"name":"Burn","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"name":"to","type":"address"},{"indexed":false,"name":"value","type":"uint256"}],"name":"Mint","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"name":"previousOwner","type":"address"},{"indexed":true,"name":"newOwner","type":"address"}],"name":"OwnershipTransferred","type":"event"},{"anonymous":false,"inputs":[{"indexed":true,"name":"from","type":"address"},{"indexed":true,"name":"to","type":"address"},{"indexed":false,"name":"value","type":"uint256"}],"name":"Transfer","type":"event"},{"inputs":[{"name":"","type":"address"},{"name":"","type":"address"}],"name":"allowance","outputs":[{"name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"name":"spender","type":"address"},{"name":"value","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"name":"","type":"address"}],"name":"balanceOf","outputs":[{"name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"name":"value","type":"uint256"}],"name":"burn","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"decimals","outputs":[{"name":"","type":"uint8"}],"stateMutability":"view","type":"function"},{"inputs":[{"name":"to","type":"address"},{"name":"value","type":"uint256"}],"name":"mint","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"name","outputs":[{"name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"owner","outputs":[{"name":"","type":"address"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"renounceOwnership","outputs":[],"stateMutability":"nonpayable","type":"function"},{"inputs":[],"name":"symbol","outputs":[{"name":"","type":"string"}],"stateMutability":"view","type":"function"},{"inputs":[],"name":"totalSupply","outputs":[{"name":"","type":"uint256"}],"stateMutability":"view","type":"function"},{"inputs":[{"name":"to","type":"address"},{"name":"value","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"name":"from","type":"address"},{"name":"to","type":"address"},{"name":"value","type":"uint256"}],"name":"transferFrom","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"},{"inputs":[{"name":"newOwner","type":"address"}],"name":"transferOwnership","outputs":[],"stateMutability":"nonpayable","type":"function"}];
 
 export const ERC20_BYTECODE = '0x608060405234801562000010575f80fd5b5060405162000fd538038062000fd58339810160408190526200003391620001b1565b5f620000408582620002c0565b5060016200004f8482620002c0565b506002805460ff841660ff199091168117909155600480546001600160a01b031916331790555f906200008490600a6200049b565b620000909083620004af565b6003819055335f818152600560205260408082208490555192935090917fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef90620000dd9085815260200190565b60405180910390a35050505050620004c9565b634e487b7160e01b5f52604160045260245ffd5b5f82601f83011262000114575f80fd5b81516001600160401b0380821115620001315762000131620000f0565b604051601f8301601f19908116603f011681019082821181831017156200015c576200015c620000f0565b816040528381526020925086602085880101111562000179575f80fd5b5f91505b838210156200019c57858201830151818301840152908201906200017d565b5f602085830101528094505050505092915050565b5f805f8060808587031215620001c5575f80fd5b84516001600160401b0380821115620001dc575f80fd5b620001ea8883890162000104565b9550602087015191508082111562000200575f80fd5b506200020f8782880162000104565b935050604085015160ff8116811462000226575f80fd5b6060959095015193969295505050565b600181811c908216806200024b57607f821691505b6020821081036200026a57634e487b7160e01b5f52602260045260245ffd5b50919050565b601f821115620002bb57805f5260205f20601f840160051c81016020851015620002975750805b601f840160051c820191505b81811015620002b8575f8155600101620002a3565b50505b505050565b81516001600160401b03811115620002dc57620002dc620000f0565b620002f481620002ed845462000236565b8462000270565b602080601f8311600181146200032a575f8415620003125750858301515b5f19600386901b1c1916600185901b17855562000384565b5f85815260208120601f198616915b828110156200035a5788860151825594840194600190910190840162000339565b50858210156200037857878501515f19600388901b60f8161c191681555b505060018460011b0185555b505050505050565b634e487b7160e01b5f52601160045260245ffd5b600181815b80851115620003e057815f1904821115620003c457620003c46200038c565b80851615620003d257918102915b93841c9390800290620003a5565b509250929050565b5f82620003f85750600162000495565b816200040657505f62000495565b81600181146200041f57600281146200042a576200044a565b600191505062000495565b60ff8411156200043e576200043e6200038c565b50506001821b62000495565b5060208310610133831016604e8410600b84101617156200046f575081810a62000495565b6200047b8383620003a0565b805f19048211156200049157620004916200038c565b0290505b92915050565b5f620004a88383620003e8565b9392505050565b80820281158282048414176200049557620004956200038c565b610afe80620004d75f395ff3fe608060405234801561000f575f80fd5b50600436106100e5575f3560e01c806370a082311161008857806395d89b411161006357806395d89b41146101ed578063a9059cbb146101f5578063dd62ed3e14610208578063f2fde38b14610232575f80fd5b806370a0823114610199578063715018a6146101b85780638da5cb5b146101c2575f80fd5b806323b872dd116100c357806323b872dd14610141578063313ce5671461015457806340c10f191461017357806342966c6814610186575f80fd5b806306fdde03146100e9578063095ea7b31461010757806318160ddd1461012a575b5f80fd5b6100f1610245565b6040516100fe91906108f1565b60405180910390f35b61011a610115366004610958565b6102d0565b60405190151581526020016100fe565b61013360035481565b6040519081526020016100fe565b61011a61014f366004610980565b61033c565b6002546101619060ff1681565b60405160ff90911681526020016100fe565b61011a610181366004610958565b610400565b61011a6101943660046109b9565b6104fa565b6101336101a73660046109d0565b60056020525f908152604090205481565b6101c06105ff565b005b6004546101d5906001600160a01b031681565b6040516001600160a01b0390911681526020016100fe565b6100f1610672565b61011a610203366004610958565b61067f565b6101336102163660046109f0565b600660209081525f928352604080842090915290825290205481565b6101c06102403660046109d0565b610694565b5f805461025190610a21565b80601f016020809104026020016040519081016040528092919081815260200182805461027d90610a21565b80156102c85780601f1061029f576101008083540402835291602001916102c8565b820191905f5260205f20905b8154815290600101906020018083116102ab57829003601f168201915b505050505081565b335f8181526006602090815260408083206001600160a01b038716808552925280832085905551919290917f8c5be1e5ebec7d5bd14f71427d1e84f3dd0314c0f7b2291e5b200ac8c7c3b9259061032a9086815260200190565b60405180910390a35060015b92915050565b6001600160a01b0383165f908152600660209081526040808320338452909152812054828110156103b45760405162461bcd60e51b815260206004820152601f60248201527f53696d706c6545524332303a20616c6c6f77616e63652065786365656465640060448201526064015b60405180910390fd5b5f1981146103ea576103c68382610a6d565b6001600160a01b0386165f9081526006602090815260408083203384529091529020555b6103f585858561077e565b506001949350505050565b6004545f906001600160a01b0316331461042c5760405162461bcd60e51b81526004016103ab90610a80565b8160035f82825461043d9190610ab5565b90915550506001600160a01b0383165f9081526005602052604081208054849290610469908490610ab5565b90915550506040518281526001600160a01b038416905f907fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef9060200160405180910390a3826001600160a01b03167f0f6798a560793a54c3bcfe86a93cde1e73087d944c0ea20544137d4121396885836040516104e991815260200190565b60405180910390a250600192915050565b335f90815260056020526040812054828110156105635760405162461bcd60e51b815260206004820152602160248201527f53696d706c6545524332303a206275726e20657863656564732062616c616e636044820152606560f81b60648201526084016103ab565b61056d8382610a6d565b335f9081526005602052604081209190915560038054859290610591908490610a6d565b90915550506040518381525f9033907fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef9060200160405180910390a360405183815233907fcc16f5dbb4873280815c1ee09dbd06736cffcc184412cf7a71a0fdb75d397ca5906020016104e9565b6004546001600160a01b031633146106295760405162461bcd60e51b81526004016103ab90610a80565b6004546040515f916001600160a01b0316907f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0908390a3600480546001600160a01b0319169055565b6001805461025190610a21565b5f61068b33848461077e565b50600192915050565b6004546001600160a01b031633146106be5760405162461bcd60e51b81526004016103ab90610a80565b6001600160a01b0381166107235760405162461bcd60e51b815260206004820152602660248201527f53696d706c6545524332303a206e6577206f776e6572206973207a65726f206160448201526564647265737360d01b60648201526084016103ab565b6004546040516001600160a01b038084169216907f8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0905f90a3600480546001600160a01b0319166001600160a01b0392909216919091179055565b6001600160a01b0382166107e25760405162461bcd60e51b815260206004820152602560248201527f53696d706c6545524332303a207472616e7366657220746f207a65726f206164604482015264647265737360d81b60648201526084016103ab565b6001600160a01b0383165f90815260056020526040902054818110156108585760405162461bcd60e51b815260206004820152602560248201527f53696d706c6545524332303a207472616e7366657220657863656564732062616044820152646c616e636560d81b60648201526084016103ab565b6108628282610a6d565b6001600160a01b038086165f908152600560205260408082209390935590851681529081208054849290610897908490610ab5565b92505081905550826001600160a01b0316846001600160a01b03167fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef846040516108e391815260200190565b60405180910390a350505050565b5f602080835283518060208501525f5b8181101561091d57858101830151858201604001528201610901565b505f604082860101526040601f19601f8301168501019250505092915050565b80356001600160a01b0381168114610953575f80fd5b919050565b5f8060408385031215610969575f80fd5b6109728361093d565b946020939093013593505050565b5f805f60608486031215610992575f80fd5b61099b8461093d565b92506109a96020850161093d565b9150604084013590509250925092565b5f602082840312156109c9575f80fd5b5035919050565b5f602082840312156109e0575f80fd5b6109e98261093d565b9392505050565b5f8060408385031215610a01575f80fd5b610a0a8361093d565b9150610a186020840161093d565b90509250929050565b600181811c90821680610a3557607f821691505b602082108103610a5357634e487b7160e01b5f52602260045260245ffd5b50919050565b634e487b7160e01b5f52601160045260245ffd5b8181038181111561033657610336610a59565b6020808252818101527f53696d706c6545524332303a2063616c6c6572206973206e6f74206f776e6572604082015260600190565b8082018082111561033657610336610a5956fea2646970667358221220b42a9ec11921dd284b4e5ad1d889951daf122c44fe5b40e487d86d789aac14f964736f6c63430008180033';
@@ -50,12 +41,13 @@ export interface CreatedSplToken {
   mintAuthority: string;
   txHash: string;
   createdAt: number;
-  // ── Metadata on-chain (Metaplex Token Metadata Program) ──
-  hasMetadata?: boolean;      // true kalau metadata account (Metaplex) berhasil dibuat
-  metadataUri?: string;       // URI ke JSON metadata (name/image/description/attributes)
-  metadataPda?: string;       // address account metadata (PDA) di on-chain
-  imageUrl?: string;          // disimpan lokal utk preview cepat (opsional, dari JSON di uri)
-  description?: string;       // disimpan lokal utk preview cepat (opsional, dari JSON di uri)
+
+  hasMetadata?: boolean;
+  metadataUri?: string;
+  metadataPda?: string;
+  imageUrl?: string;
+  description?: string;
+  standard?: 'classic' | 'token2022';
 }
 
 export interface ContractConfig {
@@ -255,7 +247,7 @@ function extractRawMessage(e: any): string {
   return '';
 }
 
-/** Extract revert reason from multiple sources */
+
 function extractReason(e: any): string {
   return (
     e?.reason ??
@@ -1279,7 +1271,7 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
       if (baseFeeGwei > 0) {
         gasPriceGwei = baseFeeGwei + 0.1;
       }
-    } catch { /* keep heuristic */ }
+    } catch {  }
 
     if (gasPriceGwei <= 0) gasPriceGwei = net.id === 'ethereum' ? 15 : 1;
 
@@ -1873,7 +1865,7 @@ export const SmartContractConfig: React.FC<SmartContractConfigProps> = ({
                     </div>
                   );
                 })()}
-                </div> {/* end: !isView else block */}
+                </div> {}
               </div>
           )}
 
@@ -2260,28 +2252,28 @@ const EVM_OPCODES: Record<string, { name: string; inputs: number; desc: string; 
 };
 
 
-// ── Contract pattern detector ──────────────────────────────────────────
+
 function detectContractPatterns(selectors: string[]): { label: string; color: string; desc: string }[] {
   const s = new Set(selectors);
   const patterns: { label: string; color: string; desc: string }[] = [];
 
-  // ERC-20
+
   if (s.has('a9059cbb') && s.has('70a08231') && s.has('095ea7b3') && s.has('18160ddd')) {
     patterns.push({ label: 'ERC-20 Token', color: '#f3ba2f', desc: 'Implementasi token fungible standar' });
     if (s.has('40c10f19') || s.has('a0712d68')) patterns.push({ label: 'Mintable', color: '#4caf50', desc: 'Ada fungsi mint — supply bisa ditambah' });
     if (s.has('42966c68') || s.has('79cc6790')) patterns.push({ label: 'Burnable', color: '#ff6600', desc: 'Ada fungsi burn — token bisa dihancurkan' });
     if (s.has('d505accf')) patterns.push({ label: 'EIP-2612 Permit', color: '#61dfff', desc: 'Mendukung gasless approve via signature' });
   }
-  // ERC-721
+
   if (s.has('6352211e') && s.has('42842e0e') && s.has('e985e9c5')) {
     patterns.push({ label: 'ERC-721 NFT', color: '#e81899', desc: 'Koleksi NFT (non-fungible token)' });
     if (s.has('2f745c59') || s.has('4f6ccce7')) patterns.push({ label: 'Enumerable', color: '#836efd', desc: 'ERC-721 Enumerable — bisa di-list semua token' });
   }
-  // ERC-1155
+
   if (s.has('00fdd58e') && s.has('2eb2c2d6') && s.has('f242432a')) {
     patterns.push({ label: 'ERC-1155 Multi-Token', color: '#00e676', desc: 'Multi-token standard (batch transfer)' });
   }
-  // Proxy patterns
+
   if (s.has('3659cfe6') || s.has('4f1ef286') || s.has('52d1902d')) {
     patterns.push({ label: 'UUPS Proxy', color: '#8c8dfc', desc: 'Upgradeable via UUPS pattern (EIP-1822)' });
   }
@@ -2291,57 +2283,57 @@ function detectContractPatterns(selectors: string[]): { label: string; color: st
   if (s.has('c4d66de8') || s.has('e1c7392a') || s.has('8129fc1c')) {
     patterns.push({ label: 'Initializable', color: '#9c27b0', desc: 'Kontrak menggunakan pola initialize() bukan constructor' });
   }
-  // Access Control
+
   if (s.has('8da5cb5b') && (s.has('f2fde38b') || s.has('715018a6'))) {
     patterns.push({ label: 'Ownable', color: '#ff6600', desc: 'OpenZeppelin Ownable — ada owner tunggal' });
   }
   if (s.has('5ac86ab7') && s.has('2f2ff15d') && s.has('d547741f')) {
     patterns.push({ label: 'AccessControl', color: '#ff6600', desc: 'Role-based access control (RBAC)' });
   }
-  // Pausable
+
   if (s.has('5c975abb') && (s.has('8456cb59') || s.has('3f4ba83a'))) {
     patterns.push({ label: 'Pausable', color: '#ffaa00', desc: 'Kontrak bisa di-pause/unpause' });
   }
-  // Staking
+
   if (s.has('a694fc3a') || (s.has('b6b55f25') && s.has('2e1a7d4d') && s.has('3d18b912'))) {
     patterns.push({ label: 'Staking/Farming', color: '#836efd', desc: 'Pool staking atau yield farming' });
   }
-  // DEX/AMM
+
   if (s.has('38ed1739') || s.has('7ff36ab5') || s.has('414bf389')) {
     patterns.push({ label: 'DEX / AMM', color: '#01a2ff', desc: 'Router swap / Automated Market Maker' });
   }
   if (s.has('e8e33700') || s.has('baa2abde')) {
     patterns.push({ label: 'Liquidity Pool', color: '#01a2ff', desc: 'Bisa add/remove liquidity' });
   }
-  // Multisig
+
   if (s.has('6a761202') && s.has('a0e67e2b') && s.has('e75235b8')) {
     patterns.push({ label: 'Gnosis Safe / Multisig', color: '#00e676', desc: 'Multi-signature wallet' });
   }
-  // Governance
+
   if (s.has('7d5e81e2') && s.has('56781388')) {
     patterns.push({ label: 'Governor / DAO', color: '#4caf50', desc: 'On-chain governance / voting' });
   }
-  // ERC-4337
+
   if (s.has('3a871cdd') || s.has('b61d27f6')) {
     patterns.push({ label: 'ERC-4337 Account Abstraction', color: '#61dfff', desc: 'Smart contract wallet / Account Abstraction' });
   }
-  // Multicall
+
   if (s.has('ac9650d8') || s.has('5ae401dc') || s.has('252dba42')) {
     patterns.push({ label: 'Multicall', color: '#888', desc: 'Batch beberapa call dalam satu transaksi' });
   }
-  // Airdrop
+
   if (s.has('4e71d92d') || s.has('48c54b9d') || s.has('5c85974f')) {
     patterns.push({ label: 'Airdrop / Claim', color: '#f3ba2f', desc: 'Kontrak distribusi / klaim token airdrop' });
   }
-  // Flashloan
+
   if (s.has('ab9c4b5d') || s.has('5cffe9de') || s.has('490e6cbc')) {
     patterns.push({ label: 'Flashloan', color: '#ff3333', desc: '⚠️ Ada mekanisme flash loan' });
   }
-  // Selfdestruct flag (from disasm — handled separately)
+
   return patterns;
 }
 
-// ── Calldata Decoder ───────────────────────────────────────────────────
+
 function decodeCalldata(hexCalldata: string): { selector: string; sig: string | null; params: { offset: number; hex: string; decoded: string }[] } | null {
   try {
     const clean = hexCalldata.replace(/^0x/i, '').replace(/\s/g, '').toLowerCase();
@@ -2353,17 +2345,17 @@ function decodeCalldata(hexCalldata: string): { selector: string; sig: string | 
     for (let i = 0; i < paramData.length; i += 64) {
       const chunk = paramData.slice(i, i + 64).padEnd(64, '0');
       let decoded = '0x' + chunk;
-      // Try address
+
       if (chunk.startsWith('000000000000000000000000')) {
         const addr = '0x' + chunk.slice(24);
         if (/^[0-9a-f]{40}$/.test(addr) && !addr.match(/^0+$/)) {
           decoded = `address: 0x${addr}`;
         }
       }
-      // Try small uint
+
       const bn = BigInt('0x' + chunk);
       if (bn < BigInt('0xffffffffffff')) decoded = `uint: ${bn.toString()}`;
-      // Try bool
+
       if (chunk === '0'.repeat(63) + '0') decoded = 'bool: false';
       if (chunk === '0'.repeat(63) + '1') decoded = 'bool: true';
       params.push({ offset: i / 2, hex: '0x' + chunk, decoded });
@@ -2372,7 +2364,7 @@ function decodeCalldata(hexCalldata: string): { selector: string; sig: string | 
   } catch { return null; }
 }
 
-// ── EVM Disassembler types & functions ────────────────────────────────
+
 interface DisasmInstruction {
   offset: number;
   hex: string;
@@ -2440,7 +2432,7 @@ function extractFunctionSelectors(hexInput: string): DetectedFunc[] {
   return found;
 }
 
-// ── ABI Generator from known selectors ────────────────────────────────
+
 interface AbiEntry {
   type: string;
   name: string;
@@ -2449,8 +2441,7 @@ interface AbiEntry {
   stateMutability: string;
 }
 
-/** Parse a Solidity function signature string into an ABI entry.
- *  e.g. "transfer(address,uint256)" → full ABI object */
+
 function parseSigToAbi(sig: string): AbiEntry | null {
   const m = sig.match(/^(\w+)\(([^)]*)\)$/);
   if (!m) return null;
@@ -2525,7 +2516,7 @@ function extractStrings(hexInput: string): string[] {
   return [...new Set(strings)].filter(s => s.trim().length >= 4);
 }
 
-// ── Calldata Decoder tool (standalone) ─────────────────────────────────
+
 const CalldataDecoder: React.FC = () => {
   const [cdInput, setCdInput] = useState('');
   const [cdResult, setCdResult] = useState<ReturnType<typeof decodeCalldata> | null>(null);
@@ -2613,7 +2604,7 @@ const CalldataDecoder: React.FC = () => {
   );
 };
 
-// ── Event Topic Lookup ──────────────────────────────────────────────────
+
 const EventTopicLookup: React.FC = () => {
   const [topicInput, setTopicInput] = useState('');
   const [topicResult, setTopicResult] = useState<typeof KNOWN_TOPICS[string] | null | 'notfound'>(null);
@@ -2670,7 +2661,7 @@ const EventTopicLookup: React.FC = () => {
         </div>
       )}
 
-      {/* Known topics table */}
+      {}
       <details style={{ marginTop:'14px' }}>
         <summary style={{ cursor:'pointer', fontSize:'11px', color:'#333', userSelect:'none', padding:'6px 0' }}>
           Lihat semua {Object.keys(KNOWN_TOPICS).length} event topic yang dikenal ▾
@@ -2708,8 +2699,7 @@ export interface AiSecResult {
   overall_explanation: string;
 }
 
-// Metadata tampilan (label ID + warna) untuk tiap verdict — dipakai di BytecodeExplorer
-// (tab AI Security) maupun di Token Creator (scan kode Solidity kustom sebelum deploy).
+
 export const AISEC_VERDICT_META: Record<AiSecResult['verdict'], { label: string; color: string }> = {
   SAFE:         { label: 'AMAN',          color: '#4caf50' },
   LOW_RISK:     { label: 'RISIKO RENDAH', color: '#8bc34a' },
@@ -2755,24 +2745,31 @@ Analisis mencakup:
 
 Berikan skor yang jujur. Jika kode benar-benar aman, katakan aman.`;
 
-// ── AI Security Scan (dipakai bareng oleh BytecodeExplorer & Token Creator) ──
-// Mengirim source code ke Claude untuk audit keamanan singkat, hasilnya JSON terstruktur
-// (verdict + findings + rekomendasi) supaya bisa ditampilkan sebagai badge/list di UI mana pun.
+
 export async function runAiCodeSecurityScan(code: string, lang: string = 'auto'): Promise<AiSecResult> {
   const trimmed = code.trim();
   if (!trimmed) throw new Error('Kode kosong — paste kode terlebih dahulu.');
 
   const userPrompt = `Analisis keamanan kode berikut${lang !== 'auto' ? ` (${lang})` : ''}:\n\n\`\`\`\n${trimmed}\n\`\`\``;
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1000,
-      system: AI_SEC_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: userPrompt }],
-    }),
-  });
+
+  let resp: Response;
+  try {
+    resp = await fetch('/api/ai-security-scan', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ system: AI_SEC_SYSTEM_PROMPT, prompt: userPrompt }),
+    });
+  } catch {
+    throw new Error(
+      'Nggak bisa hubungin backend AI Security Scan ("/api/ai-security-scan" tidak ditemukan/tidak merespons). ' +
+      'API Anthropic memang TIDAK BISA dipanggil langsung dari browser (diblokir CORS, dan API key bakal ke-expose ' +
+      'ke publik kalau dipaksakan) — endpoint backend proxy kecil perlu dibuat dulu di server kamu (lihat contoh di komentar kode fungsi ini).'
+    );
+  }
+  if (!resp.ok) {
+    const bodyText = await resp.text().catch(() => '');
+    throw new Error(`Backend AI Security Scan gagal (HTTP ${resp.status}).${bodyText ? ` ${bodyText.slice(0, 300)}` : ''}`);
+  }
   const data = await resp.json();
   const raw = (data.content ?? []).find((b: any) => b.type === 'text')?.text ?? '';
   const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
@@ -2783,43 +2780,208 @@ export async function runAiCodeSecurityScan(code: string, lang: string = 'auto')
   }
 }
 
-// ── Kompilasi Solidity kustom (client-side, via package "solc") ──
-// Dipakai Token Creator saat user memilih mode "Kode Solidity Kustom" untuk EVM.
-// Catatan: butuh dependency `solc` terpasang di project (npm install solc). Karena
-// solc-js cukup besar (bundel wasm), sebaiknya di-load lazy/dynamic import seperti di
-// bawah ini, dan idealnya dijalankan di Web Worker terpisah supaya tidak nge-freeze UI
-// saat compile kontrak yang panjang.
+
 export interface CompiledContract {
   contractName: string;
   abi: any[];
-  bytecode: string;   // hex, sudah termasuk prefix "0x"
-  warnings: string[]; // warning compiler (non-fatal), mis. "unused variable"
+  bytecode: string;
+  warnings: string[];
+}
+
+const SOLC_CDN_BASE = 'https://binaries.soliditylang.org/bin/';
+
+const SOLC_FALLBACK_FILE = 'soljson-v0.8.24+commit.e11b9ed9.js';
+
+async function resolveSolcFileName(): Promise<string> {
+  try {
+    const res = await fetch(SOLC_CDN_BASE + 'list.json');
+    if (res.ok) {
+      const list = await res.json();
+      const fname = list?.releases?.[list?.latestRelease];
+      if (typeof fname === 'string' && fname) return fname;
+    }
+  } catch {  }
+  return SOLC_FALLBACK_FILE;
+}
+
+
+const NPM_CDN_BASE = 'https://cdn.jsdelivr.net/npm/';
+
+function extractImportPaths(source: string): string[] {
+  const re = /import\s+(?:[^'"]*?from\s+)?["']([^"']+)["']/g;
+  const paths: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(source))) paths.push(m[1]);
+  return paths;
+}
+
+// Resolve import RELATIF ("./X.sol", "../Y.sol") terhadap path file yang meng-import-nya —
+// import non-relatif (nama package langsung, mis. "@openzeppelin/contracts/...") dibalikin
+// apa adanya karena sudah berupa path lengkap dari root package.
+function resolveImportPath(fromPath: string, importPath: string): string {
+  if (!importPath.startsWith('.')) return importPath;
+  const baseParts = fromPath.split('/').slice(0, -1);
+  for (const part of importPath.split('/')) {
+    if (part === '.' || part === '') continue;
+    else if (part === '..') baseParts.pop();
+    else baseParts.push(part);
+  }
+  return baseParts.join('/');
+}
+
+async function fetchImportSource(path: string): Promise<string> {
+  const url = NPM_CDN_BASE + path;
+  const res = await fetch(url).catch(() => null);
+  if (!res || !res.ok) {
+    throw new Error(`Gagal fetch dependency "${path}" dari CDN (${url}) — pastikan nama package & path-nya benar (case-sensitive), atau cek koneksi internet.`);
+  }
+  return res.text();
+}
+
+// BFS ambil semua import (termasuk yang nested) sampai nggak ada yang belum ke-fetch.
+// Balikin map { path: content } yang siap digabung ke `sources` Standard JSON.
+async function resolveAllImports(entrySource: string): Promise<Record<string, string>> {
+  const sources: Record<string, string> = {};
+  const seen = new Set<string>();
+  const queue: string[] = extractImportPaths(entrySource).map(p => p.startsWith('.') ? p.replace(/^\.\//, '') : p);
+  queue.forEach(p => seen.add(p));
+
+  while (queue.length > 0) {
+    const path = queue.shift()!;
+    if (sources[path]) continue;
+    const content = await fetchImportSource(path);
+    sources[path] = content;
+    for (const imp of extractImportPaths(content)) {
+      const resolved = resolveImportPath(path, imp);
+      if (!seen.has(resolved)) { seen.add(resolved); queue.push(resolved); }
+    }
+  }
+  return sources;
+}
+
+// Worker dibuat dari Blob supaya tidak perlu file terpisah di project — isinya cuma
+// `importScripts(url)` + jembatan pesan compile (lihat penjelasan lengkap di atas).
+const SOLC_WORKER_SRC = `
+self.onmessage = function (e) {
+  var msg = e.data || {};
+  if (msg.type === 'load') {
+    try {
+      importScripts(msg.url);
+      self.postMessage({ type: 'loaded', reqId: msg.reqId });
+    } catch (err) {
+      self.postMessage({ type: 'error', reqId: msg.reqId, error: String((err && err.message) || err) });
+    }
+    return;
+  }
+  if (msg.type === 'compile') {
+    try {
+      var Module = self.Module;
+      if (!Module || typeof Module.cwrap !== 'function') {
+        throw new Error('Module Emscripten tidak ditemukan di dalam worker.');
+      }
+      var compileFn;
+      try {
+        var c2 = Module.cwrap('solidity_compile', 'string', ['string', 'number']);
+        compileFn = function (json) { return c2(json, 0); };
+        compileFn('{"language":"Solidity","sources":{},"settings":{"outputSelection":{}}}'); // uji cepat signature
+      } catch (sigErr) {
+        var c1 = Module.cwrap('solidity_compile', 'string', ['string']);
+        compileFn = function (json) { return c1(json); };
+      }
+      var out = compileFn(msg.input);
+      self.postMessage({ type: 'result', reqId: msg.reqId, output: out });
+    } catch (err) {
+      self.postMessage({ type: 'error', reqId: msg.reqId, error: String((err && err.message) || err) });
+    }
+  }
+};
+`;
+
+let solcWorker: Worker | null = null;
+let solcWorkerReadyPromise: Promise<void> | null = null;
+let solcReqCounter = 0;
+
+function getSolcWorker(): Worker {
+  if (solcWorker) return solcWorker;
+  const blob = new Blob([SOLC_WORKER_SRC], { type: 'application/javascript' });
+  solcWorker = new Worker(URL.createObjectURL(blob));
+  return solcWorker;
+}
+
+function solcWorkerRequest(worker: Worker, msg: Record<string, any>, timeoutMs: number): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const reqId = ++solcReqCounter;
+    const timer = setTimeout(() => { cleanup(); reject(new Error('Timeout menunggu respons worker compiler Solidity.')); }, timeoutMs);
+    const onMessage = (e: MessageEvent) => {
+      const data = e.data || {};
+      if (data.reqId !== reqId) return;
+      cleanup();
+      if (data.type === 'error') reject(new Error(data.error || 'Worker compiler gagal.'));
+      else resolve(data);
+    };
+    const onError = (e: ErrorEvent) => { cleanup(); reject(new Error(e.message || 'Worker compiler crash.')); };
+    const cleanup = () => {
+      clearTimeout(timer);
+      worker.removeEventListener('message', onMessage);
+      worker.removeEventListener('error', onError);
+    };
+    worker.addEventListener('message', onMessage);
+    worker.addEventListener('error', onError);
+    worker.postMessage({ ...msg, reqId });
+  });
+}
+
+async function ensureSolcWorkerLoaded(): Promise<Worker> {
+  const worker = getSolcWorker();
+  if (!solcWorkerReadyPromise) {
+    solcWorkerReadyPromise = (async () => {
+      const fileName = await resolveSolcFileName();
+      await solcWorkerRequest(worker, { type: 'load', url: SOLC_CDN_BASE + fileName }, 30000);
+    })();
+  }
+  try {
+    await solcWorkerReadyPromise;
+  } catch (err) {
+    // Reset state biar percobaan BERIKUTNYA nggak nyangkut di promise yang udah gagal —
+    // worker lama di-terminate & dibuat ulang dari nol pas dipanggil lagi.
+    solcWorkerReadyPromise = null;
+    try { worker.terminate(); } catch { /* ignore */ }
+    solcWorker = null;
+    throw err;
+  }
+  return worker;
 }
 
 export async function compileSolidity(source: string, preferredContractName?: string): Promise<CompiledContract> {
   const src = source.trim();
   if (!src) throw new Error('Kode Solidity kosong.');
 
-  let solc: any;
+  const worker = await ensureSolcWorkerLoaded();
+
+  // Kalau kode nggak punya `import` sama sekali, ini langsung balikin {} tanpa hit network.
+  let importedSources: Record<string, string>;
   try {
-    // Dynamic import supaya bundle solc (wasm, besar) tidak ikut ke initial load app.
-    solc = (await import(/* webpackIgnore: false */ 'solc')) as any;
-    solc = solc.default ?? solc;
-  } catch {
-    throw new Error('Package "solc" belum terpasang. Jalankan `npm install solc` di project ini untuk mengaktifkan compile Solidity kustom.');
+    importedSources = await resolveAllImports(src);
+  } catch (err: any) {
+    throw new Error(err?.message || 'Gagal resolve dependency import.');
   }
 
   const input = {
     language: 'Solidity',
-    sources: { 'Contract.sol': { content: src } },
+    sources: {
+      'Contract.sol': { content: src },
+      ...Object.fromEntries(Object.entries(importedSources).map(([p, c]) => [p, { content: c }])),
+    },
     settings: {
       optimizer: { enabled: true, runs: 200 },
       outputSelection: { '*': { '*': ['abi', 'evm.bytecode.object'] } },
     },
   };
 
-  const outputRaw = solc.compile(JSON.stringify(input));
-  const output = JSON.parse(outputRaw);
+  // Compile kontrak panjang/kompleks bisa makan beberapa detik di WASM — timeout dikasih
+  // longgar (2 menit) supaya nggak keputus di tengah jalan buat kontrak yang wajar besarnya.
+  const res = await solcWorkerRequest(worker, { type: 'compile', input: JSON.stringify(input) }, 120_000);
+  const output = JSON.parse(res.output);
 
   const errors: string[] = [];
   const warnings: string[] = [];
