@@ -1,37 +1,42 @@
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { Home } from './pages/Home';
-import { Finance } from './pages/Finance';
-import { Faucet } from './pages/Faucet';
-import { Waitlist } from './pages/Waitlist';
-import { NotFound } from './pages/NotFound';
-import { Dashboard } from './pages/Dashboard';
-import { Portfolio } from './pages/Portfolio';
-import { AIAssistant } from './pages/AIAssistant';
-import { Changelog } from './pages/Changelog';
-import { WalletGenerator } from './pages/wallet-gen/Walletgenerator';
-import { Landing } from './pages/Landing';
-import { ToS } from './tos/WalletGen_Tos.tsx';
-import './App.css';
+import { Link, useLocation } from 'react-router-dom';
 
-function App() {
+const NAV_ITEMS = [
+  { path: '/',      label: '⌂ Intro' },
+  { path: '/home',           label: 'Home' },
+  { path: '/waitlist',   label: 'Waitlist' },
+  { path: '/finance',    label: 'Keuangan' },
+  { path: '/faucet',     label: 'Faucet' },
+  { path: '/portfolio',  label: 'Portfolio' },
+  { path: '/ai',         label: '✦ AI' },
+  { path: '/dashboard',  label: 'Dashboard' },
+  { path: '/wallet-gen', label: 'WalletGen' },
+  { path: '/changelog',  label: 'Changelog' },
+];
+
+export const Navbar = () => {
+  const location = useLocation();
+
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Landing />} />
-        <Route path="/home" element={<Home />} />
-        <Route path="/finance" element={<Finance />} />
-        <Route path="/faucet" element={<Faucet />} />
-        <Route path="/waitlist" element={<Waitlist />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-        <Route path="/portfolio" element={<Portfolio />} />
-        <Route path="/wallet-gen" element={<WalletGenerator />} />
-        <Route path="/wallet-gen/tos" element={<ToS />} />
-        <Route path="/ai" element={<AIAssistant />} />
-        <Route path="/changelog" element={<Changelog />} />
-        <Route path="*" element={<NotFound />} />
-      </Routes>
-    </BrowserRouter>
+    <nav className="navigation-buttons" aria-label="Main navigation">
+      {NAV_ITEMS.map(({ path, label }) => {
+        const active = location.pathname === path;
+        const isAI = label.startsWith('✦');
+        return (
+          <Link key={path} to={path} style={{ textDecoration: 'none', flexShrink: 0 }}>
+            <button
+              className={active ? 'active-nav' : ''}
+              aria-current={active ? 'page' : undefined}
+              style={
+                isAI && !active
+                  ? { color: '#01a2ff', borderColor: 'rgba(1,162,255,0.35)' }
+                  : undefined
+              }
+            >
+              {label}
+            </button>
+          </Link>
+        );
+      })}
+    </nav>
   );
-}
-
-export default App;
+};
