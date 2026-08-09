@@ -67,4 +67,6 @@ export interface PortfolioToken {
   tanggalDiterima: string;
   status: 'holding' | 'sold' | 'vesting';
   catatan?: string;
+  refId?: string;
+  timestamp?: string;
 }
