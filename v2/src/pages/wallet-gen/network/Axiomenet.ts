@@ -17,7 +17,7 @@ import type { DetectedToken } from '../Walletgenerator';
 export const AXM_BECH32_PREFIX = 'axm';
 export const AXM_DENOM         = 'uaxm';
 export const AXM_DECIMALS      = 6;
-export const AXM_COIN_TYPE = 118;
+export const AXM_COIN_TYPE = 546;
 
 function compressedPubkeyToAxmAddress(compressedPubkey: Uint8Array): string {
   const rawAddress = new Ripemd160(new Sha256(compressedPubkey).digest()).digest();
@@ -31,7 +31,7 @@ export async function deriveAxiomeAddress(
 ): Promise<{ address: string; privateKey: string }> {
   const seedHex = ethers.utils.mnemonicToSeed(mnemonic).slice(2);
   const seed    = fromHex(seedHex);
-  const path    = stringToPath(`m/44'/${AXM_COIN_TYPE}'/0'/0/${index}`);
+  const path    = stringToPath(`m/44'/${AXM_COIN_TYPE}'/0'/0/${index}`); // bip44
 
   const { privkey } = Slip10.derivePath(Slip10Curve.Secp256k1, seed, path);
   const { pubkey }  = await Secp256k1.makeKeypair(privkey);
@@ -100,7 +100,7 @@ export const AXIOME_NETWORKS: AxmNetworkCfg[] = [
     ],
 
     restUrls: [
-      'http://api-docs.axiomeinfo.org:1317',
+      'https://axm-lcd.trickle.pro',
     ],
   },
 
