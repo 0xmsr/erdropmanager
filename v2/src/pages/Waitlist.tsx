@@ -228,7 +228,7 @@ export const Waitlist: React.FC = () => {
 
         <p style={{ fontSize: '11px', color: '#444', textAlign: 'center', marginTop: '14px' }}>
           Kelola status atau hapus di{' '}
-          <Link to="/" style={{ color: '#01a2ff' }}>Halaman Utama</Link>
+          <Link to="/home" style={{ color: '#01a2ff' }}>Halaman Utama</Link>
         </p>
       </div>
 
