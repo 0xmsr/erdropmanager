@@ -45,7 +45,7 @@ import {
   isValidTronAddress, tronToEvmAddr, tronAddressFromPrivateKey, deriveTronAddress,
   getTronBalanceSun, tronSendTrx, tronReadContract, tronCallContract, tronDeployTrc20,
   fetchTronTokenPortfolio, tronGetTxInfo, tronAddressHexToBase58,
-  getTronAccountResources, estimateTronNativeFee, estimateTronTrc20Fee,
+  getTronAccountResources, estimateTronNativeFee, estimateTronTrc20Fee, estimateTronDeployFee,
   type TronAccountResources, type TronFeeEstimate,
   tronFriendlyError,
 } from './network/Tronnet';
@@ -685,6 +685,12 @@ export const WalletGenerator: React.FC = () => {
   const [tcTronSupply,    setTcTronSupply]    = useState('1000000');
   const [tcTronCreating,  setTcTronCreating]  = useState(false);
   const [tcTronStatus,    setTcTronStatus]    = useState<{type:'idle'|'pending'|'success'|'error';msg:string}>({type:'idle',msg:''});
+
+  // ── Token Creator · Tron: estimasi Energy/Bandwidth/fee TRX sebelum deploy ──
+  const [tcTronFeeEstimate, setTcTronFeeEstimate] = useState<TronFeeEstimate | null>(null);
+  const [tcTronFeeLoading,  setTcTronFeeLoading]  = useState(false);
+  const [tcTronFeeError,    setTcTronFeeError]    = useState('');
+
   const [trc20Tokens,     setTrc20Tokens]     = useState<{netId:string;address:string;symbol:string;decimals:number;name:string;supply:string;txId:string;createdAt:number;pending?:boolean}[]>(() => {
     try { return JSON.parse(localStorage.getItem('trc20Tokens') || '[]'); } catch { return []; }
   });
@@ -883,6 +889,13 @@ export const WalletGenerator: React.FC = () => {
   const [tcCompileError,   setTcCompileError]    = useState('');
   const [tcCompiled,       setTcCompiled]        = useState<CompiledContract | null>(null);
 
+  // ── Token Creator · EVM: estimasi gas sebelum deploy ──
+  const [tcGasPriceGwei, setTcGasPriceGwei] = useState<number | null>(null);
+  const [tcGasLimitEst,  setTcGasLimitEst]  = useState('');
+  const [tcGasFeeNative, setTcGasFeeNative] = useState('');
+  const [tcGasLoading,   setTcGasLoading]   = useState(false);
+  const [tcGasError,     setTcGasError]     = useState('');
+
 
   const [tcSolStandard, setTcSolStandard] = useState<'classic'|'token2022'>('classic');
   const [tcSolNetId,     setTcSolNetId]     = useState('mainnet');
@@ -900,6 +913,13 @@ export const WalletGenerator: React.FC = () => {
   const [tcSolImageUploading, setTcSolImageUploading] = useState(false);
   const [tcSolCreating,  setTcSolCreating]  = useState(false);
   const [tcSolStatus,    setTcSolStatus]    = useState<{type:'idle'|'pending'|'success'|'error';msg:string}>({type:'idle',msg:''});
+
+  // ── Token Creator · Solana: estimasi biaya (rent + network fee) sebelum buat token ──
+  const [tcSolFeeSol,     setTcSolFeeSol]     = useState('');
+  const [tcSolFeeDetail,  setTcSolFeeDetail]  = useState<{ mintRent: number; ataRent: number; metadataRent: number; networkFee: number } | null>(null);
+  const [tcSolFeeLoading, setTcSolFeeLoading] = useState(false);
+  const [tcSolFeeError,   setTcSolFeeError]   = useState('');
+
   const [splTokens,      setSplTokens]      = useState<CreatedSplToken[]>(() => {
     try { return JSON.parse(localStorage.getItem('splCreatedTokens') || '[]'); } catch { return []; }
   });
@@ -4294,6 +4314,145 @@ export const WalletGenerator: React.FC = () => {
 
   // ── Token Creator: helper & handlers ──
   const tcSelectedNetwork = networks.find(n => n.id === tcNetworkId) ?? networks[0];
+
+  // Reset estimasi gas/fee tiap kali network/mode-nya ganti, biar nggak nampilin
+  // angka basi dari network sebelumnya sebelum user klik "Cek Estimasi" lagi.
+  useEffect(() => {
+    setTcGasPriceGwei(null); setTcGasLimitEst(''); setTcGasFeeNative(''); setTcGasError('');
+  }, [tcNetworkId, tcEvmMode]);
+
+  useEffect(() => {
+    setTcSolFeeSol(''); setTcSolFeeDetail(null); setTcSolFeeError('');
+  }, [tcSolNetId, tcSolStandard, tcSolAddMeta]);
+
+  useEffect(() => {
+    setTcTronFeeEstimate(null); setTcTronFeeError('');
+  }, [tcTronNetId]);
+
+  // -- Estimasi gas EVM sebelum deploy: ambil gas price on-chain terkini + estimateGas
+  // transaksi deploy yang sesungguhnya (template ERC-20 ATAU kontrak kustom yang sudah
+  // di-compile), lalu kalikan buat dapat perkiraan total fee dalam native coin network ini. --
+  const estimateTcEvmGas = async () => {
+    if (!tcSelectedNetwork) { setTcGasError('Pilih network dulu.'); return; }
+    if (tcEvmMode === 'custom' && !tcCompiled) { setTcGasError('Compile kode Solidity dulu sebelum cek estimasi gas.'); return; }
+    setTcGasLoading(true);
+    setTcGasError('');
+    try {
+      const provider = await getProvider(tcSelectedNetwork);
+      const feeData  = await provider.getFeeData().catch(() => null);
+      const gasPrice = feeData?.gasPrice ?? await provider.getGasPrice();
+      const gwei     = parseFloat(ethers.utils.formatUnits(gasPrice, 'gwei'));
+      const deployerAddr = (() => { try { return tcPrivKey.trim() ? new ethers.Wallet(tcPrivKey.trim()).address : undefined; } catch { return undefined; } })();
+
+      let gasLimit: ethers.BigNumber;
+      try {
+        if (tcEvmMode === 'custom' && tcCompiled) {
+          const ctorFragment = (tcCompiled.abi || []).find((f: any) => f.type === 'constructor');
+          let ctorArgs: any[] = [];
+          try {
+            const rawArgs = safeParseContractArgs(tcCustomCtorArgs || '[]');
+            ctorArgs = rawArgs.map((a: any, i: number) => parseArgWithAbiType(a, ctorFragment?.inputs?.[i] ?? { type: 'bytes' }));
+          } catch { /* biarin [] kalau args belum valid, tetap coba estimasi kasar */ }
+          const factory  = new ethers.ContractFactory(tcCompiled.abi, tcCompiled.bytecode);
+          const deployTx = factory.getDeployTransaction(...ctorArgs);
+          gasLimit = await provider.estimateGas({ ...deployTx, from: deployerAddr });
+        } else {
+          const decimals  = parseInt(tcDecimals, 10) || 18;
+          const supplyBN  = (() => { try { return ethers.BigNumber.from(tcSupply.trim() || '1000000'); } catch { return ethers.BigNumber.from('1000000'); } })();
+          const factory   = new ethers.ContractFactory(ERC20_ABI, ERC20_BYTECODE);
+          const deployTx  = factory.getDeployTransaction(tcName.trim() || 'Token', (tcSymbol.trim() || 'TKN').toUpperCase(), decimals, supplyBN);
+          gasLimit = await provider.estimateGas({ ...deployTx, from: deployerAddr });
+        }
+      } catch {
+        // Fallback kalau estimateGas ditolak node (mis. belum isi private key) — angka wajar
+        // berdasarkan pengalaman deploy template ERC-20 / kontrak kustom rata-rata.
+        gasLimit = ethers.BigNumber.from(tcEvmMode === 'custom' ? 2_500_000 : 1_300_000);
+      }
+      const gasLimitBuffered = gasLimit.mul(115).div(100); // buffer 15% biar nggak "out of gas" pas eksekusi beneran
+      const feeWei = gasPrice.mul(gasLimitBuffered);
+
+      setTcGasPriceGwei(gwei);
+      setTcGasLimitEst(gasLimitBuffered.toString());
+      setTcGasFeeNative(parseFloat(ethers.utils.formatEther(feeWei)).toFixed(6));
+    } catch (e: any) {
+      setTcGasError(e?.reason || e?.message || 'Gagal mengambil estimasi gas dari network ini.');
+    }
+    setTcGasLoading(false);
+  };
+
+  // -- Estimasi biaya SPL Token sebelum dibuat: rent-exempt mint account + associated
+  // token account + (kalau classic + metadata) rent akun Metaplex Metadata, ditambah
+  // network fee dasar Solana (5000 lamports/signature × 2 signer: payer + mint keypair). --
+  const METAPLEX_METADATA_RENT_LAMPORTS = 5_616_720; // ≈0.0056 SOL — rent-exempt akun Metadata V3 standar (perkiraan; nilai aktualnya dihitung & dipungut otomatis on-chain oleh program Metaplex saat instruksi createMetadataAccountV3 dieksekusi)
+  const TOKEN_ACCOUNT_SIZE = 165; // ukuran baku akun token SPL (spl-token AccountLayout.span)
+
+  const estimateTcSolFee = async () => {
+    setTcSolFeeLoading(true);
+    setTcSolFeeError('');
+    try {
+      const net = SOLANA_NETWORKS.find(n => n.id === tcSolNetId) ?? SOLANA_NETWORKS[0];
+      const connection = await getSolanaConnection(net);
+
+      let mintRent: number;
+      if (tcSolStandard === 'token2022') {
+        const mintLen = getMintLen([ExtensionType.MetadataPointer]);
+        const dummyMeta: TokenMetadata = {
+          updateAuthority: SystemProgram.programId,
+          mint: SystemProgram.programId,
+          name: tcSolName.trim() || 'Token Name',
+          symbol: (tcSolSymbol.trim() || 'TKN').toUpperCase(),
+          uri: tcSolAddMeta ? 'https://gateway.pinata.cloud/ipfs/xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx' : '',
+          additionalMetadata: [],
+        };
+        const metadataLen = TOKEN_METADATA_TYPE_SIZE + TOKEN_METADATA_LENGTH_SIZE + packTokenMetadata(dummyMeta).length;
+        mintRent = await connection.getMinimumBalanceForRentExemption(mintLen + metadataLen);
+      } else {
+        mintRent = await connection.getMinimumBalanceForRentExemption(MINT_SIZE);
+      }
+
+      const ataRent      = await connection.getMinimumBalanceForRentExemption(TOKEN_ACCOUNT_SIZE);
+      const metadataRent = (tcSolStandard === 'classic' && tcSolAddMeta) ? METAPLEX_METADATA_RENT_LAMPORTS : 0;
+      const networkFee   = 2 * 5000; // payer + mint keypair baru = 2 signature
+
+      const totalLamports = mintRent + ataRent + metadataRent + networkFee;
+      setTcSolFeeDetail({ mintRent, ataRent, metadataRent, networkFee });
+      setTcSolFeeSol((totalLamports / LAMPORTS_PER_SOL).toFixed(6));
+    } catch (e: any) {
+      setTcSolFeeError(e?.message || 'Gagal mengambil estimasi biaya dari network ini.');
+    }
+    setTcSolFeeLoading(false);
+  };
+
+  // -- Estimasi Energy/Bandwidth/fee TRX sebelum deploy TRC-20: pakai dry-run
+  // triggerconstantcontract + cek resource akun (energy/bandwidth gratis vs staked)
+  // lewat estimateTronDeployFee (Tronnet.ts) — fungsi yang sama yang jadi validator
+  // saldo di deployTrc20Token, di sini dipanggil lebih awal cuma buat preview. --
+  const estimateTcTronFee = async () => {
+    const net = TRON_NETWORKS.find(n => n.id === tcTronNetId) ?? TRON_NETWORKS[0];
+    let ownerAddress = '';
+    try { ownerAddress = tcTronPrivKey.trim() ? tronAddressFromPrivateKey(tcTronPrivKey.trim()) : ''; } catch { ownerAddress = ''; }
+    if (!ownerAddress) { setTcTronFeeError('Isi private key Tron deployer dulu buat estimasi Energy & fee.'); return; }
+
+    setTcTronFeeLoading(true);
+    setTcTronFeeError('');
+    try {
+      const name      = tcTronName.trim() || 'Token';
+      const symbol    = (tcTronSymbol.trim() || 'TKN').toUpperCase();
+      const decimals  = parseInt(tcTronDecimals) || 0;
+      const supplyIntStr = (tcTronSupply || '1000000').split('.')[0].replace(/[^0-9]/g, '') || '1000000';
+      const supplyRaw = ethers.BigNumber.from(supplyIntStr);
+      const parameter = ethers.utils.defaultAbiCoder.encode(
+        ['string', 'string', 'uint8', 'uint256'],
+        [name, symbol, decimals, supplyRaw],
+      ).slice(2);
+      const bytecodeHex = ERC20_BYTECODE.replace(/^0x/, '');
+      const est = await estimateTronDeployFee(net, ownerAddress, bytecodeHex, parameter);
+      setTcTronFeeEstimate(est);
+    } catch (e: any) {
+      setTcTronFeeError(tronFriendlyError(e?.message || 'Gagal mengambil estimasi Energy/fee.'));
+    }
+    setTcTronFeeLoading(false);
+  };
 
   const handleTcWalletSel = (val: string) => {
     setTcWalletSel(val);
@@ -8817,6 +8976,43 @@ export const WalletGenerator: React.FC = () => {
                 </>
                 )}
 
+                {/* ── Estimasi Gas ── */}
+                <div style={{ margin:'4px 0 16px', padding:'12px 14px', background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #F1C40F' }}>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'8px' }}>
+                    <span style={{ fontSize:'11px', color:'#888', display:'flex', alignItems:'center', gap:'6px' }}>
+                      <FaGasPump size={11}/> Estimasi Gas Deploy
+                    </span>
+                    <button onClick={estimateTcEvmGas} disabled={tcGasLoading || (tcEvmMode === 'custom' && !tcCompiled)}
+                      style={{ fontSize:'11px', color:'#F1C40F', background:'none', border:'1px solid #F1C40F55', padding:'5px 10px', cursor:'pointer', display:'flex', alignItems:'center', gap:'5px', opacity:(tcEvmMode === 'custom' && !tcCompiled) ? 0.5 : 1 }}>
+                      {tcGasLoading ? <><FaSpinner size={10} style={{ animation:'spin 1s linear infinite' }}/> Menghitung...</> : <><FaSync size={10}/> Cek Estimasi Gas</>}
+                    </button>
+                  </div>
+                  {tcGasError && (
+                    <div style={{ marginTop:'8px', fontSize:'11px', color:'#ff6666' }}>{tcGasError}</div>
+                  )}
+                  {tcGasPriceGwei !== null && !tcGasError && (
+                    <div style={{ marginTop:'10px', display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(120px,1fr))', gap:'10px' }}>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Gas Price</div>
+                        <div style={{ fontSize:'13px', color:'#ccc', fontFamily:'monospace' }}>{tcGasPriceGwei.toFixed(4)} Gwei</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Estimasi Gas Limit</div>
+                        <div style={{ fontSize:'13px', color:'#ccc', fontFamily:'monospace' }}>{parseInt(tcGasLimitEst || '0').toLocaleString('en-US')}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Estimasi Total Fee</div>
+                        <div style={{ fontSize:'14px', color:'#F1C40F', fontFamily:'monospace', fontWeight:'bold' }}>≈ {tcGasFeeNative} {tcSelectedNetwork?.symbol}</div>
+                      </div>
+                    </div>
+                  )}
+                  {tcGasPriceGwei === null && !tcGasError && (
+                    <p style={{ fontSize:'10px', color:'#444', margin:'8px 0 0' }}>
+                      Klik "Cek Estimasi Gas" untuk lihat perkiraan biaya deploy sebelum submit — gas price diambil live dari RPC {tcSelectedNetwork?.name}, gas limit dari <code>estimateGas</code> transaksi deploy sesungguhnya (sudah dengan buffer 15%).
+                    </p>
+                  )}
+                </div>
+
                 {tcDeployStatus.type !== 'idle' && (
                   <div style={{
                     marginBottom:'14px', padding:'10px 12px', fontSize:'12px',
@@ -9041,6 +9237,56 @@ export const WalletGenerator: React.FC = () => {
                     : 'Metadata on-chain dimatikan — nama/symbol hanya tersimpan lokal di daftar bawah, wallet lain mungkin menampilkan token ini sebagai "Unknown Token".'}
                 </p>
 
+                {/* ── Estimasi Gas / Biaya ── */}
+                <div style={{ margin:'4px 0 16px', padding:'12px 14px', background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #9945FF' }}>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'8px' }}>
+                    <span style={{ fontSize:'11px', color:'#888', display:'flex', alignItems:'center', gap:'6px' }}>
+                      <FaGasPump size={11}/> Estimasi Biaya Buat Token
+                    </span>
+                    <button onClick={estimateTcSolFee} disabled={tcSolFeeLoading}
+                      style={{ fontSize:'11px', color:'#9945FF', background:'none', border:'1px solid #9945FF55', padding:'5px 10px', cursor:'pointer', display:'flex', alignItems:'center', gap:'5px' }}>
+                      {tcSolFeeLoading ? <><FaSpinner size={10} style={{ animation:'spin 1s linear infinite' }}/> Menghitung...</> : <><FaSync size={10}/> Cek Estimasi Biaya</>}
+                    </button>
+                  </div>
+                  {tcSolFeeError && (
+                    <div style={{ marginTop:'8px', fontSize:'11px', color:'#ff6666' }}>{tcSolFeeError}</div>
+                  )}
+                  {tcSolFeeDetail && !tcSolFeeError && (
+                    <>
+                      <div style={{ marginTop:'10px', display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(130px,1fr))', gap:'10px' }}>
+                        <div>
+                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Rent Mint Account</div>
+                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(tcSolFeeDetail.mintRent / LAMPORTS_PER_SOL).toFixed(6)} SOL</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Rent Token Account</div>
+                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(tcSolFeeDetail.ataRent / LAMPORTS_PER_SOL).toFixed(6)} SOL</div>
+                        </div>
+                        {tcSolFeeDetail.metadataRent > 0 && (
+                          <div>
+                            <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Rent Metadata (Metaplex)</div>
+                            <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>≈ {(tcSolFeeDetail.metadataRent / LAMPORTS_PER_SOL).toFixed(6)} SOL</div>
+                          </div>
+                        )}
+                        <div>
+                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Network Fee (2 signature)</div>
+                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(tcSolFeeDetail.networkFee / LAMPORTS_PER_SOL).toFixed(6)} SOL</div>
+                        </div>
+                      </div>
+                      <div style={{ marginTop:'10px', paddingTop:'10px', borderTop:'1px solid #1e1e1e' }}>
+                        <span style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Estimasi Total</span>
+                        <div style={{ fontSize:'14px', color:'#9945FF', fontFamily:'monospace', fontWeight:'bold' }}>≈ {tcSolFeeSol} SOL</div>
+                      </div>
+                    </>
+                  )}
+                  {!tcSolFeeDetail && !tcSolFeeError && (
+                    <p style={{ fontSize:'10px', color:'#444', margin:'8px 0 0' }}>
+                      Sebagian besar biaya di Solana adalah rent (deposit yang balik lagi kalau akun ditutup), bukan "gas" yang hangus — klik "Cek Estimasi Biaya" untuk rinciannya sebelum submit.
+                      {tcSolStandard === 'classic' && tcSolAddMeta && ' Rent akun Metadata Metaplex di sini adalah perkiraan; nilai persisnya dihitung otomatis on-chain saat instruksi dieksekusi.'}
+                    </p>
+                  )}
+                </div>
+
                 {tcSolStatus.type !== 'idle' && (
                   <div style={{
                     marginBottom:'14px', padding:'10px 12px', fontSize:'12px',
@@ -9200,6 +9446,57 @@ export const WalletGenerator: React.FC = () => {
                     <input type="number" min={0} value={tcTronSupply} onChange={e => setTcTronSupply(e.target.value)}
                       style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px' }}/>
                   </div>
+                </div>
+
+                {/* ── Estimasi Energy / Bandwidth / Fee TRX ── */}
+                <div style={{ margin:'4px 0 18px', padding:'12px 14px', background:'#0a0a0a', border:'1px solid #1e1e1e', borderLeft:'3px solid #EF0027' }}>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'8px' }}>
+                    <span style={{ fontSize:'11px', color:'#888', display:'flex', alignItems:'center', gap:'6px' }}>
+                      <FaGasPump size={11}/> Estimasi Energy &amp; Fee
+                    </span>
+                    <button onClick={estimateTcTronFee} disabled={tcTronFeeLoading || !tcTronPrivKey.trim()}
+                      style={{ fontSize:'11px', color:'#EF0027', background:'none', border:'1px solid #EF002755', padding:'5px 10px', cursor:'pointer', display:'flex', alignItems:'center', gap:'5px', opacity: !tcTronPrivKey.trim() ? 0.5 : 1 }}>
+                      {tcTronFeeLoading ? <><FaSpinner size={10} style={{ animation:'spin 1s linear infinite' }}/> Menghitung...</> : <><FaSync size={10}/> Cek Estimasi</>}
+                    </button>
+                  </div>
+                  {tcTronFeeError && (
+                    <div style={{ marginTop:'8px', fontSize:'11px', color:'#ff6666' }}>{tcTronFeeError}</div>
+                  )}
+                  {tcTronFeeEstimate && !tcTronFeeError && (
+                    <>
+                      <div style={{ marginTop:'10px', display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(150px,1fr))', gap:'10px' }}>
+                        <div>
+                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Energy Dibutuhkan</div>
+                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>
+                            {tcTronFeeEstimate.energyNeeded.toLocaleString('en-US')}
+                            <span style={{ color:'#555' }}> / {tcTronFeeEstimate.energyAvailable.toLocaleString('en-US')} tersedia</span>
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Bandwidth Dibutuhkan</div>
+                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>
+                            {tcTronFeeEstimate.bandwidthNeeded.toLocaleString('en-US')}
+                            <span style={{ color:'#555' }}> / {tcTronFeeEstimate.bandwidthAvailable.toLocaleString('en-US')} tersedia</span>
+                          </div>
+                        </div>
+                      </div>
+                      <div style={{ marginTop:'10px', paddingTop:'10px', borderTop:'1px solid #1e1e1e' }}>
+                        <span style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Estimasi Fee yang Di-burn</span>
+                        <div style={{ fontSize:'14px', color: tcTronFeeEstimate.coveredByFree ? '#4caf50' : '#EF0027', fontFamily:'monospace', fontWeight:'bold' }}>
+                          {tcTronFeeEstimate.coveredByFree
+                            ? '0 TRX — tertutup penuh Energy/Bandwidth gratis'
+                            : `≈ ${sunToTrx(tcTronFeeEstimate.feeSun)} TRX`}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  {!tcTronFeeEstimate && !tcTronFeeError && (
+                    <p style={{ fontSize:'10px', color:'#444', margin:'8px 0 0' }}>
+                      {tcTronPrivKey.trim()
+                        ? 'Klik "Cek Estimasi" — kebutuhan Energy dihitung via dry-run (triggerconstantcontract) ke constructor deploy, dicek terhadap Energy/Bandwidth gratis & staked akun ini; kekurangannya yang bakal di-burn jadi TRX.'
+                        : 'Isi private key deployer dulu supaya Energy/Bandwidth yang tersedia bisa dicek.'}
+                    </p>
+                  )}
                 </div>
 
                 <button onClick={deployTrc20Token} disabled={tcTronCreating || !tcTronPrivKey.trim() || !tcTronName.trim() || !tcTronSymbol.trim()}
