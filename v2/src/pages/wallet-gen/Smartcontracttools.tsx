@@ -2439,6 +2439,8 @@ interface AbiEntry {
   inputs: { name: string; type: string; internalType?: string }[];
   outputs: { name: string; type: string; internalType?: string }[];
   stateMutability: string;
+  selector?: string;
+  notFound?: boolean;
 }
 
 
@@ -2493,10 +2495,55 @@ function buildAbiFromSelectors(funcs: DetectedFunc[]): AbiEntry[] {
   for (const f of funcs) {
     if (!f.known) continue;
     const entry = parseSigToAbi(f.known);
-    if (entry) entries.push(entry);
+    if (entry) entries.push({ ...entry, selector: f.selector });
   }
   const seen = new Set<string>();
   return entries.filter(e => { const k = e.name; if (seen.has(k)) return false; seen.add(k); return true; });
+}
+
+/**
+ * Raw ABI — mencakup SEMUA selector yang terdeteksi di bytecode (via PUSH4),
+ * baik yang dikenal (dari database lokal / hasil lookup 4byte.directory)
+ * MAUPUN yang tidak dikenal. Selector yang tidak dikenal tetap dimasukkan
+ * sebagai entry ABI berupa stub dengan nama `unknown_0x{selector}` dan
+ * ditandai `notFound: true`, sehingga daftar selector 4-byte di bytecode
+ * bisa dilihat 100% lengkap tanpa ada yang "dibuang diam-diam".
+ */
+function buildRawAbiFromSelectors(funcs: DetectedFunc[], lookupResults: Record<string, string>): AbiEntry[] {
+  const entries: AbiEntry[] = [];
+  const seenSelectors = new Set<string>();
+
+  for (const f of funcs) {
+    if (seenSelectors.has(f.selector)) continue;
+    seenSelectors.add(f.selector);
+
+    // 1) Selector dikenal dari database lokal (know.tsx)
+    if (f.known) {
+      const entry = parseSigToAbi(f.known);
+      if (entry) { entries.push({ ...entry, selector: f.selector, notFound: false }); continue; }
+    }
+
+    // 2) Selector berhasil di-lookup ke 4byte.directory (belum ada di DB lokal)
+    const looked = lookupResults[f.selector];
+    if (looked && !looked.startsWith('(')) {
+      const sig = looked.split(' | ')[0].trim();
+      const entry = parseSigToAbi(sig);
+      if (entry) { entries.push({ ...entry, selector: f.selector, notFound: false }); continue; }
+    }
+
+    // 3) Tidak ditemukan sama sekali (baik di DB lokal maupun 4byte.directory)
+    entries.push({
+      type: 'function',
+      name: `unknown_0x${f.selector}`,
+      inputs: [{ name: 'data', type: 'bytes', internalType: 'bytes' }],
+      outputs: [],
+      stateMutability: 'nonpayable',
+      selector: f.selector,
+      notFound: true,
+    });
+  }
+
+  return entries;
 }
 
 function extractStrings(hexInput: string): string[] {
@@ -3031,6 +3078,7 @@ export const BytecodeExplorer: React.FC = () => {
   const [hasSelfDestruct, setHasSelfDestruct] = useState(false);
   const [lookupLoading, setLookupLoading] = useState<string | null>(null);
   const [lookupResults, setLookupResults] = useState<Record<string, string>>({});
+  const [rawAbiMode,    setRawAbiMode]    = useState(false);
 
   // ── AI Security Analyzer state ──
   const [secCodeInput,  setSecCodeInput]  = useState('');
@@ -3159,6 +3207,15 @@ export const BytecodeExplorer: React.FC = () => {
     rebuildAbiWithLookup(funcs, newResults);
   };
 
+  // Raw ABI: mencakup SEMUA function selector yang terdeteksi di bytecode,
+  // termasuk yang belum/tidak dikenal (ditandai notFound: true).
+  const rawAbiEntries = useMemo(
+    () => buildRawAbiFromSelectors(funcs, lookupResults),
+    [funcs, lookupResults]
+  );
+  const rawAbiNotFoundCount = rawAbiEntries.filter(e => e.notFound).length;
+  const displayedAbiEntries = rawAbiMode ? rawAbiEntries : abiEntries;
+
   const filteredDisasm = filterOp
     ? disasm.filter(d => d.op.toLowerCase().includes(filterOp.toLowerCase()))
     : disasm;
@@ -3275,7 +3332,7 @@ export const BytecodeExplorer: React.FC = () => {
               <FaCode /> Fungsi ({funcs.length})
             </button>
             <button style={tabBtnStyle(tab==='abi')} onClick={() => setTab('abi')}>
-              <FaFileCode /> ABI ({abiEntries.length})
+              <FaFileCode /> ABI ({rawAbiMode ? rawAbiEntries.length : abiEntries.length})
             </button>
             <button style={tabBtnStyle(tab==='strings')} onClick={() => setTab('strings')}>
               <FaTerminal /> Strings ({strings.length})
@@ -3457,10 +3514,41 @@ export const BytecodeExplorer: React.FC = () => {
                   <FaCheckCircle size={11}/> Semua selector telah di-lookup — ABI di bawah sudah lengkap.
                 </div>
               )}
+              {/* Toggle: ABI (known only) vs Raw ABI (semua selector, termasuk not found) */}
+              <div style={{ display:'flex', gap:'6px', marginBottom:'10px', flexWrap:'wrap', alignItems:'center' }}>
+                <button
+                  onClick={() => setRawAbiMode(false)}
+                  style={{
+                    fontSize:'11px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold',
+                    background: !rawAbiMode ? '#836efd22' : 'none',
+                    border: `1px solid ${!rawAbiMode ? '#836efd' : '#333'}`,
+                    color: !rawAbiMode ? '#836efd' : '#555',
+                  }}>
+                  <FaFileCode size={10} style={{ marginRight:'5px' }} /> ABI ({abiEntries.length})
+                </button>
+                <button
+                  onClick={() => setRawAbiMode(true)}
+                  title="Mencakup semua selector 4-byte yang ditemukan di bytecode, termasuk yang tidak dikenal (ditandai NOT FOUND)"
+                  style={{
+                    fontSize:'11px', padding:'6px 12px', cursor:'pointer', fontWeight:'bold',
+                    background: rawAbiMode ? '#f3ba2f22' : 'none',
+                    border: `1px solid ${rawAbiMode ? '#f3ba2f' : '#333'}`,
+                    color: rawAbiMode ? '#f3ba2f' : '#555',
+                  }}>
+                  <FaTerminal size={10} style={{ marginRight:'5px' }} /> Raw ABI ({rawAbiEntries.length})
+                  {rawAbiNotFoundCount > 0 && (
+                    <span style={{ marginLeft:'6px', fontSize:'10px', color: rawAbiMode ? '#f3ba2f' : '#664', opacity:0.85 }}>
+                      · {rawAbiNotFoundCount} not found
+                    </span>
+                  )}
+                </button>
+              </div>
               <p style={{ fontSize:'12px', color:'#555', marginBottom:'12px' }}>
-                ABI lengkap yang direkonstruksi dari function selector yang dikenal. Selector yang belum dikenal tidak termasuk — gunakan tab Fungsi → Lookup untuk memperluas ABI.
+                {rawAbiMode
+                  ? <>Raw ABI mencakup <strong style={{ color:'#f3ba2f' }}>semua</strong> function selector (PUSH4) yang terdeteksi di bytecode — baik yang dikenal maupun yang tidak. Selector yang tidak dikenal ditandai <strong style={{ color:'#f3ba2f' }}>NOT FOUND</strong> dengan nama <code>unknown_0x&lt;selector&gt;</code> agar tidak ada satupun selector yang terlewat/dibuang diam-diam.</>
+                  : <>ABI lengkap yang direkonstruksi dari function selector yang dikenal. Selector yang belum dikenal tidak termasuk — gunakan tab <strong style={{ color:'#aaa' }}>Fungsi → Lookup</strong> untuk memperluas ABI, atau lihat tab <strong style={{ color:'#f3ba2f' }}>Raw ABI</strong> di atas untuk daftar 100% lengkap.</>}
               </p>
-              {abiEntries.length === 0 ? (
+              {displayedAbiEntries.length === 0 ? (
                 <div style={{ padding:'24px', textAlign:'center', color:'#333', border:'1px dashed #1a1a1a' }}>
                   Tidak ada ABI yang bisa direkonstruksi — tidak ada function selector yang dikenal.
                   <div style={{ marginTop:'10px', fontSize:'11px', color:'#2a2a2a' }}>
@@ -3473,72 +3561,93 @@ export const BytecodeExplorer: React.FC = () => {
                   <div style={{ display:'flex', gap:'8px', marginBottom:'14px', flexWrap:'wrap', alignItems:'center' }}>
                     <button
                       onClick={() => {
-                        navigator.clipboard.writeText(JSON.stringify(abiEntries, null, 2));
+                        navigator.clipboard.writeText(JSON.stringify(displayedAbiEntries, null, 2));
                         setAbiCopied(true);
                         setTimeout(() => setAbiCopied(false), 2500);
                       }}
                       style={{ background:'#0d2a0d', border:`1px solid ${abiCopied ? '#4caf50' : '#00e676'}`, color: abiCopied ? '#4caf50' : '#00e676', padding:'8px 16px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px', fontWeight:'bold' }}>
-                      {abiCopied ? <><FaCheck size={11}/> Copied!</> : <><FaRegCopy size={11}/> Copy ABI (JSON)</>}
+                      {abiCopied ? <><FaCheck size={11}/> Copied!</> : <><FaRegCopy size={11}/> Copy {rawAbiMode ? 'Raw ' : ''}ABI (JSON)</>}
                     </button>
                     <button
                       onClick={() => {
-                        const blob = new Blob([JSON.stringify(abiEntries, null, 2)], { type:'application/json' });
+                        const blob = new Blob([JSON.stringify(displayedAbiEntries, null, 2)], { type:'application/json' });
                         const url = URL.createObjectURL(blob);
                         const a = document.createElement('a');
-                        a.href = url; a.download = 'abi.json'; a.click();
+                        a.href = url; a.download = rawAbiMode ? 'abi.raw.json' : 'abi.json'; a.click();
                         URL.revokeObjectURL(url);
                       }}
                       style={{ background:'none', border:'1px solid #333', color:'#555', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
-                      ↓ Download abi.json
+                      ↓ Download {rawAbiMode ? 'abi.raw.json' : 'abi.json'}
                     </button>
                     <span style={{ fontSize:'11px', color:'#333' }}>
-                      {abiEntries.length} fungsi · {funcs.filter(f => !f.known && !lookupResults[f.selector]?.match(/^[a-zA-Z_]/)  ).length} selector tidak dikenal (tidak termasuk)
+                      {rawAbiMode
+                        ? <>{rawAbiEntries.length} selector total · {rawAbiNotFoundCount} tidak dikenal (NOT FOUND)</>
+                        : <>{abiEntries.length} fungsi · {funcs.filter(f => !f.known && !lookupResults[f.selector]?.match(/^[a-zA-Z_]/)  ).length} selector tidak dikenal (tidak termasuk)</>}
                     </span>
                   </div>
 
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill, minmax(340px, 1fr))', gap:'10px', marginBottom:'16px' }}>
-                    {abiEntries.map((entry, i) => {
-                      const mutColor = entry.stateMutability === 'view' ? '#2196f3'
+                    {displayedAbiEntries.map((entry, i) => {
+                      const mutColor = entry.notFound ? '#f3ba2f'
+                        : entry.stateMutability === 'view' ? '#2196f3'
                         : entry.stateMutability === 'payable' ? '#ff6600'
                         : '#4caf50';
-                      const selector = funcs.find(f => f.known?.startsWith(entry.name + '('))?.selector;
+                      const selector = entry.selector ?? funcs.find(f => f.known?.startsWith(entry.name + '('))?.selector;
                       return (
-                        <div key={i} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:`3px solid ${mutColor}`, padding:'12px 16px' }}>
+                        <div key={i} style={{ background: entry.notFound ? '#1a140322' : '#0d0d0d', border:'1px solid #1e1e1e', borderLeft:`3px solid ${mutColor}`, padding:'12px 16px' }}>
                           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'8px', flexWrap:'wrap', gap:'4px' }}>
-                            <span style={{ fontFamily:'monospace', fontSize:'13px', color:'#fff', fontWeight:'bold' }}>{entry.name}</span>
+                            <span style={{ fontFamily:'monospace', fontSize:'13px', color: entry.notFound ? '#f3ba2f' : '#fff', fontWeight:'bold', fontStyle: entry.notFound ? 'italic' : 'normal' }}>{entry.name}</span>
                             <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
                               <span style={{ fontSize:'10px', padding:'2px 7px', border:`1px solid ${mutColor}`, color:mutColor, fontWeight:'bold', letterSpacing:'0.5px' }}>
-                                {entry.stateMutability.toUpperCase()}
+                                {entry.notFound ? 'NOT FOUND' : entry.stateMutability.toUpperCase()}
                               </span>
                               {selector && (
                                 <code style={{ fontSize:'10px', color:'#836efd', fontFamily:'monospace' }}>0x{selector}</code>
                               )}
                             </div>
                           </div>
-                          {entry.inputs.length > 0 && (
-                            <div style={{ marginBottom:'6px' }}>
-                              <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'4px' }}>Inputs</div>
-                              {entry.inputs.map((inp, j) => (
-                                <div key={j} style={{ display:'flex', gap:'8px', fontSize:'12px', padding:'3px 0', borderBottom:'1px solid #0f0f0f' }}>
-                                  <span style={{ color:'#f3ba2f', fontFamily:'monospace', minWidth:'80px' }}>{inp.type}</span>
-                                  <span style={{ color:'#aaa' }}>{inp.name}</span>
-                                </div>
-                              ))}
+                          {entry.notFound ? (
+                            <div style={{ fontSize:'11px', color:'#886', fontStyle:'italic', display:'flex', flexDirection:'column', gap:'4px' }}>
+                              <span>Signature tidak ditemukan di database lokal maupun 4byte.directory.</span>
+                              <div style={{ display:'flex', gap:'10px', flexWrap:'wrap' }}>
+                                <button
+                                  onClick={() => { setTab('funcs'); lookup4Byte(entry.selector!); }}
+                                  style={{ background:'none', border:'1px solid #f3ba2f55', color:'#f3ba2f', fontSize:'10px', padding:'3px 8px', cursor:'pointer', display:'flex', alignItems:'center', gap:'4px' }}>
+                                  <FaGlobe size={9}/> Lookup 4byte.directory
+                                </button>
+                                <a href={`https://www.4byte.directory/signatures/?bytes4_signature=0x${entry.selector}`} target="_blank" rel="noreferrer" style={{ fontSize:'10px', color:'#01a2ff', alignSelf:'center' }}>
+                                  Cari manual ↗
+                                </a>
+                              </div>
                             </div>
-                          )}
-                          {entry.outputs.length > 0 && (
-                            <div>
-                              <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'4px' }}>Returns</div>
-                              {entry.outputs.map((out, j) => (
-                                <div key={j} style={{ display:'flex', gap:'8px', fontSize:'12px', padding:'3px 0' }}>
-                                  <span style={{ color:'#00e676', fontFamily:'monospace', minWidth:'80px' }}>{out.type}</span>
-                                  <span style={{ color:'#555' }}>{out.name || '—'}</span>
+                          ) : (
+                            <>
+                              {entry.inputs.length > 0 && (
+                                <div style={{ marginBottom:'6px' }}>
+                                  <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'4px' }}>Inputs</div>
+                                  {entry.inputs.map((inp, j) => (
+                                    <div key={j} style={{ display:'flex', gap:'8px', fontSize:'12px', padding:'3px 0', borderBottom:'1px solid #0f0f0f' }}>
+                                      <span style={{ color:'#f3ba2f', fontFamily:'monospace', minWidth:'80px' }}>{inp.type}</span>
+                                      <span style={{ color:'#aaa' }}>{inp.name}</span>
+                                    </div>
+                                  ))}
                                 </div>
-                              ))}
-                            </div>
-                          )}
-                          {entry.inputs.length === 0 && entry.outputs.length === 0 && (
-                            <div style={{ fontSize:'11px', color:'#333', fontStyle:'italic' }}>no params / no return value</div>
+                              )}
+                              {entry.outputs.length > 0 && (
+                                <div>
+                                  <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'4px' }}>Returns</div>
+                                  {entry.outputs.map((out, j) => (
+                                    <div key={j} style={{ display:'flex', gap:'8px', fontSize:'12px', padding:'3px 0' }}>
+                                      <span style={{ color:'#00e676', fontFamily:'monospace', minWidth:'80px' }}>{out.type}</span>
+                                      <span style={{ color:'#555' }}>{out.name || '—'}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                              {entry.inputs.length === 0 && entry.outputs.length === 0 && (
+                                <div style={{ fontSize:'11px', color:'#333', fontStyle:'italic' }}>no params / no return value</div>
+                              )}
+                            </>
                           )}
                         </div>
                       );
@@ -3547,15 +3656,15 @@ export const BytecodeExplorer: React.FC = () => {
 
                   <div style={{ background:'#070707', border:'1px solid #1a1a1a' }}>
                     <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'8px 14px', borderBottom:'1px solid #1a1a1a', background:'#0d0d0d' }}>
-                      <span style={{ fontSize:'11px', color:'#444', fontFamily:'monospace' }}>ABI JSON</span>
+                      <span style={{ fontSize:'11px', color:'#444', fontFamily:'monospace' }}>{rawAbiMode ? 'Raw ABI JSON (semua selector)' : 'ABI JSON'}</span>
                       <button
-                        onClick={() => { navigator.clipboard.writeText(JSON.stringify(abiEntries, null, 2)); setAbiCopied(true); setTimeout(() => setAbiCopied(false), 2500); }}
+                        onClick={() => { navigator.clipboard.writeText(JSON.stringify(displayedAbiEntries, null, 2)); setAbiCopied(true); setTimeout(() => setAbiCopied(false), 2500); }}
                         style={{ background:'none', border:'none', cursor:'pointer', color: abiCopied ? '#4caf50' : '#444', fontSize:'11px', display:'flex', alignItems:'center', gap:'4px', padding:'2px 6px' }}>
                         {abiCopied ? <><FaCheck size={10}/> Copied!</> : <><FaRegCopy size={10}/> Copy</>}
                       </button>
                     </div>
                     <pre style={{ margin:0, padding:'14px', overflowX:'auto', fontFamily:'monospace', fontSize:'11px', lineHeight:'1.6', color:'#aaa', whiteSpace:'pre', maxHeight:'50vh', overflowY:'auto' }}>
-                      {JSON.stringify(abiEntries, null, 2)}
+                      {JSON.stringify(displayedAbiEntries, null, 2)}
                     </pre>
                   </div>
                 </>
