@@ -20,6 +20,17 @@ interface Version {
 }
 
 const CHANGELOG: Version[] = [
+   {
+    version: '2.2.0',
+    date: '00 Agu 2026',
+    title: 'Update v2.2.0',
+    changes: [
+      { type: 'feature', text: 'Menambahkan api CoinGecko untuk kurs semua crypto curenncy' },
+      { type: 'feature', text: 'Menambahkan Raw ABI di Bytecode explorer' },
+      { type: 'improvement', text: 'Memperbaiki kesalahan Path Di Axiome chain (pada cointype)' },
+      { type: 'fix', text: 'Memperbaiki bug di page /Waitlist' },
+    ],
+  },
   {
     version: '2.1.9',
     date: '04 Agu 2026',
