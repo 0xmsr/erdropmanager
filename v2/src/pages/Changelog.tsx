@@ -22,7 +22,7 @@ interface Version {
 const CHANGELOG: Version[] = [
    {
     version: '2.2.0',
-    date: '00 Agu 2026',
+    date: '15 Agu 2026',
     title: 'Update v2.2.0',
     changes: [
       { type: 'feature', text: 'Menambahkan api CoinGecko untuk kurs semua crypto curenncy' },
