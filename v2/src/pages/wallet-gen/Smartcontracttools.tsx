@@ -2989,10 +2989,8 @@ async function ensureSolcWorkerLoaded(): Promise<Worker> {
   try {
     await solcWorkerReadyPromise;
   } catch (err) {
-    // Reset state biar percobaan BERIKUTNYA nggak nyangkut di promise yang udah gagal —
-    // worker lama di-terminate & dibuat ulang dari nol pas dipanggil lagi.
     solcWorkerReadyPromise = null;
-    try { worker.terminate(); } catch { /* ignore */ }
+    try { worker.terminate(); } catch {}
     solcWorker = null;
     throw err;
   }
