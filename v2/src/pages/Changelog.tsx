@@ -20,7 +20,16 @@ interface Version {
 }
 
 const CHANGELOG: Version[] = [
-   {
+  {
+    version: '2.2.3',
+    date: '20 Agu 2026',
+    title: 'Update UI Wallet Gen yang terlalu berat </> lalu support Gram Network (Prev Ton) ke Wallet gen',
+    changes: [
+      { type: 'improvement', text: 'Memecah WalletGen Menjadi beberapa bagian ' },
+      { type: 'feature', text: 'Mulai 20 Agustus 2026 WalletGen Support Gram Network (Prev TON Blockchain)' },
+    ],
+  }, 
+  {
     version: '2.2.0',
     date: '15 Agu 2026',
     title: 'Update v2.2.0',
