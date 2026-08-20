@@ -20,9 +20,6 @@ import {
   pack as packTokenMetadata,
   type TokenMetadata,
 } from '@solana/spl-token-metadata';
-
-const TOKEN_METADATA_TYPE_SIZE = 2;
-const TOKEN_METADATA_LENGTH_SIZE = 2;
 import {
   PROGRAM_ID as METADATA_PROGRAM_ID,
   createCreateMetadataAccountV3Instruction,
@@ -60,6 +57,13 @@ import {
   estimateAtomFee, ATOM_GAS_PRICE_TIERS, type AtomNetworkCfg, type AtomFeeEstimate, type AtomGasMode,
 } from './network/Cosmosnet';
 import {
+  deriveGramAddress, GRAM_NETWORKS, GRAM_WALLET_VERSIONS, getGramBalanceWithFallback,
+  isValidGramAddress, gramAddressFromPrivateKey, sendGram, gramFriendlyError,
+  estimateGramFee, estimateGramMaxSendable, type GramNetworkCfg, type GramFeeEstimate,
+  sendGramJetton, estimateGramJettonFee, getGramJettonMeta, fetchGramTokenPortfolio,
+  deployGramJetton, estimateGramJettonDeployFee, GRAM_JETTON_DEPLOY_VALUE,
+} from './network/Gramnet';
+import {
   FaWallet, FaPlus, FaTrash, FaCopy, FaEye, FaEyeSlash,
   FaKey, FaShieldAlt, FaLink,
   FaSearch, FaFileExport, FaFileImport, FaNetworkWired,
@@ -73,6 +77,7 @@ import {
   FaCompass,
 } from 'react-icons/fa';
 
+// Wallet-Gen Dipecah jadi beberapa file mulai 20 agustus 2026 ~0xmsr
 import {
   SmartContractConfig,
   BytecodeExplorer,
@@ -85,353 +90,28 @@ import {
 } from './Smartcontracttools';
 import type { DeployedErc20Token, CreatedSplToken, CompiledContract } from './Smartcontracttools';
 
-interface BIP39Wallet {
-  id: string;
-  name: string;
-  mnemonic: string;
-  addresses: { index: number; address: string; privateKey: string }[];
-  solAddresses: { index: number; address: string; privateKey: string }[];
-  tronAddresses: { index: number; address: string; privateKey: string }[];
-  axmAddresses: { index: number; address: string; privateKey: string }[];
-  atomAddresses: { index: number; address: string; privateKey: string }[];
-  createdAt: number;
-  tags: string[];
-  note: string;
-}
-
-export interface RPCNetwork {
-  id: string;
-  name: string;
-  chainId: number;
-  symbol: string;
-  rpcUrls: string[];
-  explorerUrl: string;
-  color: string;
-}
-
-interface AirdropTask {
-  id: string;
-  projectName: string;
-  network: string;
-  taskType: 'swap' | 'bridge' | 'mint' | 'stake' | 'send' | 'deploy' | 'vote' | 'lp' | 'other';
-  description: string;
-  txHash: string;
-  walletAddress: string;
-  status: 'todo' | 'done' | 'failed';
-  priority: 'low' | 'medium' | 'high';
-  deadline: string;
-  notes: string;
-  createdAt: number;
-  doneAt?: number;
-  contractAddress?: string;
-  contractAbi?: string;
-  contractFunc?: string;
-  contractArgs?: string;
-  ethValue?: string; 
-}
-
-interface TxQueueItem {
-  id: string;
-  taskName: string;
-  description: string;
-  to: string;
-  value: string;
-  data: string;
-  status: 'pending' | 'running' | 'success' | 'failed' | 'skipped';
-  txHash?: string;
-  error?: string;
-  gasEstimate?: string;
-  timestamp?: number;
-}
-
-interface AutoContractCall {
-  contractAddress: string;
-  abi: string;
-  functionName: string;
-  args: string;
-  value: string;
-}
-
-const AUTO_ACTION_TEMPLATES = [
-  { id:'transfer_eth',   label:'[] Transfer ETH',       abi:'', category:'transfer' },
-  { id:'erc20_approve',  label:'[] ERC-20 Approve',      abi:'[{"inputs":[{"name":"spender","type":"address"},{"name":"amount","type":"uint256"}],"name":"approve","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"}]', category:'token' },
-  { id:'erc20_transfer', label:'[] ERC-20 Transfer',     abi:'[{"inputs":[{"name":"recipient","type":"address"},{"name":"amount","type":"uint256"}],"name":"transfer","outputs":[{"name":"","type":"bool"}],"stateMutability":"nonpayable","type":"function"}]', category:'token' },
-  { id:'nft_mint',       label:'[] NFT Mint',            abi:'[{"inputs":[{"name":"quantity","type":"uint256"}],"name":"mint","outputs":[],"stateMutability":"payable","type":"function"}]', category:'nft' },
-  { id:'custom',         label:'[] Custom Calldata',     abi:'', category:'custom' },
-];
-
-const AUTO_SELECTOR_MAP: Record<string, string> = {
-  'approve(address,uint256)': '0x095ea7b3',
-  'transfer(address,uint256)': '0xa9059cbb',
-  'transferFrom(address,address,uint256)': '0x23b872dd',
-  'mint(uint256)': '0xa0712d68',
-  'claim()': '0x4e71d92d',
-  'deposit()': '0xd0e30db0',
-  'withdraw(uint256)': '0x2e1a7d4d',
-  'stake(uint256)': '0xa694fc3a',
-};
-
-function encodeAutoAbi(funcSig: string, types: string[], values: any[]): string {
-  const selector = AUTO_SELECTOR_MAP[funcSig] ?? '0x00000000';
-  const encoded = values.map((v, i) => {
-    if (types[i] === 'address') return String(v).toLowerCase().replace(/^0x/, '').padStart(64, '0');
-    return BigInt(String(v)).toString(16).padStart(64, '0');
-  }).join('');
-  return selector + encoded;
-}
-
-function parseAbiFunc(abiStr: string, funcName: string) {
-  try {
-    const abi = JSON.parse(abiStr);
-    return abi.find((f: any) => f.name === funcName && f.type === 'function');
-  } catch { return null; }
-}
-
-const TX_QUEUE_KEY  = 'web3TxQueue';
-const TX_HISTORY_KEY = 'web3TxHistory';
-
-function shortAddr(addr: string) {
-  return addr ? `${addr.slice(0,6)}...${addr.slice(-4)}` : '';
-}
-function weiToEthStr(hexWei: string, dec = 6) {
-  try {
-    const wei = BigInt(hexWei);
-    const whole = wei / BigInt('1000000000000000000');
-    const frac  = wei % BigInt('1000000000000000000');
-    return `${whole}.${frac.toString().padStart(18, '0').slice(0, dec)}`;
-  } catch { return '0'; }
-}
-function ethToHex(eth: string): string {
-  try { return '0x' + BigInt(Math.floor(parseFloat(eth) * 1e18)).toString(16); } catch { return '0x0'; }
-}
-const SEPOLIA_RPCS = [
-  'https://rpc.sepolia.org',
-  'https://1rpc.io/sepolia',
-  'https://sepolia.llamarpc.com',
-  'https://eth-sepolia.public.blastapi.io',
-];
-
-
-export const RPC_NETWORKS_STORAGE_KEY = 'rpcNetworks';
-
-export const DEFAULT_NETWORKS: RPCNetwork[] = [
-  { id:'ethereum',      name:'Ethereum Mainnet',      chainId:1,          symbol:'ETH',    rpcUrls:['https://1rpc.io/eth','https://eth.llamarpc.com'],                                  explorerUrl:'https://etherscan.io',                  color:'#627EEA' },
-  { id:'base',          name:'Base',                  chainId:8453,       symbol:'ETH',    rpcUrls:['https://1rpc.io/base','https://mainnet.base.org'],                                 explorerUrl:'https://basescan.org',                  color:'#0052FF' },
-  { id:'arbitrum',      name:'Arbitrum One',          chainId:42161,      symbol:'ETH',    rpcUrls:['https://1rpc.io/arb','https://arb1.arbitrum.io/rpc'],                              explorerUrl:'https://arbiscan.io',                   color:'#28A0F0' },
-  { id:'optimism',      name:'Optimism',              chainId:10,         symbol:'ETH',    rpcUrls:['https://1rpc.io/op','https://mainnet.optimism.io'],                                explorerUrl:'https://optimistic.etherscan.io',       color:'#FF0420' },
-  { id:'polygon',       name:'Polygon',               chainId:137,        symbol:'MATIC',  rpcUrls:['https://1rpc.io/matic','https://polygon-rpc.com'],                                 explorerUrl:'https://polygonscan.com',               color:'#8247E5' },
-  { id:'bnb',           name:'BNB Smart Chain',       chainId:56,         symbol:'BNB',    rpcUrls:['https://1rpc.io/bnb','https://bsc-dataseed1.binance.org'],                         explorerUrl:'https://bscscan.com',                   color:'#F3BA2F' },
-  { id:'avalanche',     name:'Avalanche C-Chain',     chainId:43114,      symbol:'AVAX',   rpcUrls:['https://1rpc.io/avax/c','https://api.avax.network/ext/bc/C/rpc'],                  explorerUrl:'https://snowtrace.io',                  color:'#E84142' },
-  { id:'fantom',        name:'Fantom Opera',          chainId:250,        symbol:'FTM',    rpcUrls:['https://1rpc.io/ftm','https://rpc.ftm.tools'],                                     explorerUrl:'https://ftmscan.com',                   color:'#1969FF' },
-  { id:'cronos',        name:'Cronos',                chainId:25,         symbol:'CRO',    rpcUrls:['https://1rpc.io/cro','https://evm.cronos.org'],                                    explorerUrl:'https://cronoscan.com',                 color:'#002D74' },
-  { id:'gnosis',        name:'Gnosis Chain',          chainId:100,        symbol:'xDAI',   rpcUrls:['https://1rpc.io/gnosis','https://rpc.gnosischain.com'],                            explorerUrl:'https://gnosisscan.io',                 color:'#04795B' },
-  { id:'celo',          name:'Celo',                  chainId:42220,      symbol:'CELO',   rpcUrls:['https://1rpc.io/celo','https://forno.celo.org'],                                   explorerUrl:'https://celoscan.io',                   color:'#35D07F' },
-  { id:'moonbeam',      name:'Moonbeam',              chainId:1284,       symbol:'GLMR',   rpcUrls:['https://1rpc.io/glmr','https://rpc.api.moonbeam.network'],                         explorerUrl:'https://moonbeam.moonscan.io',          color:'#53CBC9' },
-  { id:'moonriver',     name:'Moonriver',             chainId:1285,       symbol:'MOVR',   rpcUrls:['https://1rpc.io/movr','https://rpc.api.moonriver.moonbeam.network'],               explorerUrl:'https://moonriver.moonscan.io',         color:'#F2A007' },
-  { id:'aurora',        name:'Aurora (NEAR)',         chainId:1313161554, symbol:'ETH',    rpcUrls:['https://mainnet.aurora.dev'],                                                      explorerUrl:'https://aurorascan.dev',                color:'#70D44B' },
-  { id:'klaytn',        name:'Klaytn',                chainId:8217,       symbol:'KLAY',   rpcUrls:['https://1rpc.io/klay','https://public-node-api.klaytnapi.com/v1/cypress'],          explorerUrl:'https://scope.klaytn.com',              color:'#FA5F2B' },
-  { id:'zksync',        name:'zkSync Era',            chainId:324,        symbol:'ETH',    rpcUrls:['https://1rpc.io/zksync2-era','https://mainnet.era.zksync.io'],                     explorerUrl:'https://explorer.zksync.io',            color:'#8C8DFC' },
-  { id:'scroll',        name:'Scroll',                chainId:534352,     symbol:'ETH',    rpcUrls:['https://1rpc.io/scroll','https://rpc.scroll.io'],                                  explorerUrl:'https://scrollscan.com',                color:'#EEB878' },
-  { id:'linea',         name:'Linea',                 chainId:59144,      symbol:'ETH',    rpcUrls:['https://1rpc.io/linea','https://rpc.linea.build'],                                 explorerUrl:'https://lineascan.build',               color:'#61DFFF' },
-  { id:'polygonzkevm',  name:'Polygon zkEVM',         chainId:1101,       symbol:'ETH',    rpcUrls:['https://1rpc.io/polygon/zkevm','https://zkevm-rpc.com'],                           explorerUrl:'https://zkevm.polygonscan.com',         color:'#8247E5' },
-  { id:'mantle',        name:'Mantle',                chainId:5000,       symbol:'MNT',    rpcUrls:['https://1rpc.io/mantle','https://rpc.mantle.xyz'],                                 explorerUrl:'https://explorer.mantle.xyz',           color:'#C0C0C0' },
-  { id:'blast',         name:'Blast',                 chainId:81457,      symbol:'ETH',    rpcUrls:['https://1rpc.io/blast','https://rpc.blast.io'],                                    explorerUrl:'https://blastscan.io',                  color:'#FCFC03' },
-  { id:'taiko',         name:'Taiko',                 chainId:167000,     symbol:'ETH',    rpcUrls:['https://1rpc.io/taiko','https://rpc.mainnet.taiko.xyz'],                           explorerUrl:'https://taikoscan.io',                  color:'#E81899' },
-  { id:'mode',          name:'Mode Network',          chainId:34443,      symbol:'ETH',    rpcUrls:['https://mainnet.mode.network'],                                                    explorerUrl:'https://modescan.io',                   color:'#DFFE00' },
-  { id:'bob',           name:'BOB Network',           chainId:60808,      symbol:'ETH',    rpcUrls:['https://rpc.gobob.xyz'],                                                           explorerUrl:'https://explorer.gobob.xyz',            color:'#FF7600' },
-  { id:'monad',         name:'Monad Testnet',         chainId:10143,      symbol:'MON',    rpcUrls:['https://testnet-rpc.monad.xyz'],                                                   explorerUrl:'https://testnet.monadexplorer.com',     color:'#836EFD' },
-  { id:'pharos',        name:'Pharos Testnet',        chainId:688688,     symbol:'PHRS',   rpcUrls:['https://testnet.dplabs-internal.com'],                                             explorerUrl:'https://testnet.pharosscan.xyz',        color:'#1000F0' },
-  { id:'sepolia',       name:'Ethereum Sepolia',      chainId:11155111,   symbol:'ETH',    rpcUrls:SEPOLIA_RPCS,                                                                        explorerUrl:'https://sepolia.etherscan.io',          color:'#9E9E9E' },
-  { id:'base-sepolia',  name:'Base Sepolia',          chainId:84532,      symbol:'ETH',    rpcUrls:['https://sepolia.base.org','https://base-sepolia-rpc.publicnode.com'],              explorerUrl:'https://sepolia.basescan.org',          color:'#0052FF' },
-  { id:'arb-sepolia',   name:'Arbitrum Sepolia',      chainId:421614,     symbol:'ETH',    rpcUrls:['https://sepolia-rollup.arbitrum.io/rpc'],                                          explorerUrl:'https://sepolia.arbiscan.io',           color:'#28A0F0' },
-  { id:'op-sepolia',    name:'Optimism Sepolia',      chainId:11155420,   symbol:'ETH',    rpcUrls:['https://sepolia.optimism.io'],                                                     explorerUrl:'https://sepolia-optimism.etherscan.io', color:'#FF0420' },
-  { id:'holesky',       name:'Ethereum Holesky',      chainId:17000,      symbol:'ETH',    rpcUrls:['https://1rpc.io/holesky','https://rpc.holesky.ethpandaops.io'],                    explorerUrl:'https://holesky.etherscan.io',          color:'#AA33FF' },
-  { id:'bnb-testnet',   name:'BNB Testnet',           chainId:97,         symbol:'tBNB',   rpcUrls:['https://bsc-testnet-dataseed.bnbchain.org','https://bsc-testnet.publicnode.com'],  explorerUrl:'https://testnet.bscscan.com',           color:'#F3BA2F' },
-  { id:'mumbai',        name:'Polygon Mumbai',        chainId:80001,      symbol:'MATIC',  rpcUrls:['https://rpc-mumbai.maticvigil.com','https://polygon-testnet.public.blastapi.io'],  explorerUrl:'https://mumbai.polygonscan.com',        color:'#8247E5' },
-];
-
-const QLENGTH_OPTIONS = [
-  { label:'12 kata (128-bit)', bits:128  as const, words:12 },
-  { label:'15 kata (160-bit)', bits:160  as const, words:15 },
-  { label:'18 kata (192-bit)', bits:192  as const, words:18 },
-  { label:'21 kata (224-bit)', bits:224  as const, words:21 },
-  { label:'24 kata (256-bit)', bits:256  as const, words:24 },
-];
-
-const TASK_TYPES: { value: AirdropTask['taskType']; label: string; color: string }[] = [
-  { value:'swap',    label:'Swap',    color:'#01a2ff' },
-  { value:'bridge',  label:'Bridge',  color:'#f3ba2f' },
-  { value:'mint',    label:'Mint',    color:'#4caf50' },
-  { value:'stake',   label:'Stake',   color:'#9c27b0' },
-  { value:'send',    label:'Send',    color:'#ff6600' },
-  { value:'deploy',  label:'Deploy',  color:'#e81899' },
-  { value:'vote',    label:'Vote',    color:'#00e676' },
-  { value:'lp',      label:'Add LP',  color:'#61dfff' },
-  { value:'other',   label:'Other',   color:'#888' },
-];
-
-const PRIORITY_COLORS: Record<AirdropTask['priority'], string> = {
-  low: '#555', medium: '#ffaa00', high: '#ff3333',
-};
-
-const PRIORITY_LABELS: Record<AirdropTask['priority'], string> = {
-  low: 'Low', medium: 'Medium', high: 'High',
-};
-
-function generateMnemonic(bits: 128|160|192|224|256): string {
-  const entropy = ethers.utils.randomBytes(bits / 8);
-  return ethers.utils.entropyToMnemonic(entropy);
-}
-
-function deriveAddress(mnemonic: string, index: number): { address: string; privateKey: string } {
-  const hdNode = ethers.utils.HDNode.fromMnemonic(mnemonic);
-  const child  = hdNode.derivePath(`m/44'/60'/0'/0/${index}`);
-  return { address: child.address, privateKey: child.privateKey };
-}
-
-
-const PINATA_API_BASE = 'https://api.pinata.cloud';
-const PINATA_GATEWAY   = 'https://gateway.pinata.cloud/ipfs/';
-
-async function pinataUploadFile(file: File | Blob, jwt: string, filename?: string): Promise<string> {
-  const form = new FormData();
-  form.append('file', file, filename || 'image');
-  const res = await fetch(`${PINATA_API_BASE}/pinning/pinFileToIPFS`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${jwt}` },
-    body: form,
-  });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    throw new Error(`Upload file ke IPFS gagal (${res.status}). ${detail.slice(0, 150)}`);
-  }
-  const data = await res.json();
-  if (!data?.IpfsHash) throw new Error('Upload ke IPFS gagal: respons Pinata tidak berisi IpfsHash.');
-  return `${PINATA_GATEWAY}${data.IpfsHash}`;
-}
-
-async function pinataUploadJson(json: Record<string, unknown>, jwt: string, name?: string): Promise<string> {
-  const res = await fetch(`${PINATA_API_BASE}/pinning/pinJSONToIPFS`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
-    body: JSON.stringify({
-      pinataContent: json,
-      pinataMetadata: { name: name || 'metadata.json' },
-    }),
-  });
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    throw new Error(`Upload metadata JSON ke IPFS gagal (${res.status}). ${detail.slice(0, 150)}`);
-  }
-  const data = await res.json();
-  if (!data?.IpfsHash) throw new Error('Upload ke IPFS gagal: respons Pinata tidak berisi IpfsHash.');
-  return `${PINATA_GATEWAY}${data.IpfsHash}`;
-}
-
-type ChainKind = 'evm' | 'sol' | 'tron' | 'atom' | 'axm';
-
-
-const CHAIN_OPTIONS: { id: ChainKind | string; label: string; soon?: boolean }[] = [
-  { id: 'evm',  label: 'EVM' },
-  { id: 'sol',  label: 'SOL' },
-  { id: 'tron', label: 'TRON' },
-  { id: 'atom', label: 'ATOM' },
-  { id: 'axm',  label: 'AXM' },
-  { id: 'btc', label: 'BTC',  soon: true },
-  { id: 'ton', label: 'TON',  soon: true },
-  { id: 'sui', label: 'SUI',  soon: true },
-  { id: 'apt', label: 'APT',  soon: true },
-];
-
-
-const WALLET_CHAIN_OPTIONS: { id: ChainKind | string; label: string; soon?: boolean }[] = [
-  { id: 'evm',  label: 'EVM' },
-  { id: 'sol',  label: 'SOL' },
-  { id: 'tron', label: 'TRON' },
-  { id: 'atom', label: 'ATOM' },
-  { id: 'axm',  label: 'AXM' },
-  { id: 'btc', label: 'BTC',  soon: true },
-  { id: 'ton', label: 'TON',  soon: true },
-  { id: 'sui', label: 'SUI',  soon: true },
-  { id: 'apt', label: 'APT',  soon: true },
-];
-
-async function getProvider(network: RPCNetwork): Promise<ethers.providers.JsonRpcProvider> {
-  for (const rpc of network.rpcUrls) {
-    try {
-      const p = new ethers.providers.JsonRpcProvider(rpc, { chainId: network.chainId, name: network.id });
-      await Promise.race([
-        p.getBlockNumber(),
-        new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 6000)),
-      ]);
-      return p;
-    } catch { }
-  }
-  throw new Error(`Tidak dapat connect ke ${network.name}. Cek koneksi / RPC.`);
-}
-
-export interface DetectedToken {
-  chain: 'evm' | 'sol' | 'tron' | 'atom' | 'axm';
-  address: string;
-  symbol: string;
-  name: string;
-  decimals: number;
-  balance: number;
-  balanceFormatted: string;
-  usdPrice: number | null;
-  usdValue: number | null;
-  logo?: string;
-}
-
-
-export const BLOCKSCOUT_HOSTS: Record<string, string> = {
-  ethereum:      'eth.blockscout.com',
-  sepolia:       'eth-sepolia.blockscout.com',
-  holesky:       'eth-holesky.blockscout.com',
-  base:          'base.blockscout.com',
-  'base-sepolia':'base-sepolia.blockscout.com',
-  optimism:      'optimism.blockscout.com',
-  arbitrum:      'arbitrum.blockscout.com',
-  polygon:       'polygon.blockscout.com',
-  gnosis:        'gnosis.blockscout.com',
-  celo:          'celo.blockscout.com',
-  scroll:        'scroll.blockscout.com',
-  zksync:        'zksync.blockscout.com',
-};
-
-export async function fetchEvmTokenPortfolio(address: string, networkId: string): Promise<DetectedToken[]> {
-  const host = BLOCKSCOUT_HOSTS[networkId];
-  if (!host) {
-    throw new Error(
-      'Chain ini belum didukung untuk deteksi token otomatis (belum ada instance Blockscout publik). ' +
-      'Coba: Ethereum, Base, Optimism, Arbitrum, Polygon, Gnosis, Celo, Scroll, zkSync Era, atau Sepolia.'
-    );
-  }
-  const res = await fetch(`https://${host}/api/v2/addresses/${address}/tokens?type=ERC-20`);
-  if (!res.ok) throw new Error(`Gagal ambil data token dari Blockscout (HTTP ${res.status}).`);
-  const json = await res.json();
-  const items: any[] = Array.isArray(json?.items) ? json.items : [];
-  return items.map((it) => {
-    const decimals = parseInt(it?.token?.decimals ?? '18', 10) || 0;
-    const rawBal   = it?.value ?? '0';
-    let balance = 0;
-    try { balance = Number(BigInt(rawBal)) / Math.pow(10, decimals); } catch { balance = Number(rawBal) / Math.pow(10, decimals); }
-    const priceStr = it?.token?.exchange_rate;
-    const price    = priceStr !== null && priceStr !== undefined && priceStr !== '' ? parseFloat(priceStr) : null;
-    return {
-      chain: 'evm',
-      address: it?.token?.address ?? '',
-      symbol: it?.token?.symbol || '???',
-      name: it?.token?.name || 'Unknown Token',
-      decimals,
-      balance,
-      balanceFormatted: balance.toLocaleString('en-US', { maximumFractionDigits: 6 }),
-      usdPrice: price !== null && !isNaN(price) ? price : null,
-      usdValue: price !== null && !isNaN(price) ? balance * price : null,
-      logo: it?.token?.icon_url || undefined,
-    } as DetectedToken;
-  });
-}
+import type {
+  BIP39Wallet, RPCNetwork, AirdropTask, TxQueueItem, AutoContractCall, ChainKind, DetectedToken,
+  GramVersion, WalletGeneratorCtx, CreatedGramToken,
+} from './types';
+import {
+  AUTO_ACTION_TEMPLATES, AUTO_SELECTOR_MAP, TX_QUEUE_KEY, TX_HISTORY_KEY, SEPOLIA_RPCS,
+  RPC_NETWORKS_STORAGE_KEY, DEFAULT_NETWORKS, QLENGTH_OPTIONS, TASK_TYPES, PRIORITY_COLORS,
+  PRIORITY_LABELS, PINATA_API_BASE, PINATA_GATEWAY, CHAIN_OPTIONS, WALLET_CHAIN_OPTIONS,
+  BLOCKSCOUT_HOSTS, TOKEN_METADATA_TYPE_SIZE, TOKEN_METADATA_LENGTH_SIZE,
+} from './constants';
+import {
+  encodeAutoAbi, parseAbiFunc, shortAddr, weiToEthStr, ethToHex, generateMnemonic, deriveAddress,
+  pinataUploadFile, pinataUploadJson, getProvider, fetchEvmTokenPortfolio, toIpfsUri,
+} from './helpers';
+import { WalletsTab } from './WalletsTab';
+import { TransferTab } from './TransferTab';
+import { GarapTab } from './GarapTab';
+import { NetworksTab } from './NetworksTab';
+import { TokenTab } from './TokenTab';
+export * from './types';
+export * from './constants';
+export * from './helpers';
 
 export const WalletGenerator: React.FC = () => {
 
@@ -441,6 +121,9 @@ export const WalletGenerator: React.FC = () => {
 
       const axmCoinTypeFixed = localStorage.getItem('axmCoinTypeFixV5') === 'done';
       if (!axmCoinTypeFixed) localStorage.setItem('axmCoinTypeFixV5', 'done');
+
+      const gramNativeDerivFixed = localStorage.getItem('gramNativeDerivFixV1') === 'done';
+      if (!gramNativeDerivFixed) localStorage.setItem('gramNativeDerivFixV1', 'done');
 
       return saved.map(w => {
         let next = w;
@@ -464,6 +147,10 @@ export const WalletGenerator: React.FC = () => {
 
         if (!next.atomAddresses || next.atomAddresses.length === 0) {
           next = { ...next, atomAddresses: [] };
+        }
+
+        if (next.gramAddress === undefined || (!gramNativeDerivFixed && next.gramAddress)) {
+          next = { ...next, gramAddress: undefined };
         }
         return next;
       });
@@ -740,6 +427,78 @@ export const WalletGenerator: React.FC = () => {
   const [atomGasAdvanced, setAtomGasAdvanced] = useState(false);
   const [atomGasRefreshNonce, setAtomGasRefreshNonce] = useState(0);
 
+
+  const [gramNetId,       setGramNetId]       = useState('mainnet');
+  const GRAM_NETWORK = GRAM_NETWORKS.find(n => n.id === gramNetId) ?? GRAM_NETWORKS[0];
+  // Versi wallet contract TON dipakai saat generate wallet baru (lihat GRAM_WALLET_VERSIONS di network/Gramnet.ts).
+  const [gramVersion,        setGramVersion]        = useState<GramVersion>('v5r1');
+  // Versi dipakai saat connect manual via private key mentah — beda dari gramVersion
+  // karena connect bisa pakai private key dari wallet lama (V4) walau default generate sekarang W5.
+  const [gramConnectVersion, setGramConnectVersion] = useState<GramVersion>('v5r1');
+  const [gramPrivKey,    setGramPrivKey]    = useState('');
+  const [gramConnected,  setGramConnected]  = useState(false);
+  const [gramConnecting, setGramConnecting] = useState(false);
+  const [gramAddress,    setGramAddress]    = useState('');
+  const [gramBalance,    setGramBalance]    = useState('—');
+  const [gramLoadingBal, setGramLoadingBal] = useState(false);
+  const [gramSendTo,     setGramSendTo]     = useState('');
+  const [gramSendAmt,    setGramSendAmt]    = useState('');
+  const [gramSending,    setGramSending]    = useState(false);
+  const [gramWalletSel,  setGramWalletSel]  = useState('');
+  const [gramStatus,     setGramStatus]     = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
+  const [gramFeeEstimate,      setGramFeeEstimate]      = useState<GramFeeEstimate | null>(null);
+  const [gramFeeEstimating,    setGramFeeEstimating]    = useState(false);
+  const [gramFeeEstimateError, setGramFeeEstimateError] = useState<string | null>(null);
+
+
+  // ── Token Creator · Jetton (Gram/TON, TEP-74) ──
+  const [tcGramNetId,       setTcGramNetId]       = useState('mainnet');
+  const [tcGramVersion,     setTcGramVersion]     = useState<GramVersion>('v5r1');
+  const [tcGramWalletSel,   setTcGramWalletSel]   = useState('');
+  const [tcGramPrivKey,     setTcGramPrivKey]     = useState('');
+  const [tcGramName,        setTcGramName]        = useState('');
+  const [tcGramSymbol,      setTcGramSymbol]      = useState('');
+  const [tcGramDecimals,    setTcGramDecimals]    = useState('9');
+  const [tcGramSupply,      setTcGramSupply]      = useState('1000000');
+  const [tcGramDescription, setTcGramDescription] = useState('');
+  const [tcGramImageUrl,    setTcGramImageUrl]    = useState('');
+  const [tcGramImageUploading, setTcGramImageUploading] = useState(false);
+  const [tcGramCreating,    setTcGramCreating]    = useState(false);
+  const [tcGramStatus,      setTcGramStatus]      = useState<{type:'idle'|'pending'|'success'|'error';msg:string}>({type:'idle',msg:''});
+
+  const [tcGramFeeGram,    setTcGramFeeGram]    = useState('');
+  const [tcGramFeeDetail,  setTcGramFeeDetail]  = useState<GramFeeEstimate | null>(null);
+  const [tcGramFeeLoading, setTcGramFeeLoading] = useState(false);
+  const [tcGramFeeError,   setTcGramFeeError]   = useState('');
+
+  const [gramTokens, setGramTokens] = useState<CreatedGramToken[]>(() => {
+    try { return JSON.parse(localStorage.getItem('gramTokens') || '[]'); } catch { return []; }
+  });
+  useEffect(() => { localStorage.setItem('gramTokens', JSON.stringify(gramTokens)); }, [gramTokens]);
+
+  const tcGramSelectedNetwork = GRAM_NETWORKS.find(n => n.id === tcGramNetId) ?? GRAM_NETWORKS[0];
+  const [gramMaxLoading,       setGramMaxLoading]       = useState(false);
+  // ── Jetton (kirim token TON, bukan native GRAM) — pola sama seperti
+  //    gramSend* di atas, cuma target-nya jetton-wallet, bukan wallet TON
+  //    langsung (lihat sendGramJetton/estimateGramJettonFee di Gramnet.ts).
+  const [gramSendMode,      setGramSendMode]      = useState<'native' | 'jetton'>('native');
+  const [gramJettonMaster,  setGramJettonMaster]  = useState('');
+  const [gramJettonTo,      setGramJettonTo]      = useState('');
+  const [gramJettonAmt,     setGramJettonAmt]     = useState('');
+  const [gramJettonComment, setGramJettonComment] = useState('');
+  const [gramJettonSending, setGramJettonSending] = useState(false);
+  const [gramJettonStatus,  setGramJettonStatus]  = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
+  const [gramJettonMeta,        setGramJettonMeta]        = useState<{ name: string; symbol: string; decimals: number; image?: string } | null>(null);
+  const [gramJettonMetaLoading, setGramJettonMetaLoading] = useState(false);
+  const [gramJettonMetaError,   setGramJettonMetaError]   = useState<string | null>(null);
+  const [gramJettonFeeEstimate,      setGramJettonFeeEstimate]      = useState<GramFeeEstimate | null>(null);
+  const [gramJettonFeeEstimating,    setGramJettonFeeEstimating]    = useState(false);
+  const [gramJettonFeeEstimateError, setGramJettonFeeEstimateError] = useState<string | null>(null);
+  // Jetton yang terdeteksi otomatis di address yang lagi connect — dipakai buat
+  // dropdown "pilih dari yang dipegang" supaya user gak perlu ketik master address manual.
+  const [gramJettonDetected,        setGramJettonDetected]        = useState<DetectedToken[]>([]);
+  const [gramJettonDetectedLoading, setGramJettonDetectedLoading] = useState(false);
+
   const [netForm,      setNetForm]      = useState<Omit<RPCNetwork,'id'>&{rpcRaw:string}>({name:'',chainId:0,symbol:'',rpcUrls:[],rpcRaw:'',explorerUrl:'',color:'#01a2ff'});
   const [netEditId,    setNetEditId]    = useState<string|null>(null);
   const [showNetForm,  setShowNetForm]  = useState(false);
@@ -797,6 +556,36 @@ export const WalletGenerator: React.FC = () => {
     return () => { cancelled = true; };
 
   }, [wallets]);
+
+  useEffect(() => {
+    const need = wallets.filter(w => !w.gramAddress);
+    if (need.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const w of need) {
+        try {
+          const derivedGram = await deriveGramAddress(w.mnemonic, 0, gramVersion);
+          if (cancelled) return;
+          setWallets(prev => prev.map(x => x.id === w.id ? { ...x, gramAddress: derivedGram } : x));
+        } catch {  }
+      }
+    })();
+    return () => { cancelled = true; };
+
+  }, [wallets, gramVersion]);
+
+  // Beralih versi wallet contract Gram (TON) untuk 1 wallet BIP39 tersimpan —
+  // menurunkan ulang address dari mnemonic yang sama dengan versi kontrak lain
+  // (W5 <-> V4R2). Private key hasil turunan tetap sama, cuma address-nya beda.
+  const switchGramVersion = async (walletId: string) => {
+    const w = wallets.find(x => x.id === walletId);
+    if (!w) return;
+    const nextVersion: GramVersion = (w.gramAddress?.version ?? 'v5r1') === 'v4' ? 'v5r1' : 'v4';
+    try {
+      const derived = await deriveGramAddress(w.mnemonic, 0, nextVersion);
+      setWallets(prev => prev.map(x => x.id === walletId ? { ...x, gramAddress: derived } : x));
+    } catch (e: any) { showAlert('Gagal ganti versi Gram (TON): ' + e.message, 'error'); }
+  };
 
   useEffect(() => { localStorage.setItem(RPC_NETWORKS_STORAGE_KEY, JSON.stringify(networks));   }, [networks]);
   useEffect(() => { localStorage.setItem('walletAirdropTasks',  JSON.stringify(airdropTasks)); }, [airdropTasks]);
@@ -1853,6 +1642,31 @@ export const WalletGenerator: React.FC = () => {
     setBalChecking(false);
   };
 
+  const checkAllGramBalances = async () => {
+    const allGram = wallets.filter(w => w.gramAddress).map(w => ({ walletName: w.name, index: 0, address: w.gramAddress!.address }));
+    if (allGram.length === 0) { showAlert('Belum ada address Gram (TON) untuk dicek.', 'error'); return; }
+    const net = GRAM_NETWORKS[0];
+    setBalChecking(true);
+    const init: Record<string, { balance: string; loading: boolean; error: boolean }> = {};
+    allGram.forEach(a => { init[a.address] = { balance: '...', loading: true, error: false }; });
+    setBalResults(prev => ({ ...prev, ...init }));
+    const CONCURRENCY = 5;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < allGram.length) {
+        const a = allGram[cursor++];
+        try {
+          const balance = await getGramBalanceWithFallback(net, a.address);
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: balance.toFixed(6) + ' TON', loading: false, error: false } }));
+        } catch {
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: 'Error', loading: false, error: true } }));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, allGram.length) }, worker));
+    setBalChecking(false);
+  };
+
 
   const scanPortfolioFor = useCallback(async (target: { chain: ChainKind; address: string }, netId: string) => {
     setPortfolioLoading(true);
@@ -2131,6 +1945,7 @@ export const WalletGenerator: React.FC = () => {
       pushRows('TRON', w.tronAddresses || []);
       pushRows('AXM', w.axmAddresses || []);
       pushRows('ATOM', w.atomAddresses || []);
+      pushRows('GRAM', w.gramAddress ? [{ index: 0, address: w.gramAddress.address, privateKey: w.gramAddress.privateKey }] : []);
     });
     const csv = rows.map(r => r.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -2188,9 +2003,11 @@ export const WalletGenerator: React.FC = () => {
         const atom = await deriveCosmosAddress(mnemonic, i);
         atomAddresses.push({ index: i, address: atom.address, privateKey: atom.privateKey });
       }
+      // Gram (TON): cuma 1 keypair per wallet (bukan per-index) — lihat catatan di Gramnet.ts.
+      const derivedGram = await deriveGramAddress(mnemonic, 0, gramVersion);
       const newWallet: BIP39Wallet = {
         id: Date.now().toString(), name: walletName.trim() || `Wallet #${wallets.length + 1}`,
-        mnemonic, addresses, solAddresses, tronAddresses, axmAddresses, atomAddresses, createdAt: Date.now(), tags: [], note: '',
+        mnemonic, addresses, solAddresses, tronAddresses, axmAddresses, atomAddresses, gramAddress: derivedGram, createdAt: Date.now(), tags: [], note: '',
       };
       setWallets(prev => [newWallet, ...prev]);
       setExpandedId(newWallet.id);
@@ -2375,7 +2192,7 @@ export const WalletGenerator: React.FC = () => {
           standard: Math.max(0.001, baseGwei),
           fast:     Math.max(0.001, baseGwei * 1.3),
         });
-      } catch { /* ignore */ }
+      } catch {}
       setTxFetchingGas(false);
     } catch (e: any) { showAlert('Gagal connect: ' + e.message, 'error'); }
     setTxConnecting(false);
@@ -2478,7 +2295,7 @@ export const WalletGenerator: React.FC = () => {
         standard: Math.max(0.001, baseGwei),
         fast:     Math.max(0.001, baseGwei * 1.3),
       });
-    } catch { /* silently ignore */ }
+    } catch {}
     setTxFetchingGas(false);
   };
 
@@ -2831,7 +2648,7 @@ export const WalletGenerator: React.FC = () => {
         showAlert(`Saldo tidak cukup: total kirim ${totalAmt} TRX, saldo cuma ${sunToTrx(balSun)} TRX.`, 'error');
         return;
       }
-    } catch { /* kalau cek saldo gagal, tetap lanjut — validasi per-TX di TronGrid tetap jalan sebagai fallback */ }
+    } catch {}
 
     const okMulti = await requestTxConfirm({
       title: `Multi-Send — ${validRows.length} penerima`,
@@ -3201,6 +3018,282 @@ export const WalletGenerator: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [atomConnected, atomAddress, atomSendTo, atomSendAmt, atomNetId, atomGasMode, atomGasManual, atomGasRefreshNonce]);
 
+  // ══════════════════════════════════════════════════════════════════════
+  // ── Gram (TON): Send & Receive (connect via private key, cek saldo,
+  //    kirim TON native) — pola sama seperti Axiome/Cosmos di atas, tapi
+  //    lewat @ton/ton (WalletContractV4/V5R1). TON tidak punya "derive address
+  //    per index" di app ini (1 wallet = 1 address Gram), jadi tidak ada
+  //    pemilihan #index di wallet selector. Estimasi fee & Send Max sudah
+  //    interaktif (lihat estimateGramFee/estimateGramMaxSendable di
+  //    network/Gramnet.ts) lewat dry-run estimateExternalMessageFee TonCenter. ──
+  const gramRefreshBalance = async (netOverride?: GramNetworkCfg, addr?: string) => {
+    const net     = netOverride ?? GRAM_NETWORK;
+    const address = addr ?? gramAddress;
+    if (!address) return;
+    setGramLoadingBal(true);
+    try {
+      const bal = await getGramBalanceWithFallback(net, address);
+      setGramBalance(bal.toLocaleString('en-US', { maximumFractionDigits: 6 }) + ' TON');
+    } catch { setGramBalance('Error'); }
+    setGramLoadingBal(false);
+  };
+
+  const gramConnect = async () => {
+    const pk = gramPrivKey.trim();
+    if (!pk) { showAlert('Masukkan private key Gram (TON) dulu (hex).', 'error'); return; }
+    setGramConnecting(true);
+    setGramStatus({ type: 'idle', msg: '' });
+    try {
+      const address = gramAddressFromPrivateKey(pk, gramConnectVersion);
+      setGramAddress(address);
+      setGramConnected(true);
+      await gramRefreshBalance(GRAM_NETWORK, address);
+    } catch (e: any) { showAlert('Gagal connect: private key Gram (TON) tidak valid. (' + e.message + ')', 'error'); }
+    setGramConnecting(false);
+  };
+
+  const gramDisconnect = () => {
+    setGramConnected(false);
+    setGramAddress('');
+    setGramBalance('—');
+    setGramPrivKey('');
+    setGramWalletSel('');
+    setGramStatus({ type: 'idle', msg: '' });
+    setGramSendMode('native');
+    setGramJettonMaster(''); setGramJettonTo(''); setGramJettonAmt(''); setGramJettonComment('');
+    setGramJettonMeta(null); setGramJettonMetaError(null);
+    setGramJettonDetected([]);
+    setGramJettonStatus({ type: 'idle', msg: '' });
+  };
+
+  const switchGramNetwork = async (newId: string) => {
+    setGramNetId(newId);
+    if (!gramConnected || !gramAddress) return;
+    const newNet = GRAM_NETWORKS.find(n => n.id === newId) ?? GRAM_NETWORKS[0];
+    await gramRefreshBalance(newNet, gramAddress);
+  };
+
+  const handleGramWalletSel = (val: string) => {
+    setGramWalletSel(val);
+    if (!val) return;
+    const wi = Number(val);
+    const w  = wallets[wi];
+    if (w?.gramAddress) {
+      setGramPrivKey(w.gramAddress.privateKey);
+      setGramConnectVersion(w.gramAddress.version ?? 'v5r1');
+    }
+  };
+
+  const gramSend = async () => {
+    if (!gramConnected || !gramAddress) { showAlert('Wallet Gram (TON) tidak terhubung.', 'error'); return; }
+    if (!isValidGramAddress(gramSendTo.trim())) { showAlert('Address Gram (TON) tujuan tidak valid.', 'error'); return; }
+    const amt = parseFloat(gramSendAmt);
+    if (isNaN(amt) || amt <= 0) { showAlert('Jumlah tidak valid.', 'error'); return; }
+
+    const feeLabel = gramFeeEstimate
+      ? `Estimasi fee: ~${gramFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} TON${gramFeeEstimate.willDeploy ? ' (termasuk deploy wallet)' : ''}.`
+      : undefined;
+
+    const okSend = await requestTxConfirm({
+      title: 'Kirim Transaksi',
+      network: GRAM_NETWORK.name,
+      to: gramSendTo,
+      value: `${gramSendAmt} TON`,
+      extra: feeLabel,
+    });
+    if (!okSend) return;
+
+    setGramSending(true);
+    setGramStatus({ type: 'pending', msg: `Mengirim transaksi ke ${GRAM_NETWORK.name}...` });
+    try {
+      const txHash = await sendGram(GRAM_NETWORK, gramPrivKey, gramSendTo.trim(), amt, '', gramConnectVersion);
+      setGramStatus({
+        type: 'success',
+        msg: txHash ? 'Transaksi terkirim & terkonfirmasi' : 'Transaksi terkirim (belum dapat hash — cek explorer manual kalau perlu)',
+        hash: txHash || undefined,
+      });
+      saveTxHistory({
+        taskName: 'Transfer', description: `Kirim ${gramSendAmt} TON ke ${shortAddr(gramSendTo)} di ${GRAM_NETWORK.name}`,
+        to: gramSendTo, value: gramSendAmt, data: '',
+        status: 'success', txHash: txHash || '', timestamp: Date.now(),
+      });
+      setGramSendTo(''); setGramSendAmt('');
+      await gramRefreshBalance();
+    } catch (e: any) { setGramStatus({ type: 'error', msg: gramFriendlyError(e) }); }
+    setGramSending(false);
+  };
+
+  // ── Isi otomatis "Jumlah" dengan saldo TON maksimum yang bisa dikirim ──
+  // Pola sama seperti txSetMaxAmount (EVM): tarik saldo, kurangi estimasi
+  // fee (+ reserve deploy kalau wallet belum aktif), isi field kalau masih positif.
+  const gramSetMaxAmount = async () => {
+    if (!gramConnected || !gramAddress) { showAlert('Connect wallet dulu.', 'error'); return; }
+    setGramMaxLoading(true);
+    try {
+      const result = await estimateGramMaxSendable(GRAM_NETWORK, gramPrivKey, gramConnectVersion);
+      setGramSendAmt(result.maxAmountGram.toFixed(9).replace(/0+$/,'').replace(/\.$/,''));
+    } catch (e: any) {
+      showAlert('Gagal menghitung jumlah maksimum: ' + (e?.message || e), 'error');
+    }
+    setGramMaxLoading(false);
+  };
+
+  // Estimasi fee TON berjalan otomatis & di-debounce tiap kali tujuan/jumlah berubah —
+  // pola sama seperti estimasi fee Atom/Tron di atas, lewat estimateExternalMessageFee
+  // (dry-run TonCenter, tidak broadcast apa pun ke chain).
+  useEffect(() => {
+    if (!gramConnected || !gramAddress) { setGramFeeEstimate(null); setGramFeeEstimateError(null); return; }
+    const to  = gramSendTo.trim();
+    const amt = parseFloat(gramSendAmt);
+    if (!isValidGramAddress(to) || isNaN(amt) || amt <= 0) { setGramFeeEstimate(null); setGramFeeEstimateError(null); return; }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setGramFeeEstimating(true);
+      setGramFeeEstimateError(null);
+      try {
+        const est = await estimateGramFee(GRAM_NETWORK, gramPrivKey, to, amt, '', gramConnectVersion);
+        if (!cancelled) { setGramFeeEstimate(est); setGramFeeEstimateError(null); }
+      } catch (e: any) {
+        if (!cancelled) { setGramFeeEstimate(null); setGramFeeEstimateError(e?.message || 'Gagal menghitung estimasi fee.'); }
+      }
+      if (!cancelled) setGramFeeEstimating(false);
+    }, 600);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gramConnected, gramAddress, gramSendTo, gramSendAmt, gramNetId, gramConnectVersion]);
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ── Gram (TON): Jetton (kirim token, bukan native GRAM) — fitur wallet
+  //    ala Tonkeeper: lihat saldo Jetton yang dipegang, pilih salah satu
+  //    (atau tempel master address manual), lalu kirim. Semua fungsi inti
+  //    (sendGramJetton/estimateGramJettonFee/getGramJettonMeta/
+  //    fetchGramTokenPortfolio) sudah ada di network/Gramnet.ts — bagian
+  //    ini cuma nyambungin ke state & UI, pola sama persis kayak gramSend*
+  //    native di atas. ──
+  const gramLoadDetectedJettons = async () => {
+    if (!gramConnected || !gramAddress) return;
+    setGramJettonDetectedLoading(true);
+    try {
+      const tokens = await fetchGramTokenPortfolio(gramAddress, GRAM_NETWORK);
+      setGramJettonDetected(tokens);
+    } catch { setGramJettonDetected([]); }
+    setGramJettonDetectedLoading(false);
+  };
+
+  const gramSelectJetton = (masterAddress: string) => {
+    setGramJettonMaster(masterAddress);
+    const found = gramJettonDetected.find(t => t.address === masterAddress);
+    if (found) {
+      setGramJettonMeta({ name: found.name, symbol: found.symbol, decimals: found.decimals, image: found.logo });
+      setGramJettonMetaError(null);
+    }
+  };
+
+  // Auto-load daftar Jetton yang dipegang begitu masuk mode "Jetton" pertama kali.
+  useEffect(() => {
+    if (gramSendMode === 'jetton' && gramConnected && gramJettonDetected.length === 0 && !gramJettonDetectedLoading) {
+      gramLoadDetectedJettons();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gramSendMode, gramConnected]);
+
+  // Ambil metadata (nama/symbol/decimals) begitu master address diisi manual
+  // (belum tentu ada di daftar terdeteksi — mis. jetton baru / low-liquidity
+  // yang belum ke-index) — didebounce biar gak spam RPC tiap ketikan.
+  useEffect(() => {
+    const master = gramJettonMaster.trim();
+    if (!master || !isValidGramAddress(master)) { setGramJettonMeta(null); setGramJettonMetaError(null); return; }
+    const known = gramJettonDetected.find(t => t.address === master);
+    if (known) { setGramJettonMeta({ name: known.name, symbol: known.symbol, decimals: known.decimals, image: known.logo }); setGramJettonMetaError(null); return; }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setGramJettonMetaLoading(true);
+      setGramJettonMetaError(null);
+      try {
+        const meta = await getGramJettonMeta(GRAM_NETWORK, master);
+        if (!cancelled) {
+          if (meta) setGramJettonMeta(meta);
+          else { setGramJettonMeta(null); setGramJettonMetaError('Metadata Jetton tidak ditemukan — pastikan address kontraknya benar.'); }
+        }
+      } catch (e: any) {
+        if (!cancelled) { setGramJettonMeta(null); setGramJettonMetaError(e?.message || 'Gagal mengambil metadata Jetton.'); }
+      }
+      if (!cancelled) setGramJettonMetaLoading(false);
+    }, 600);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gramJettonMaster, gramNetId]);
+
+  // Estimasi fee Jetton — pola sama seperti estimasi fee native GRAM di atas.
+  useEffect(() => {
+    if (!gramConnected || !gramAddress || !gramJettonMeta) { setGramJettonFeeEstimate(null); setGramJettonFeeEstimateError(null); return; }
+    const master = gramJettonMaster.trim();
+    const to     = gramJettonTo.trim();
+    const amt    = parseFloat(gramJettonAmt);
+    if (!isValidGramAddress(master) || !isValidGramAddress(to) || isNaN(amt) || amt <= 0) {
+      setGramJettonFeeEstimate(null); setGramJettonFeeEstimateError(null); return;
+    }
+
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      setGramJettonFeeEstimating(true);
+      setGramJettonFeeEstimateError(null);
+      try {
+        const est = await estimateGramJettonFee(GRAM_NETWORK, gramPrivKey, master, to, amt, gramJettonMeta.decimals, gramJettonComment, gramConnectVersion);
+        if (!cancelled) { setGramJettonFeeEstimate(est); setGramJettonFeeEstimateError(null); }
+      } catch (e: any) {
+        if (!cancelled) { setGramJettonFeeEstimate(null); setGramJettonFeeEstimateError(e?.message || 'Gagal menghitung estimasi fee Jetton.'); }
+      }
+      if (!cancelled) setGramJettonFeeEstimating(false);
+    }, 600);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gramConnected, gramAddress, gramJettonMaster, gramJettonTo, gramJettonAmt, gramJettonMeta, gramNetId, gramConnectVersion]);
+
+  const gramSendJetton = async () => {
+    if (!gramConnected || !gramAddress) { showAlert('Wallet Gram (TON) tidak terhubung.', 'error'); return; }
+    const master = gramJettonMaster.trim();
+    if (!isValidGramAddress(master)) { showAlert('Address kontrak Jetton tidak valid.', 'error'); return; }
+    if (!isValidGramAddress(gramJettonTo.trim())) { showAlert('Address Gram (TON) tujuan tidak valid.', 'error'); return; }
+    const amt = parseFloat(gramJettonAmt);
+    if (isNaN(amt) || amt <= 0) { showAlert('Jumlah tidak valid.', 'error'); return; }
+    if (!gramJettonMeta) { showAlert('Metadata Jetton belum termuat — tunggu sebentar atau cek address kontraknya.', 'error'); return; }
+
+    const feeLabel = gramJettonFeeEstimate
+      ? `Estimasi fee: ~${gramJettonFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} TON${gramJettonFeeEstimate.willDeploy ? ' (termasuk deploy wallet)' : ''}.`
+      : undefined;
+
+    const okSend = await requestTxConfirm({
+      title: 'Kirim Jetton',
+      network: GRAM_NETWORK.name,
+      to: gramJettonTo,
+      value: `${gramJettonAmt} ${gramJettonMeta.symbol}`,
+      extra: feeLabel,
+    });
+    if (!okSend) return;
+
+    setGramJettonSending(true);
+    setGramJettonStatus({ type: 'pending', msg: `Mengirim ${gramJettonMeta.symbol} ke ${GRAM_NETWORK.name}...` });
+    try {
+      const txHash = await sendGramJetton(GRAM_NETWORK, gramPrivKey, master, gramJettonTo.trim(), amt, gramJettonMeta.decimals, gramJettonComment, gramConnectVersion);
+      setGramJettonStatus({
+        type: 'success',
+        msg: txHash ? 'Transaksi Jetton terkirim & terkonfirmasi' : 'Transaksi Jetton terkirim (belum dapat hash — cek explorer manual kalau perlu)',
+        hash: txHash || undefined,
+      });
+      saveTxHistory({
+        taskName: 'Transfer Jetton', description: `Kirim ${gramJettonAmt} ${gramJettonMeta.symbol} ke ${shortAddr(gramJettonTo)} di ${GRAM_NETWORK.name}`,
+        to: gramJettonTo, value: gramJettonAmt, data: master,
+        status: 'success', txHash: txHash || '', timestamp: Date.now(),
+      });
+      setGramJettonTo(''); setGramJettonAmt(''); setGramJettonComment('');
+      gramLoadDetectedJettons();
+    } catch (e: any) { setGramJettonStatus({ type: 'error', msg: gramFriendlyError(e) }); }
+    setGramJettonSending(false);
+  };
+
   // ── SPL Token: fetch saldo token yang dipegang address aktif ──
   const solFetchTokens = async (conn?: Connection | null, addr?: string) => {
     const connection = conn ?? solConnRef.current;
@@ -3308,14 +3401,11 @@ export const WalletGenerator: React.FC = () => {
           if (uri) meta.image = await solFetchImageFromUri(uri);
         }
       }
-    } catch { /* token tanpa metadata on-chain — biarkan kosong */ }
+    } catch {}
     solTokenMetaCacheRef.current.set(mint, meta);
     return meta;
   };
 
-  // ── Perkiraan tanggal akun token dibuat: telusuri mundur riwayat signature akun ATA-nya
-  //    sampai habis (akun token biasanya cuma punya segelintir transaksi), lalu ambil
-  //    blockTime dari signature paling lama yang ketemu. ──
   const solFetchAccountCreatedAt = async (connection: Connection, ata: string): Promise<number | null> => {
     try {
       const pk = new PublicKey(ata);
@@ -3454,7 +3544,7 @@ export const WalletGenerator: React.FC = () => {
         await sendAndConfirmTransaction(connection, tx, [keypair]);
         closedCount++; closedLamports += acc.lamports;
         setSolCloseSelected(prev => { const n = new Set(prev); n.delete(acc.pubkey); return n; });
-      } catch { /* akun gagal ditutup dilewati, lanjut ke berikutnya */ }
+      } catch {}
     }
     saveTxHistory({
       taskName: 'Close Token Account',
@@ -4352,7 +4442,7 @@ export const WalletGenerator: React.FC = () => {
           try {
             const rawArgs = safeParseContractArgs(tcCustomCtorArgs || '[]');
             ctorArgs = rawArgs.map((a: any, i: number) => parseArgWithAbiType(a, ctorFragment?.inputs?.[i] ?? { type: 'bytes' }));
-          } catch { /* biarin [] kalau args belum valid, tetap coba estimasi kasar */ }
+          } catch {}
           const factory  = new ethers.ContractFactory(tcCompiled.abi, tcCompiled.bytecode);
           const deployTx = factory.getDeployTransaction(...ctorArgs);
           gasLimit = await provider.estimateGas({ ...deployTx, from: deployerAddr });
@@ -4480,6 +4570,213 @@ export const WalletGenerator: React.FC = () => {
     const w    = wallets[wi];
     const addr = w?.tronAddresses?.find(a => a.index === ai);
     if (addr) setTcTronPrivKey(addr.privateKey);
+  };
+
+  // -- Pilih wallet Gram (TON) tersimpan buat jadi admin/deployer Jetton --
+  // Beda dari chain lain: gramAddress bukan array per-index tapi 1 objek per
+  // wallet (lihat BIP39Wallet di types.ts), dan versi wallet contract-nya
+  // (v4/v5r1) ikut otomatis dari wallet yang dipilih (address beda per versi).
+  const handleTcGramWalletSel = (val: string) => {
+    setTcGramWalletSel(val);
+    if (!val) return;
+    const wi = Number(val);
+    const w  = wallets[wi];
+    if (w?.gramAddress) {
+      setTcGramPrivKey(w.gramAddress.privateKey);
+      setTcGramVersion(w.gramAddress.version);
+    }
+  };
+
+  // -- Bangun JSON metadata Jetton dari isian form (sama pola dgn SPL Token) --
+  const buildTcGramMetadataJson = (): Record<string, string> => {
+    const name = tcGramName.trim();
+    const symbol = tcGramSymbol.trim().toUpperCase();
+    const description = tcGramDescription.trim();
+    const image = tcGramImageUrl.trim();
+    const decimals = parseInt(tcGramDecimals, 10);
+    return {
+      name,
+      symbol,
+      // TEP-64: decimals wajib ada (sbg string) — tanpa ini beberapa
+      // wallet/explorer TON menolak/skip seluruh metadata (termasuk image).
+      decimals: String(isNaN(decimals) ? 9 : decimals),
+      ...(description && { description }),
+      // Simpan sebagai ipfs:// (bukan link gateway Pinata https langsung) —
+      // supaya explorer TON (Tonviewer/Tonscan/Tonkeeper) resolve image
+      // lewat gateway pilihan mereka sendiri, bukan bergantung 1 gateway
+      // yang bisa rate-limit/block fetch dari server explorer. Lihat
+      // toIpfsUri() di helpers.ts untuk detail.
+      ...(image && { image: toIpfsUri(image) }),
+    };
+  };
+
+  // Upload JSON metadata Jetton ke IPFS lewat Pinata — pakai JWT yang sama dengan
+  // tab SPL Token (1 akun Pinata dipakai bareng, lihat catatan di TokenTab.tsx).
+  const uploadTcGramMetadataJson = async (): Promise<string> => {
+    const jwt = tcSolPinataJwt.trim();
+    if (!jwt) {
+      throw new Error('Isi Pinata JWT API Key dulu (gratis, daftar di app.pinata.cloud/keys) — dipakai bersama tab SPL Token.');
+    }
+    const json = buildTcGramMetadataJson();
+    return pinataUploadJson(json, jwt, `${json.symbol || 'jetton'}-metadata.json`);
+  };
+
+  // Upload file gambar Jetton ke IPFS lewat Pinata (resize dulu, sama persis pola handleTcSolImageFile).
+  const handleTcGramImageFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) { showAlert('File yang dipilih harus berupa gambar.', 'error'); return; }
+    const jwt = tcSolPinataJwt.trim();
+    if (!jwt) { showAlert('Isi Pinata JWT API Key dulu (gratis, daftar di app.pinata.cloud/keys) sebelum upload gambar.', 'error'); return; }
+
+    const reader = new FileReader();
+    reader.onerror = () => showAlert('Gagal membaca file gambar.', 'error');
+    reader.onload = () => {
+      const img = new window.Image();
+      img.onerror = () => showAlert('Gagal memproses file gambar.', 'error');
+      img.onload = async () => {
+        const SIZE = 512;
+        const canvas = document.createElement('canvas');
+        canvas.width = SIZE; canvas.height = SIZE;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) { showAlert('Browser tidak mendukung pemrosesan gambar.', 'error'); return; }
+        const s = Math.min(img.width, img.height);
+        ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, SIZE, SIZE);
+        canvas.toBlob(async (blob) => {
+          if (!blob) { showAlert('Gagal mengkompresi gambar.', 'error'); return; }
+          setTcGramImageUploading(true);
+          try {
+            const url = await pinataUploadFile(blob, jwt, file.name || 'logo.jpg');
+            setTcGramImageUrl(url);
+          } catch (err: any) {
+            showAlert(err?.message || 'Gagal upload gambar ke IPFS.', 'error');
+          }
+          setTcGramImageUploading(false);
+        }, 'image/jpeg', 0.85);
+      };
+      img.src = reader.result as string;
+    };
+    reader.readAsDataURL(file);
+  };
+
+  // Live-preview JSON metadata yang akan di-upload ke IPFS saat deploy.
+  const tcGramMetaPreview = useMemo(
+    () => ({ json: buildTcGramMetadataJson() }),
+    [tcGramName, tcGramSymbol, tcGramDescription, tcGramImageUrl],
+  );
+
+  // -- Estimasi fee jaringan (dry-run, TIDAK broadcast) sebelum deploy Jetton --
+  const estimateTcGramFee = async () => {
+    const pk = tcGramPrivKey.trim();
+    if (!pk) { setTcGramFeeError('Isi private key Gram (TON) dulu.'); return; }
+    setTcGramFeeLoading(true);
+    setTcGramFeeError('');
+    try {
+      const decimals = parseInt(tcGramDecimals, 10);
+      const detail = await estimateGramJettonDeployFee(tcGramSelectedNetwork, pk, {
+        decimals: isNaN(decimals) ? 9 : decimals,
+        totalSupply: Number(tcGramSupply) || undefined,
+        // Bug lama: kirim tcGramImageUrl (link gambar) sebagai metadataUri,
+        // padahal metadataUri seharusnya link JSON metadata (belum ada saat
+        // estimasi, karena upload ke IPFS baru terjadi pas tombol Deploy
+        // ditekan). Biarkan undefined supaya estimateGramJettonDeployFee
+        // pakai placeholder URI internal (panjang wajar, mendekati ukuran
+        // link Pinata asli) — hasil estimasi jadi lebih akurat & konsisten.
+        metadataUri: undefined,
+      }, tcGramVersion);
+      setTcGramFeeDetail(detail);
+      setTcGramFeeGram(detail.totalFeeGram.toFixed(6));
+    } catch (e: any) {
+      setTcGramFeeError(gramFriendlyError(e?.message || 'Gagal mengambil estimasi fee.'));
+    }
+    setTcGramFeeLoading(false);
+  };
+
+  // -- Deploy Jetton baru: upload metadata ke IPFS dulu, lalu 1 tx deploy minter + mint --
+  const createGramJetton = async () => {
+    const pk = tcGramPrivKey.trim();
+    if (!pk) { showAlert('Isi private key Gram (TON) dulu, atau pilih dari wallet tersimpan.', 'error'); return; }
+    const name = tcGramName.trim();
+    const symbol = tcGramSymbol.trim().toUpperCase();
+    if (!name)   { showAlert('Nama token wajib diisi.', 'error'); return; }
+    if (!symbol) { showAlert('Symbol token wajib diisi.', 'error'); return; }
+    const decimals = parseInt(tcGramDecimals, 10);
+    if (isNaN(decimals) || decimals < 0 || decimals > 18) { showAlert('Decimals harus 0–18.', 'error'); return; }
+    const supplyNum = Number(tcGramSupply);
+    if (!tcGramSupply.trim() || isNaN(supplyNum) || supplyNum <= 0) { showAlert('Total supply tidak valid.', 'error'); return; }
+
+    const net = tcGramSelectedNetwork;
+    let adminAddress = '';
+    try { adminAddress = gramAddressFromPrivateKey(pk, tcGramVersion); }
+    catch { showAlert('Private key Gram (TON) tidak valid.', 'error'); return; }
+
+    const ok = await requestTxConfirm({
+      title: `Deploy Jetton: ${name} (${symbol})`,
+      network: net.name,
+      value: `Supply ${tcGramSupply} ${symbol} · ${decimals} decimals`,
+      extra: `1 transaksi: deploy kontrak minter baru + mint seluruh total supply ke wallet admin ini (${shortAddr(adminAddress)}). ` +
+        `Metadata (name/symbol${tcGramDescription.trim() ? '/description' : ''}${tcGramImageUrl.trim() ? '/image' : ''}) akan di-upload ke IPFS lewat Pinata dulu sebelum deploy, lalu link-nya dipakai sebagai content URI on-chain (wajib, standar TEP-64).`,
+    });
+    if (!ok) return;
+
+    setTcGramCreating(true);
+    try {
+      setTcGramStatus({ type: 'pending', msg: 'Meng-upload metadata ke IPFS (Pinata)...' });
+      const metaUri = await uploadTcGramMetadataJson();
+      // Content URI yang ditulis ON-CHAIN dipakai dalam bentuk ipfs:// (bukan
+      // link gateway https Pinata) — supaya explorer TON resolve lewat
+      // gateway mereka sendiri dan logo/nama token tampil dengan benar
+      // (lihat catatan di toIpfsUri, helpers.ts). Link https tetap dipakai
+      // untuk tombol "Lihat JSON Metadata" di UI (ipfs:// tidak bisa dibuka
+      // langsung di tab browser biasa).
+      const metaUriOnChain = toIpfsUri(metaUri);
+
+      setTcGramStatus({ type: 'pending', msg: `Deploy Jetton ke ${net.name}... (broadcast + tunggu konfirmasi, bisa ~10-60 detik)` });
+      const { jettonMasterAddress, jettonWalletAddress, txHash } = await deployGramJetton(net, pk, {
+        metadataUri: metaUriOnChain, totalSupply: supplyNum, decimals,
+      }, tcGramVersion);
+
+      const newToken: CreatedGramToken = {
+        id: Date.now().toString(),
+        masterAddress: jettonMasterAddress,
+        walletAddress: jettonWalletAddress,
+        netId: net.id,
+        networkName: net.name,
+        name, symbol, decimals,
+        initialSupply: tcGramSupply.trim(),
+        version: tcGramVersion,
+        txHash,
+        createdAt: Date.now(),
+        metadataUri: metaUri,
+        imageUrl: tcGramImageUrl.trim() || undefined,
+        description: tcGramDescription.trim() || undefined,
+      };
+      setGramTokens(prev => [newToken, ...prev]);
+      setTcGramStatus({ type: 'success', msg: `Jetton berhasil dibuat! Master: ${jettonMasterAddress}` });
+      showAlert(`Jetton "${name}" berhasil dibuat!`, 'success');
+      saveTxHistory({
+        taskName: 'Deploy Jetton', description: `Deploy Jetton ${name} (${symbol}) di ${net.name}`,
+        to: jettonMasterAddress, value: tcGramSupply.trim(), data: '',
+        status: 'success', txHash, timestamp: Date.now(),
+      });
+      setTcGramName(''); setTcGramSymbol(''); setTcGramSupply('1000000');
+      setTcGramImageUrl(''); setTcGramDescription('');
+      setTcGramFeeDetail(null); setTcGramFeeGram('');
+    } catch (e: any) {
+      const msg = gramFriendlyError(e?.message || 'Gagal membuat Jetton.');
+      setTcGramStatus({ type: 'error', msg: String(msg).slice(0, 200) });
+      showAlert('Gagal: ' + String(msg).slice(0, 160), 'error');
+    }
+    setTcGramCreating(false);
+  };
+
+  const deleteGramToken = (id: string) => {
+    setConfirmData({
+      isOpen: true, title: 'HAPUS DARI DAFTAR?',
+      message: 'Ini hanya menghapus catatan lokal — kontrak Jetton tetap ada di blockchain.',
+      action: () => { setGramTokens(prev => prev.filter(t => t.id !== id)); showAlert('Catatan token dihapus.', 'hapus'); },
+    });
   };
 
   // -- Deploy token TRC-20 (pakai ulang bytecode/ABI ERC-20, valid krn ABI Solidity sama) --
@@ -5340,6 +5637,108 @@ export const WalletGenerator: React.FC = () => {
     );
   };
 
+  // ctx dikumpulkan sekali di sini lalu diteruskan ke setiap komponen Tab
+  // (lihat WalletGeneratorCtx di ./types.ts untuk penjelasan pendekatannya).
+  const ctx: WalletGeneratorCtx = {
+    AXIOME_NETWORK, AXIOME_NETWORKS, COSMOS_NETWORK, COSMOS_NETWORKS, GRAM_NETWORK, GRAM_NETWORKS, FaBolt, FaCalendarAlt, FaChartBar, 
+    FaCheckCircle, FaChevronDown, FaChevronUp, FaCode, FaCoins, FaCopy, FaEdit, FaExchangeAlt, 
+    FaExclamationTriangle, FaEye, FaEyeSlash, FaFaucet, FaFileCode, FaFileExport, FaFileImport, FaGasPump, 
+    FaGlobe, FaHashtag, FaInfoCircle, FaKey, FaLayerGroup, FaLink, FaList, FaNetworkWired, FaPaperPlane, FaPlug, 
+    FaPlus, FaQrcode, FaRandom, FaRocket, FaSearch, FaShieldAlt, FaSpinner, FaSync, FaTerminal, FaTrash, 
+    FaUpload, FaWallet, LAMPORTS_PER_SOL, SOLANA_NETWORK, SOLANA_NETWORKS, SmartContractConfig, 
+    TOKEN_2022_PROGRAM_ID, TRON_NETWORKS, activeTab, addToMetaMask, addressCount, agHistory, airdropTasks, 
+    atEditId, atEmptyForm, atFilter, atForm, atSearch, atShowForm, atStats, atomAddress, atomBalance, 
+    atomConnect, atomConnected, atomConnecting, atomDisconnect, atomFeeEstimate, atomFeeEstimateError, 
+    atomLoadingBal, atomNetId, atomPrivKey, atomRefreshBalance, atomSend, atomSendAmt, atomSendTo, atomSending, 
+    atomStatus, atomWalletSel, axmAddress, axmBalance, axmConnect, axmConnected, axmConnecting, axmDisconnect, 
+    axmFeeEstimate, axmFeeEstimateError, axmFeeEstimating, axmLoadingBal, axmNetId, axmPrivKey, 
+    axmRefreshBalance, axmSend, axmSendAmt, axmSendTo, axmSending, axmStatus, axmWalletSel, balCheckNetId, 
+    balChecking, balResults, batchSelectedIds, chainView, checkAllAtomBalances, checkAllAxmBalances, 
+    checkAllGramBalances, gramAddress, gramBalance, gramConnect, gramConnected, gramConnecting, gramDisconnect, 
+    gramLoadingBal, gramNetId, gramPrivKey, gramRefreshBalance, gramSend, gramSendAmt, gramSendTo, gramSending, 
+    gramStatus, gramWalletSel, handleGramWalletSel, setGramPrivKey, setGramSendAmt, setGramSendTo, 
+    setGramWalletSel, switchGramNetwork, gramVersion, setGramVersion, 
+    gramConnectVersion, setGramConnectVersion, switchGramVersion, 
+    gramFeeEstimate, gramFeeEstimateError, gramFeeEstimating, gramMaxLoading, gramSetMaxAmount, 
+    gramSendMode, setGramSendMode, gramJettonMaster, setGramJettonMaster, gramJettonTo, setGramJettonTo, 
+    gramJettonAmt, setGramJettonAmt, gramJettonComment, setGramJettonComment, gramJettonSending, gramJettonStatus, 
+    gramJettonMeta, gramJettonMetaLoading, gramJettonMetaError, gramJettonFeeEstimate, gramJettonFeeEstimating, 
+    gramJettonFeeEstimateError, gramJettonDetected, gramJettonDetectedLoading, gramLoadDetectedJettons, 
+    gramSelectJetton, gramSendJetton, 
+    checkAllBalances, checkAllSolBalances, checkAllTronBalances, compileTcCustomContract, copiedKey, copyText, 
+    createSplToken, csvExporting, customMnemonic, deleteAirdropTask, deleteErc20Token, deleteSplToken, 
+    deleteWallet, deployErc20Token, deployTrc20Token, deriveMore, editAirdropTask, entropyBits, erc20Tokens, 
+    estimateTcEvmGas, estimateTcSolFee, estimateTcTronFee, ethers, execContract, execGasLimit, execLog, execMode, 
+    execNetId, execPrivKey, execRawData, execRawTo, execRawVal, execReadResult, execRunning, execSimFailed, 
+    execTaskId, execWalSel, expandedId, exportAllCSV, exportGarapan, exportWallet, filteredAtTasks, 
+    filteredNetworks, filteredWallets, garapImportRef, generateWallet, generating, handleAtomWalletSel, 
+    handleAxmWalletSel, handleExecWalSel, handleGarapImport, handleSolWalletSel, handleTcSolImageFile, 
+    handleTcSolWalletSel, handleTcTronWalletSel, handleTcWalletSel, handleTronWalletSel, handleTxWalletSel, 
+    highlightFaucet, importMode, isValidTronAddress, knownTxTokens, markTaskDone, netEditId, netForm, netSearch, 
+    networks, openExecPanel, openPortfolio, openTronFaucet, refreshPendingTrc20, renderAssetSelector, 
+    renderAtomGasFeeBox, renderGasFeeBox, renderSolAssetSelector, revealedIds, revealedPKs, runExec, 
+    saveAirdropTask, saveNetwork, search, selectedNetwork, selectedSolToken, selectedTxToken, setActiveTab, 
+    setAddressCount, setAgHistory, setAirdropTasks, setAtEditId, setAtFilter, setAtForm, setAtSearch, 
+    setAtShowForm, setAtomPrivKey, setAtomSendAmt, setAtomSendTo, setAtomWalletSel, setAxmPrivKey, setAxmSendAmt, 
+    setAxmSendTo, setAxmWalletSel, setBalCheckNetId, setBalResults, setBatchModalOpen, setBatchSelectedIds, 
+    setChainView, setConfirmData, setCustomMnemonic, setEntropyBits, setExecContract, setExecGasLimit, 
+    setExecMode, setExecNetId, setExecPrivKey, setExecRawData, setExecRawTo, setExecRawVal, setExecSimFailed, 
+    setExecTaskId, setExecWalSel, setExpandedId, setImportMode, setNetEditId, setNetForm, setNetSearch, 
+    setNetworks, setQrAddress, setRevealedIds, setRevealedPKs, setSearch, setShowNetForm, setSolCloseBurnFirst, 
+    setSolCloseFilter, setSolCloseSearch, setSolMode, setSolMultiEqualAmt, setSolPrivKey, setSolSendAmt, 
+    setSolSendTo, setSolSweepAmtMode, setSolSweepDelayMs, setSolSweepDestAddr, setSolSweepFixedAmt, 
+    setSolSweepLeaveBuf, setSolSweepManualPK, setSolWalletSel, setSweepAdvanced, setSweepAmtMode, 
+    setSweepDelayMs, setSweepDestAddr, setSweepFixedAmt, setSweepLeaveGas, setSweepManualPK, setTcChain, 
+    setTcCompileError, setTcCompiled, setTcCustomCtorArgs, setTcCustomSolidity, setTcDecimals, setTcEvmMode, 
+    setTcName, setTcNetworkId, setTcPrivKey, setTcSolAddMeta, setTcSolDecimals, setTcSolDescription, 
+    setTcSolImageUrl, setTcSolName, setTcSolNetId, setTcSolPinataJwt, setTcSolPrivKey, setTcSolSupply, 
+    setTcSolSymbol, setTcSupply, setTcSymbol, setTcTronDecimals, setTcTronName, setTcTronNetId, setTcTronPrivKey, 
+    setTcTronSupply, setTcTronSymbol, setTcTronWalletSel, setTronAsset, setTronMode, setTronMultiEqualAmt, 
+    setTronPrivKey, setTronSendAmt, setTronSendTo, setTronSweepAmtMode, setTronSweepDestAddr, 
+    setTronSweepFixedAmt, setTronSweepLeaveBuf, setTronSweepManualPK, setTronWalletSel, setTxChain, setTxMode, 
+    setTxMultiEqualAmt, setTxNetworkId, setTxPrivKey, setTxSendAmt, setTxSendTo, setTxWalletSel, setWalletName, 
+    showAlert, showNetForm, solAddress, solAsset, solBalance, solCloseAccounts, solCloseAllRunning, 
+    solCloseBurnFirst, solCloseFilter, solCloseLoading, solCloseSearch, solCloseSelected, 
+    solCloseSelectedAccounts, solCloseToggleSelect, solCloseToggleSelectAll, solCloseTokenAccount, solClosingId, 
+    solConnect, solConnected, solConnecting, solDisconnect, solFaucetLoading, solFetchCloseAccounts, solIsToken, 
+    solIsValidAddr, solLoadingBal, solMode, solMultiAddRow, solMultiApplyEqual, solMultiEqualAmt, 
+    solMultiRemoveRow, solMultiRows, solMultiRunning, solMultiSend, solMultiUpdateRow, solNetId, solPrivKey, 
+    solRefreshBalance, solRequestAirdrop, solSend, solSendAmt, solSendTo, solSending, solStatus, 
+    solSweepAddFromBIP39, solSweepAddManualPK, solSweepAmtMode, solSweepDelayMs, solSweepDestAddr, 
+    solSweepFetchBalances, solSweepFetchingBal, solSweepFixedAmt, solSweepLeaveBuf, solSweepManualPK, 
+    solSweepRemoveSource, solSweepRun, solSweepRunning, solSweepSources, solWalletSel, splTokens, sunToTrx, 
+    sweepAddFromBIP39, sweepAddManualPK, sweepAdvanced, sweepAmtMode, sweepDelayMs, sweepDestAddr, 
+    sweepFetchBalances, sweepFetchingBal, sweepFixedAmt, sweepLeaveGas, sweepManualPK, sweepRemoveSource, 
+    sweepRun, sweepRunning, sweepSources, switchAtomNetwork, switchAxmNetwork, switchSolNetwork, 
+    switchTronNetwork, tcChain, tcCompileError, tcCompiled, tcCompiling, tcCustomCtorArgs, tcCustomSolidity, 
+    tcDecimals, tcDeployStatus, tcDeploying, tcEvmMode, tcGasError, tcGasFeeNative, tcGasLimitEst, tcGasLoading, 
+    tcGasPriceGwei,
+    GRAM_WALLET_VERSIONS, GRAM_JETTON_DEPLOY_VALUE, gramTokens, deleteGramToken, createGramJetton, estimateTcGramFee,
+    tcGramNetId, setTcGramNetId, tcGramVersion, setTcGramVersion, tcGramWalletSel, handleTcGramWalletSel,
+    tcGramPrivKey, setTcGramPrivKey, tcGramName, setTcGramName, tcGramSymbol, setTcGramSymbol,
+    tcGramDecimals, setTcGramDecimals, tcGramSupply, setTcGramSupply, tcGramDescription, setTcGramDescription,
+    tcGramImageUrl, setTcGramImageUrl, handleTcGramImageFile, tcGramImageUploading, tcGramCreating, tcGramStatus,
+    tcGramFeeGram, tcGramFeeDetail, tcGramFeeLoading, tcGramFeeError, tcGramSelectedNetwork, tcGramMetaPreview,
+    tcName, tcNetworkId, tcPrivKey, tcSelectedNetwork, tcSolAddMeta, tcSolCreating, 
+    tcSolDecimals, tcSolDescription, tcSolFeeDetail, tcSolFeeError, tcSolFeeLoading, tcSolFeeSol, 
+    tcSolImageUploading, tcSolImageUrl, tcSolMetaPreview, tcSolName, tcSolNetId, tcSolPinataJwt, tcSolPrivKey, 
+    tcSolStandard, tcSolStatus, tcSolSupply, tcSolSymbol, tcSolWalletSel, tcSupply, tcSymbol, tcTronCreating, 
+    tcTronDecimals, tcTronFeeError, tcTronFeeEstimate, tcTronFeeLoading, tcTronName, tcTronNetId, tcTronPrivKey, 
+    tcTronRefreshing, tcTronStatus, tcTronSupply, tcTronSymbol, tcTronWalletSel, tcWalletSel, trc20Tokens, 
+    tronAddress, tronAsset, tronAssetBal, tronAssetBalLoading, tronBalance, tronConnect, tronConnected, 
+    tronConnecting, tronDisconnect, tronFeeEstimate, tronFeeEstimateError, tronFeeEstimating, tronLoadingBal, 
+    tronMode, tronMultiAddRow, tronMultiApplyEqual, tronMultiEqualAmt, tronMultiRemoveRow, tronMultiRows, 
+    tronMultiRunning, tronMultiSend, tronMultiUpdateRow, tronNetId, tronNetwork, tronPrivKey, tronRefreshBalance, 
+    tronRefreshResources, tronResources, tronResourcesLoading, tronSend, tronSendAmt, tronSendTo, tronSending, 
+    tronStatus, tronSweepAddFromBIP39, tronSweepAddManualPK, tronSweepAmtMode, tronSweepDestAddr, 
+    tronSweepFetchBalances, tronSweepFetchingBal, tronSweepFixedAmt, tronSweepLeaveBuf, tronSweepManualPK, 
+    tronSweepRemoveSource, tronSweepRun, tronSweepRunning, tronSweepSources, tronWalletSel, txAddress, txAsset, 
+    txBalance, txChain, txConnect, txConnected, txConnecting, txDisconnect, txIsToken, txLoadingBal, 
+    txMaxLoading, txMode, txMultiAddRow, txMultiApplyEqual, txMultiEqualAmt, txMultiRemoveRow, txMultiRows, 
+    txMultiRunning, txMultiSend, txMultiUpdateRow, txNetworkId, txPrivKey, txRefreshBalance, txSend, txSendAmt, 
+    txSendTo, txSending, txSetMaxAmount, txStatus, txStatusColor, txWalletSel, walletName, wallets
+  };
+
   return (
     <div className="app-container">
       <CustomAlert isOpen={alertData.isOpen} message={alertData.msg} type={alertData.type}
@@ -5895,2896 +6294,13 @@ export const WalletGenerator: React.FC = () => {
         ))}
       </div>
 
-      {activeTab === 'wallets' && (
-        <>
-          <div className="form-container" style={{ marginBottom:'24px' }}>
-            <h2 style={{ textAlign:'center', marginBottom:'16px', fontSize:'15px' }}>
-              {importMode ? <><FaFileImport/> Import Mnemonic</> : <><FaRandom/> Generate Wallet Baru</>}
-            </h2>
-            <div style={{ display:'flex', gap:'8px', marginBottom:'14px', justifyContent:'center' }}>
-              {[false, true].map(isImport => (
-                <button key={String(isImport)} onClick={() => setImportMode(isImport)} style={{
-                  padding:'7px 16px',
-                  background:importMode === isImport ? '#01a2ff' : '#111',
-                  border:`1px solid ${importMode === isImport ? '#01a2ff' : '#333'}`,
-                  color:importMode === isImport ? '#000' : '#888',
-                  cursor:'pointer', fontSize:'12px', fontWeight:'bold',
-                }}>
-                  {isImport ? <><FaFileImport style={{ marginRight:'5px' }}/>Import</> : <><FaRandom style={{ marginRight:'5px' }}/>Generate</>}
-                </button>
-              ))}
-            </div>
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'12px' }}>
-              <input placeholder="Nama Wallet (opsional)" value={walletName} onChange={e => setWalletName(e.target.value)}/>
-              {!importMode && (
-                <select value={entropyBits} onChange={e => setEntropyBits(Number(e.target.value) as any)}>
-                  {QLENGTH_OPTIONS.map(o => <option key={o.bits} value={o.bits}>{o.label}</option>)}
-                </select>
-              )}
-              <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                <label style={{ fontSize:'12px', color:'#888', whiteSpace:'nowrap' }}>Jumlah Address:</label>
-                <input type="number" min={1} max={20} value={addressCount}
-                  onChange={e => setAddressCount(Math.min(20, Math.max(1, parseInt(e.target.value) || 1)))}
-                  style={{ width:'70px' }}/>
-              </div>
-            </div>
-            {importMode && (
-              <textarea
-                placeholder="Masukkan mnemonic phrase (12/15/18/21/24 kata, dipisah spasi)..."
-                value={customMnemonic}
-                onChange={e => setCustomMnemonic(e.target.value)}
-                rows={3}
-                style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', resize:'vertical', marginBottom:'10px' }}
-              />
-            )}
-            <button onClick={generateWallet}
-              disabled={generating || (importMode && !customMnemonic.trim())}
-              style={{ width:'100%', padding:'13px', background:generating?'#1a2a1a':'#01a2ff', color:generating?'#4caf50':'#000', border:'none', cursor:generating?'wait':'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:importMode&&!customMnemonic.trim()?0.5:1 }}>
-              {generating
-                ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Generating...</>
-                : importMode ? <><FaFileImport/> Import Wallet</> : <><FaRandom/> Generate Wallet</>}
-            </button>
-          </div>
+      {activeTab === 'wallets' && <WalletsTab ctx={ctx} />}
 
-          <div className="search-filter-bar" style={{ marginBottom:'16px' }}>
-            <div className="search-input-wrapper">
-              <FaSearch className="search-icon"/>
-              <input type="search" placeholder="Cari nama / address..." value={search} onChange={e => setSearch(e.target.value)}/>
-            </div>
-            <span style={{ fontSize:'12px', color:'#555', alignSelf:'center' }}>{wallets.length} wallet tersimpan</span>
-          </div>
+      {activeTab === 'transfer' && <TransferTab ctx={ctx} />}
 
-          <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:'2px solid #4caf50', padding:'16px', marginBottom:'16px', boxSizing:'border-box', maxWidth:'100%', overflow:'hidden' }}>
-            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'10px' }}>
-              <div style={{ display:'flex', alignItems:'center', gap:'8px', flex:'1 1 240px', minWidth:0, flexWrap:'wrap' }}>
-                <span style={{ fontSize:'11px', color:'#4caf50', textTransform:'uppercase', letterSpacing:'1px', whiteSpace:'nowrap', display:'flex', alignItems:'center', gap:'5px' }}>
-                  <FaChartBar size={11}/> Cek Balance Semua Wallet
-                </span>
-                <select value={balCheckNetId} onChange={e => { setBalCheckNetId(e.target.value); setBalResults({}); }}
-                  style={{ fontSize:'12px', padding:'5px 8px', fontFamily:'monospace', minWidth:'140px', maxWidth:'100%', boxSizing:'border-box' }}>
-                  {networks.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
-                </select>
-              </div>
-              <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', width:'100%', boxSizing:'border-box' }}>
-                <button onClick={checkAllBalances} disabled={balChecking || wallets.length === 0}
-                  style={{ background: balChecking ? '#1a2a1a' : '#4caf50', color:'#000', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
-                  {balChecking
-                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
-                    : <><FaSync size={10}/> Cek Semua {networks.find(n => n.id === balCheckNetId)?.symbol || 'EVM'}</>}
-                </button>
-                <button onClick={checkAllSolBalances} disabled={balChecking || wallets.length === 0}
-                  title="Cek saldo SOL semua address Solana yang tersimpan"
-                  style={{ background: balChecking ? '#1a1a2a' : '#9945FF', color:'#000', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
-                  {balChecking
-                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
-                    : <><FaSync size={10}/> Cek Semua SOL</>}
-                </button>
-                <button onClick={checkAllTronBalances} disabled={balChecking || wallets.length === 0}
-                  title="Cek saldo TRX semua address Tron yang tersimpan"
-                  style={{ background: balChecking ? '#2a1a1a' : '#EF0027', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
-                  {balChecking
-                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
-                    : <><FaSync size={10}/> Cek Semua TRX</>}
-                </button>
-                <button onClick={checkAllAtomBalances} disabled={balChecking || wallets.length === 0}
-                  title="Cek saldo ATOM semua address Cosmos Hub yang tersimpan"
-                  style={{ background: balChecking ? '#15161d' : '#2E3148', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
-                  {balChecking
-                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
-                    : <><FaSync size={10}/> Cek Semua ATOM</>}
-                </button>
-                <button onClick={checkAllAxmBalances} disabled={balChecking || wallets.length === 0}
-                  title="Cek saldo AXM semua address Axiome yang tersimpan"
-                  style={{ background: balChecking ? '#181229' : '#75bbe9', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
-                  {balChecking
-                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
-                    : <><FaSync size={10}/> Cek Semua AXM</>}
-                </button>
-                <button onClick={exportAllCSV} disabled={csvExporting || wallets.length === 0}
-                  style={{ background:'#111', color: wallets.length === 0 ? '#333' : '#f3ba2f', border:`1px solid ${wallets.length === 0 ? '#222' : '#f3ba2f44'}`, padding:'8px 14px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
-                  {csvExporting ? '...' : <><FaFileExport size={10}/> Export CSV</>}
-                </button>
-              </div>
-            </div>
-            {Object.keys(balResults).length > 0 && (
-              <div style={{ marginTop:'12px', fontSize:'11px', color:'#555', display:'flex', flexWrap:'wrap', gap:'6px' }}>
-                {Object.entries(balResults).map(([addr, r]) => (
-                  <span key={addr} style={{ background:'#111', border:`1px solid ${r.error ? '#f4433622' : '#4caf5022'}`, padding:'4px 10px', fontFamily:'monospace', display:'flex', alignItems:'center', gap:'6px' }}>
-                    <span style={{ color:'#444' }}>{addr.slice(0,8)}…{addr.slice(-4)}</span>
-                    <span style={{ color: r.error ? '#f44336' : r.loading ? '#888' : '#4caf50', fontWeight:'bold' }}>
-                      {r.loading ? '⟳' : r.balance}
-                    </span>
-                  </span>
-                ))}
-              </div>
-            )}
-          </div>
+      {activeTab === 'garap' && <GarapTab ctx={ctx} />}
 
-          <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
-            {filteredWallets.length === 0 && (
-              <div style={{ textAlign:'center', padding:'40px', color:'#333', border:'1px dashed #222' }}>
-                <FaWallet size={28} style={{ marginBottom:'10px', opacity:0.3 }}/>
-                <p>Belum ada wallet. Generate wallet pertamamu!</p>
-              </div>
-            )}
-            {filteredWallets.map(w => {
-              const isExpanded      = expandedId === w.id;
-              const isMnemonicShown = revealedIds.has(w.id);
-              const activeChain: ChainKind = chainView[w.id] || 'evm';
-              const activeList  = activeChain === 'sol' ? (w.solAddresses || []) : activeChain === 'tron' ? (w.tronAddresses || []) : activeChain === 'axm' ? (w.axmAddresses || []) : activeChain === 'atom' ? (w.atomAddresses || []) : w.addresses;
-              const activePath  = activeChain === 'sol' ? "m/44'/501'/x'/0'" : activeChain === 'tron' ? "m/44'/195'/0'/0/x" : activeChain === 'axm' ? "m/44'/118'/x'/0/0" : activeChain === 'atom' ? "m/44'/118'/x'/0/0" : "m/44'/60'/0'/0/x";
-              return (
-                <div key={w.id} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #01a2ff', overflow:'hidden' }}>
-                  <div style={{ display:'flex', alignItems:'center', gap:'10px', padding:'14px 16px', cursor:'pointer' }}
-                    onClick={() => setExpandedId(isExpanded ? null : w.id)}>
-                    <FaWallet color="#01a2ff" size={14}/>
-                    <div style={{ flex:1 }}>
-                      <div style={{ fontWeight:'bold', fontSize:'14px' }}>{w.name}</div>
-                      <div style={{ fontSize:'10px', color:'#444', marginTop:'2px' }}>
-                        {new Date(w.createdAt).toLocaleString('id-ID')} · {activeList.length} address · {activePath}
-                      </div>
-                    </div>
-                    <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
-                      <button onClick={e => { e.stopPropagation(); exportWallet(w); }} title="Export JSON"
-                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'5px 8px', cursor:'pointer', fontSize:'11px' }}>
-                        <FaFileExport/>
-                      </button>
-                      <button onClick={e => { e.stopPropagation(); deleteWallet(w.id); }} title="Hapus"
-                        style={{ background:'none', border:'1px solid #333', color:'#f44336', padding:'5px 8px', cursor:'pointer', fontSize:'11px' }}>
-                        <FaTrash/>
-                      </button>
-                      <span style={{ color:'#444', fontSize:'14px' }}>
-                        {isExpanded ? <FaChevronUp/> : <FaChevronDown/>}
-                      </span>
-                    </div>
-                  </div>
-                  {isExpanded && (
-                    <div style={{ borderTop:'1px solid #1a1a1a', padding:'16px' }}>
-                      <div style={{ marginBottom:'16px' }}>
-                        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'8px' }}>
-                          <span style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px' }}>
-                            <FaKey style={{ marginRight:'5px' }}/>Mnemonic Phrase
-                          </span>
-                          <button
-                            onClick={() => setRevealedIds(prev => { const n = new Set(prev); n.has(w.id) ? n.delete(w.id) : n.add(w.id); return n; })}
-                            style={{ background:'none', border:'1px solid #333', color:'#888', padding:'4px 10px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
-                            {isMnemonicShown ? <><FaEyeSlash/> Sembunyikan</> : <><FaEye/> Tampilkan</>}
-                          </button>
-                        </div>
-                        {isMnemonicShown ? (
-                          <div style={{ background:'#0a1a0a', border:'1px solid #1a3a1a', padding:'14px' }}>
-                            <div style={{ display:'flex', flexWrap:'wrap', gap:'6px', marginBottom:'10px' }}>
-                              {w.mnemonic.split(' ').map((word, i) => (
-                                <span key={i} style={{ background:'#111', border:'1px solid #1e3a1e', padding:'4px 10px', fontSize:'12px', fontFamily:'monospace', color:'#4caf50' }}>
-                                  <span style={{ color:'#2a5a2a', fontSize:'10px', marginRight:'4px' }}>{i+1}.</span>{word}
-                                </span>
-                              ))}
-                            </div>
-                            <button onClick={() => copyText(w.mnemonic, 'mn_'+w.id)}
-                              style={{ background:'#0d2a0d', border:'1px solid #1e5a1e', color:'#4caf50', padding:'6px 12px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'6px' }}>
-                              {copiedKey === 'mn_'+w.id ? <><FaCheckCircle/> Tersalin!</> : <><FaCopy/> Salin Mnemonic</>}
-                            </button>
-                          </div>
-                        ) : (
-                          <div style={{ background:'#0d0d0d', border:'1px dashed #1e1e1e', padding:'12px', textAlign:'center', color:'#333', fontSize:'12px' }}>
-                            ██████ ██████ ██████ ██████ ██████ ██████ (tersembunyi)
-                          </div>
-                        )}
-                      </div>
-                      <div style={{ marginBottom:'14px' }}>
-                        <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'8px' }}>
-                          <FaNetworkWired style={{ marginRight:'5px' }}/>Ganti Network
-                        </div>
-                        <div style={{ display:'flex', flexWrap:'wrap', gap:'6px' }}>
-                          {WALLET_CHAIN_OPTIONS.map(opt => {
-                            const isActive = activeChain === opt.id;
-                            if (opt.soon) {
-                              return (
-                                <button key={opt.id} disabled title="Segera hadir"
-                                  style={{ background:'none', border:'1px dashed #262626', color:'#3a3a3a', padding:'6px 12px', fontSize:'11px', cursor:'not-allowed', display:'flex', alignItems:'center', gap:'5px' }}>
-                                  {opt.label} <span style={{ fontSize:'9px', color:'#333' }}>SOON</span>
-                                </button>
-                              );
-                            }
-                            return (
-                              <button key={opt.id}
-                                onClick={() => setChainView(prev => ({ ...prev, [w.id]: opt.id as ChainKind }))}
-                                style={{
-                                  background:   isActive ? '#01a2ff' : 'none',
-                                  color:        isActive ? '#000' : '#888',
-                                  border:       `1px solid ${isActive ? '#01a2ff' : '#333'}`,
-                                  padding:'6px 14px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
-                                }}>
-                                {opt.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px' }}>
-                          <FaShieldAlt style={{ marginRight:'5px' }}/>
-                          Derived Addresses {activeChain === 'sol' ? '(Solana · ed25519)' : activeChain === 'tron' ? '(Tron · secp256k1, base58check)' : activeChain === 'axm' ? '(Axiome · secp256k1, bech32 "axm1...")' : activeChain === 'atom' ? '(Cosmos Hub · secp256k1, bech32 "cosmos1...")' : '(EIP-55 Checksummed)'}
-                        </div>
-
-                        {activeList.length === 0 && activeChain === 'sol' && (
-                          <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
-                            Belum ada address Solana — klik "Turunkan Address" di bawah untuk generate dari mnemonic yang sama.
-                          </div>
-                        )}
-                        {activeList.length === 0 && activeChain === 'tron' && (
-                          <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
-                            Belum ada address Tron — klik "Turunkan Address" di bawah untuk generate dari mnemonic yang sama.
-                          </div>
-                        )}
-                        {activeList.length === 0 && activeChain === 'axm' && (
-                          <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
-                            Belum ada address Axiome — sedang diturunkan dari mnemonic yang sama (async), atau klik "Turunkan Address" di bawah.
-                          </div>
-                        )}
-                        {activeList.length === 0 && activeChain === 'atom' && (
-                          <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
-                            Belum ada address Cosmos Hub — sedang diturunkan dari mnemonic yang sama (async), atau klik "Turunkan Address" di bawah.
-                          </div>
-                        )}
-                        {activeList.slice().sort((a,b) => a.index - b.index).map(addr => {
-                          const pkKey      = `pk_${activeChain}_${w.id}_${addr.index}`;
-                          const pkRevealed = revealedPKs.has(pkKey);
-                          return (
-                            <div key={addr.index} style={{ background:'#0a0a0a', border:'1px solid #151515', padding:'12px', marginBottom:'8px' }}>
-                              <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'8px' }}>
-                                <span style={{ fontSize:'10px', color:'#444', background:'#111', padding:'2px 7px', fontFamily:'monospace' }}>#{addr.index}</span>
-                                <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontFamily:'monospace' }}>
-                                  {addr.address}
-                                </code>
-                                <button onClick={() => copyText(addr.address, `addr_${activeChain}_${addr.index}_${w.id}`)}
-                                  style={{ background:'none', border:'none', color:copiedKey===`addr_${activeChain}_${addr.index}_${w.id}`?'#4caf50':'#555', cursor:'pointer', padding:'4px', flexShrink:0 }}>
-                                  {copiedKey===`addr_${activeChain}_${addr.index}_${w.id}` ? <FaCheckCircle size={12}/> : <FaCopy size={12}/>}
-                                </button>
-                                <button onClick={() => setQrAddress(addr.address)} title="QR Code"
-                                  style={{ background:'none', border:'none', color:'#555', cursor:'pointer', padding:'4px', flexShrink:0 }}>
-                                  <FaQrcode size={12}/>
-                                </button>
-                                <button onClick={() => openPortfolio(activeChain, addr.address, w.name)} title="Cek semua token & nilai USD"
-                                  style={{ background:'none', border:'none', color:'#555', cursor:'pointer', padding:'4px', flexShrink:0 }}>
-                                  <FaCoins size={12}/>
-                                </button>
-                                {balResults[addr.address] && (
-                                  <span style={{ fontSize:'10px', fontFamily:'monospace', color: balResults[addr.address].error ? '#f44336' : '#4caf50', whiteSpace:'nowrap', flexShrink:0 }}>
-                                    {balResults[addr.address].loading ? '...' : balResults[addr.address].balance}
-                                  </span>
-                                )}
-                              </div>
-                              <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                                <span style={{ fontSize:'10px', color:'#333', whiteSpace:'nowrap' }}>Private Key:</span>
-                                <code style={{ flex:1, fontSize:'11px', color:pkRevealed?'#ff9944':'#1e1e1e', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0d0d0d', padding:'3px 6px' }}>
-                                  {pkRevealed ? addr.privateKey : '████████████████████████████████████████████████████████████████'}
-                                </code>
-                                <button
-                                  onClick={() => setRevealedPKs(prev => { const n = new Set(prev); n.has(pkKey) ? n.delete(pkKey) : n.add(pkKey); return n; })}
-                                  style={{ background:'none', border:'none', color:'#444', cursor:'pointer', padding:'4px', flexShrink:0 }}>
-                                  {pkRevealed ? <FaEyeSlash size={11}/> : <FaEye size={11}/>}
-                                </button>
-                                {pkRevealed && (
-                                  <button onClick={() => copyText(addr.privateKey, `pk_copy_${activeChain}_${addr.index}_${w.id}`)}
-                                    style={{ background:'none', border:'none', color:copiedKey===`pk_copy_${activeChain}_${addr.index}_${w.id}`?'#4caf50':'#555', cursor:'pointer', padding:'4px', flexShrink:0 }}>
-                                    {copiedKey===`pk_copy_${activeChain}_${addr.index}_${w.id}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
-                                  </button>
-                                )}
-                              </div>
-                            </div>
-                          );
-                        })}
-                        <button onClick={() => deriveMore(w.id, activeList.length)} disabled={generating}
-                          style={{ background:'#0d0d1a', border:'1px solid #1e1e3a', color:'#4a4aff', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px', marginTop:'4px', opacity:generating?0.5:1 }}>
-                          <FaPlus size={10}/> Turunkan Address #{activeList.length}
-                        </button>
-                      </div>
-                    </div>
-
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </>
-      )}
-
-      {activeTab === 'transfer' && (
-        <>
-          {/* ── Ganti Network: EVM / Solana / Lainnya (Segera) ── */}
-          <div style={{ marginBottom:'16px' }}>
-            <label style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'block', marginBottom:'8px' }}>
-              <FaNetworkWired style={{ marginRight:'5px' }}/>Ganti Network
-            </label>
-            <div style={{ display:'flex', flexWrap:'wrap', gap:'6px' }}>
-              {CHAIN_OPTIONS.map(opt => {
-                const isActive = txChain === opt.id;
-                if (opt.soon) {
-                  return (
-                    <button key={opt.id} disabled title="Segera hadir"
-                      style={{ background:'none', border:'1px dashed #262626', color:'#3a3a3a', padding:'8px 14px', fontSize:'11px', cursor:'not-allowed', display:'flex', alignItems:'center', gap:'5px' }}>
-                      {opt.label} <span style={{ fontSize:'9px', color:'#333' }}>SOON</span>
-                    </button>
-                  );
-                }
-                const chainColor = opt.id === 'sol' ? '#9945FF' : opt.id === 'tron' ? '#EF0027' : opt.id === 'axm' ? '#75bbe9' : '#01a2ff';
-                return (
-                  <button key={opt.id}
-                    onClick={() => setTxChain(opt.id as ChainKind)}
-                    style={{
-                      background:   isActive ? chainColor : 'none',
-                      color:        isActive ? (opt.id === 'tron' || opt.id === 'axm' ? '#fff' : '#000') : '#888',
-                      border:       `1px solid ${isActive ? chainColor : '#333'}`,
-                      padding:'8px 16px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
-                    }}>
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {txChain === 'evm' && (
-          <>
-          {/* ── Network Selector ── */}
-          <div style={{ marginBottom:'16px' }}>
-            <label style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'block', marginBottom:'6px' }}>
-              <FaGlobe style={{ marginRight:'4px' }}/>Network
-            </label>
-            <div style={{ display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
-              <select
-                value={txNetworkId}
-                onChange={e => { if (txConnected) txDisconnect(); setTxNetworkId(e.target.value); }}
-                style={{ flex:'1 1 260px', fontFamily:'monospace', fontSize:'13px', padding:'10px 12px' }}
-              >
-                {networks.map(n => (
-                  <option key={n.id} value={n.id}>{n.name} · {n.symbol} · Chain {n.chainId}</option>
-                ))}
-              </select>
-              {selectedNetwork && (
-                <span style={{ fontSize:'11px', color:'#555', fontFamily:'monospace', whiteSpace:'nowrap' }}>
-                  Chain {selectedNetwork.chainId}
-                </span>
-              )}
-              {selectedNetwork?.explorerUrl && (
-                <a href={selectedNetwork.explorerUrl} target="_blank" rel="noreferrer"
-                  style={{ fontSize:'11px', color:'#01a2ff', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
-                  <FaLink size={9}/> Explorer
-                </a>
-              )}
-            </div>
-          </div>
-
-          {!txConnected ? (
-            <div className="form-container" style={{ maxWidth:'420px', margin:'32px auto' }}>
-              <h2 style={{ textAlign:'center', marginBottom:'18px', fontSize:'15px' }}>
-                <FaPlug style={{ marginRight:'8px' }}/>Connect ke {selectedNetwork?.name}
-              </h2>
-              {wallets.length > 0 && (
-                <div style={{ marginBottom:'14px' }}>
-                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet tersimpan</label>
-                  <select value={txWalletSel} onChange={e => handleTxWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
-                    <option value="">-- Pilih address --</option>
-                    {wallets.flatMap((w, wi) =>
-                      w.addresses.map(a => (
-                        <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
-                          {w.name} · #{a.index} · {a.address.slice(0,14)}...
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </div>
-              )}
-              <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                <FaKey style={{ marginRight:'4px' }}/>Private Key
-              </label>
-              <input
-                type="password"
-                placeholder="0x..."
-                value={txPrivKey}
-                onChange={e => { setTxPrivKey(e.target.value); setTxWalletSel(''); }}
-                style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}
-              />
-              <button onClick={txConnect} disabled={txConnecting || !txPrivKey.trim()}
-                style={{ width:'100%', padding:'12px', background:txConnecting?'#1a1a2a':selectedNetwork?.color??'#01a2ff', color:'#000', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:!txPrivKey.trim()?0.5:1 }}>
-                {txConnecting
-                  ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Connecting...</>
-                  : <><FaPlug/> Connect</>}
-              </button>
-            </div>
-          ) : (
-            <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-
-              {/* ── Balance / Receive card ── */}
-              <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${selectedNetwork?.color??'#01a2ff'}`, padding:'20px' }}>
-                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'16px' }}>
-                  <div>
-                    <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px' }}>Saldo</div>
-                    <div style={{ fontSize:'26px', fontWeight:'bold', fontFamily:'monospace', color:'#fff', lineHeight:1 }}>
-                      {txLoadingBal ? '···' : txBalance}
-                    </div>
-                  </div>
-                  <button onClick={() => txRefreshBalance()} disabled={txLoadingBal}
-                    style={{ background:'none', border:'1px solid #333', color:'#666', padding:'6px 12px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
-                    <FaSync size={10} style={{ animation:txLoadingBal?'spin 1s linear infinite':undefined }}/> Refresh
-                  </button>
-                </div>
-                <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #161616', display:'flex', alignItems:'center', gap:'8px' }}>
-                  <FaQrcode size={11} color="#444"/>
-                  <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                    {txAddress}
-                  </code>
-                  <button onClick={() => copyText(txAddress, 'tx_addr')}
-                    style={{ background:'none', border:'1px solid #333', color:copiedKey==='tx_addr'?'#4caf50':'#555', padding:'4px 8px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}>
-                    {copiedKey==='tx_addr' ? <FaCheckCircle/> : <FaCopy/>}
-                  </button>
-                  {selectedNetwork?.explorerUrl && (
-                    <a href={`${selectedNetwork.explorerUrl}/address/${txAddress}`} target="_blank" rel="noreferrer"
-                      style={{ color:'#555', padding:'4px 8px', border:'1px solid #333', display:'flex', flexShrink:0 }}
-                      title="Lihat di Explorer">
-                      <FaLink size={11}/>
-                    </a>
-                  )}
-                </div>
-              </div>
-
-              {/* ── Mode + Form card ── */}
-              <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
-
-                {/* Mode segmented control */}
-                <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', padding:'2px', marginBottom:'20px' }}>
-                  {([
-                    ['single', <FaPaperPlane key="i" size={11}/>, 'Kirim'],
-                    ['multi',  <FaLayerGroup key="i" size={11}/>, 'Multi Send'],
-                    ['sweep',  <FaExchangeAlt key="i" size={11}/>, 'Sweep'],
-                  ] as const).map(([m, icon, label]) => (
-                    <button key={m} onClick={() => setTxMode(m)} style={{
-                      flex:1, padding:'9px 8px', background: txMode===m ? (selectedNetwork?.color??'#01a2ff') : 'transparent',
-                      border:'none', color: txMode===m ? '#000' : '#666',
-                      cursor:'pointer', fontSize:'12px', fontWeight:'bold',
-                      display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', transition:'all 0.15s',
-                    }}>{icon}{label}</button>
-                  ))}
-                </div>
-
-                {renderAssetSelector()}
-
-                {/* ── Single Send ── */}
-                {txMode === 'single' && (
-                  <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                    <div>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Ke address</label>
-                      <input type="text" placeholder="0x..." value={txSendTo}
-                        onChange={e => setTxSendTo(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
-                    </div>
-                    <div>
-                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'5px' }}>
-                        <label style={{ fontSize:'11px', color:'#555' }}>
-                          Jumlah {txAsset === 'native' ? (selectedNetwork?.symbol ?? 'ETH') : (knownTxTokens.find(t=>t.address.toLowerCase()===txAsset.toLowerCase())?.symbol ?? 'token')}
-                        </label>
-                        <button onClick={txSetMaxAmount} disabled={txMaxLoading || !txConnected}
-                          style={{ background:'none', border:'1px solid #333', color:txMaxLoading?'#555':'#01a2ff', padding:'2px 8px', cursor:(txMaxLoading||!txConnected)?'not-allowed':'pointer', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.5px', opacity:!txConnected?0.4:1 }}>
-                          {txMaxLoading ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : 'MAX'}
-                        </button>
-                      </div>
-                      <input type="number" placeholder="0.001" step="0.0001" min="0" value={txSendAmt}
-                        onChange={e => setTxSendAmt(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace' }}/>
-                    </div>
-
-                    {renderGasFeeBox()}
-
-                    <button onClick={txSend} disabled={txSending || !txSendTo || !txSendAmt}
-                      style={{ padding:'13px', background:txSending?'#1a1a2a':selectedNetwork?.color??'#01a2ff', color:'#000', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!txSendTo||!txSendAmt)?0.5:1 }}>
-                      {txSending
-                        ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
-                        : <><FaPaperPlane/> {txAsset === 'native' ? 'Kirim Transaksi' : 'Kirim Token'}</>}
-                    </button>
-
-                    {txStatus.type !== 'idle' && (
-                      <div style={{ background:'#0a0a0a', border:`1px solid ${txStatusColor}44`, borderLeft:`3px solid ${txStatusColor}`, padding:'12px', fontSize:'12px', fontFamily:'monospace', color:txStatusColor }}>
-                        {txStatus.type === 'pending' && <span style={{ marginRight:'6px', animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
-                        {txStatus.type === 'success' && '✓ '}
-                        {txStatus.type === 'error'   && '✗ '}
-                        {txStatus.msg}
-                        {txStatus.hash && (
-                          <div style={{ marginTop:'6px' }}>
-                            {selectedNetwork?.explorerUrl && (
-                              <a href={`${selectedNetwork.explorerUrl}/tx/${txStatus.hash}`} target="_blank" rel="noreferrer"
-                                style={{ color:'#01a2ff', fontSize:'11px' }}>
-                                Lihat di {selectedNetwork.name} Explorer ↗
-                              </a>
-                            )}
-                            <div style={{ fontSize:'10px', color:'#555', marginTop:'3px', wordBreak:'break-all' }}>
-                              {txStatus.hash}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* ── Multi Send ── */}
-                {txMode === 'multi' && (
-                  <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                    {/* Equal amount helper */}
-                    <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
-                      <label style={{ fontSize:'11px', color:'#555', whiteSpace:'nowrap' }}>
-                        Jumlah rata ({txIsToken ? selectedTxToken!.symbol : (selectedNetwork?.symbol ?? 'ETH')}):
-                      </label>
-                      <input type="number" placeholder="0.001" step="0.0001" min="0" value={txMultiEqualAmt}
-                        onChange={e => setTxMultiEqualAmt(e.target.value)}
-                        style={{ width:'110px', fontFamily:'monospace', fontSize:'12px' }}/>
-                      <button onClick={txMultiApplyEqual} disabled={!txMultiEqualAmt}
-                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'5px 12px', cursor:'pointer', fontSize:'11px', opacity:!txMultiEqualAmt?0.4:1 }}>
-                        Terapkan ke semua baris
-                      </button>
-                    </div>
-
-                    {/* Rows */}
-                    <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
-                      {txMultiRows.map((row, idx) => {
-                        const statusColor = { idle:'#333', pending:'#ffaa00', success:'#4caf50', failed:'#f44336' }[row.status];
-                        return (
-                          <div key={row.id} style={{ display:'grid', gridTemplateColumns:'1fr 110px 60px 26px', gap:'6px', alignItems:'center' }}>
-                            <input type="text" placeholder={`0x... #${idx+1}`} value={row.to}
-                              onChange={e => txMultiUpdateRow(row.id, 'to', e.target.value)}
-                              style={{ fontFamily:'monospace', fontSize:'11px', padding:'8px 9px', background: row.status==='failed'?'#1a0000':row.status==='success'?'#001a00':'#0d0d0d', border:`1px solid ${row.status!=='idle'?statusColor+'44':'#1e1e1e'}` }}/>
-                            <input type="number" placeholder="0.001" step="0.0001" min="0" value={row.amount}
-                              onChange={e => txMultiUpdateRow(row.id, 'amount', e.target.value)}
-                              style={{ fontFamily:'monospace', fontSize:'11px', padding:'8px 9px', background:'#0d0d0d', border:'1px solid #1e1e1e' }}/>
-                            <div style={{ fontSize:'10px', fontWeight:'bold', color:statusColor, fontFamily:'monospace', textAlign:'center' }}>
-                              {row.status === 'idle'    && '—'}
-                              {row.status === 'pending' && '⟳'}
-                              {row.status === 'success' && '✓'}
-                              {row.status === 'failed'  && '✗'}
-                            </div>
-                            <button onClick={() => txMultiRemoveRow(row.id)} disabled={txMultiRows.length === 1}
-                              style={{ background:'none', border:'1px solid #2a2a2a', color:'#f44336', padding:'6px', cursor: txMultiRows.length===1?'not-allowed':'pointer', fontSize:'11px', opacity:txMultiRows.length===1?0.3:1 }}>
-                              ×
-                            </button>
-                          </div>
-                        );
-                      })}
-                    </div>
-
-                    <button onClick={txMultiAddRow} disabled={txMultiRunning}
-                      style={{ alignSelf:'flex-start', background:'none', border:'none', color:'#01a2ff', padding:'2px 0', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'5px' }}>
-                      <FaPlus size={10}/> Tambah baris
-                    </button>
-
-                    {/* TX hashes */}
-                    {txMultiRows.some(r => r.hash || r.error) && (
-                      <div style={{ background:'#070707', border:'1px solid #1a1a1a', padding:'10px 12px', fontSize:'11px', fontFamily:'monospace', display:'flex', flexDirection:'column', gap:'5px' }}>
-                        {txMultiRows.filter(r => r.hash || r.error).map(r => (
-                          <div key={r.id + '_log'}>
-                            {r.hash && (
-                              <span style={{ color:'#4caf50' }}>
-                                ✓ {shortAddr(r.to)} —{' '}
-                                {selectedNetwork?.explorerUrl
-                                  ? <a href={`${selectedNetwork.explorerUrl}/tx/${r.hash}`} target="_blank" rel="noreferrer" style={{ color:'#01a2ff' }}>{r.hash.slice(0,18)}…</a>
-                                  : r.hash.slice(0,22)+'…'
-                                }
-                              </span>
-                            )}
-                            {r.error && <span style={{ color:'#f44336' }}>✗ {shortAddr(r.to)} — {r.error.slice(0,80)}</span>}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {renderGasFeeBox()}
-
-                    <button onClick={txMultiSend}
-                      disabled={txMultiRunning || txMultiRows.every(r => !r.to || !r.amount)}
-                      style={{
-                        padding:'13px', background:txMultiRunning?'#1a1a2a':'#01a2ff', color:'#000', border:'none',
-                        cursor:txMultiRunning?'wait':'pointer', fontSize:'14px', fontWeight:'bold',
-                        display:'flex', alignItems:'center', justifyContent:'center', gap:'7px',
-                        opacity: txMultiRows.every(r=>!r.to||!r.amount) ? 0.5 : 1,
-                      }}>
-                      {txMultiRunning
-                        ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim {txMultiRows.filter(r=>r.status==='success').length}/{txMultiRows.filter(r=>ethers.utils.isAddress(r.to)&&parseFloat(r.amount)>0).length}...</>
-                        : <><FaPaperPlane/> Kirim {txMultiRows.filter(r=>ethers.utils.isAddress(r.to)&&parseFloat(r.amount)>0).length || txMultiRows.length} {txIsToken ? 'Token' : 'Transaksi'}</>}
-                    </button>
-                    <div style={{ fontSize:'10px', color:'#444', textAlign:'center' }}>
-                      Dikirim satu per satu — tiap TX menunggu konfirmasi sebelum lanjut ke baris berikutnya.
-                    </div>
-                  </div>
-                )}
-
-                {/* ── Sweep Mode ── */}
-                {txMode === 'sweep' && (
-                  <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                    <div style={{ fontSize:'11px', color:'#888', lineHeight:'1.6' }}>
-                      {txIsToken
-                        ? <>Kirim saldo token <strong style={{ color:'#ccc' }}>{selectedTxToken!.symbol}</strong> dari banyak wallet ke <strong style={{ color:'#ccc' }}>satu address tujuan</strong>. Wallet sumber tetap butuh sedikit {selectedNetwork?.symbol ?? 'native coin'} untuk gas — yang tidak cukup otomatis di-skip.</>
-                        : <>Kirim saldo dari banyak wallet ke <strong style={{ color:'#ccc' }}>satu address tujuan</strong>. Wallet dengan saldo lebih kecil dari biaya gas otomatis di-skip.</>}
-                    </div>
-
-                    {/* Destination address */}
-                    <div>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>
-                        Address tujuan (penerima)
-                      </label>
-                      <input type="text" placeholder="0x... (address yang akan menerima semua dana)"
-                        value={sweepDestAddr} onChange={e => setSweepDestAddr(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px',
-                          borderColor: sweepDestAddr && !ethers.utils.isAddress(sweepDestAddr) ? '#f44336' : undefined }}/>
-                      {sweepDestAddr && !ethers.utils.isAddress(sweepDestAddr) && (
-                        <div style={{ fontSize:'10px', color:'#f44336', marginTop:'3px' }}>Address tidak valid</div>
-                      )}
-                    </div>
-
-                    {/* Amount mode */}
-                    <div>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'6px' }}>Jumlah yang dikirim</label>
-                      <div style={{ display:'flex', gap:'8px', marginBottom: sweepAmtMode ? '8px' : 0 }}>
-                        {([['all','Semua Saldo'],['fixed','Jumlah Tetap']] as const).map(([m, label]) => (
-                          <button key={m} onClick={() => setSweepAmtMode(m)} style={{
-                            padding:'7px 14px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
-                            background: sweepAmtMode===m ? '#00e676' : 'transparent',
-                            border:`1px solid ${sweepAmtMode===m ? '#00e676' : '#333'}`,
-                            color: sweepAmtMode===m ? '#000' : '#666',
-                          }}>{label}</button>
-                        ))}
-                      </div>
-                      {sweepAmtMode === 'all' && (
-                        txIsToken ? (
-                          <div style={{ fontSize:'10px', color:'#444' }}>
-                            Seluruh saldo {selectedTxToken!.symbol} tiap wallet akan dikirim (gas dibayar terpisah pakai {selectedNetwork?.symbol ?? 'native coin'}).
-                          </div>
-                        ) : (
-                          <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                            <label style={{ fontSize:'11px', color:'#555', whiteSpace:'nowrap' }}>Sisakan untuk gas:</label>
-                            <input type="number" placeholder="0.0005" step="0.0001" min="0"
-                              value={sweepLeaveGas} onChange={e => setSweepLeaveGas(e.target.value)}
-                              style={{ width:'120px', fontFamily:'monospace', fontSize:'12px' }}/>
-                            <span style={{ fontSize:'10px', color:'#444' }}>{selectedNetwork?.symbol ?? 'ETH'}</span>
-                          </div>
-                        )
-                      )}
-                      {sweepAmtMode === 'fixed' && (
-                        <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                          <label style={{ fontSize:'11px', color:'#555', whiteSpace:'nowrap' }}>Per wallet:</label>
-                          <input type="number" placeholder="0.001" step="0.0001" min="0"
-                            value={sweepFixedAmt} onChange={e => setSweepFixedAmt(e.target.value)}
-                            style={{ width:'120px', fontFamily:'monospace', fontSize:'12px' }}/>
-                          <span style={{ fontSize:'10px', color:'#444' }}>{txIsToken ? selectedTxToken!.symbol : (selectedNetwork?.symbol ?? 'ETH')}</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Source wallets */}
-                    <div>
-                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'6px', marginBottom:'8px' }}>
-                        <label style={{ fontSize:'11px', color:'#555' }}>Wallet sumber ({sweepSources.length})</label>
-                        {sweepSources.length > 0 && (
-                          <button onClick={sweepFetchBalances} disabled={sweepFetchingBal}
-                            style={{ background:'none', border:'1px solid #00e67633', color:sweepFetchingBal?'#333':'#00e676', padding:'3px 10px', cursor:'pointer', fontSize:'10px', display:'flex', alignItems:'center', gap:'4px' }}>
-                            <FaSync size={9} style={{ animation:sweepFetchingBal?'spin 1s linear infinite':undefined }}/> {sweepFetchingBal?'Checking...':'Cek Balance'}
-                          </button>
-                        )}
-                      </div>
-
-                      <div style={{ display:'flex', gap:'6px', marginBottom:'8px' }}>
-                        <select defaultValue="" onChange={e => { sweepAddFromBIP39(e.target.value); e.target.value=''; }}
-                          style={{ flex:1, fontFamily:'monospace', fontSize:'11px' }}>
-                          <option value="">＋ Tambah dari Wallet BIP39...</option>
-                          {wallets.map((w, wi) => w.addresses.map(a => {
-                            const id = `bip39_${wi}_${a.index}`;
-                            const already = sweepSources.some(s => s.id === id);
-                            return (
-                              <option key={id} value={`${wi},${a.index}`} disabled={already}>
-                                {already ? '✓ ' : ''} [{w.name}] #{a.index} {a.address.slice(0,10)}…{a.address.slice(-4)}
-                              </option>
-                            );
-                          }))}
-                        </select>
-                      </div>
-
-                      <div style={{ display:'flex', gap:'6px', marginBottom:'10px' }}>
-                        <input type="password" placeholder="Atau private key manual (0x...)"
-                          value={sweepManualPK} onChange={e => setSweepManualPK(e.target.value)}
-                          onKeyDown={e => e.key === 'Enter' && sweepAddManualPK()}
-                          style={{ flex:1, fontFamily:'monospace', fontSize:'11px' }}/>
-                        <button onClick={sweepAddManualPK} disabled={!sweepManualPK.trim()}
-                          style={{ background:'none', border:'1px solid #00e67644', color:'#00e676', padding:'6px 14px', cursor:sweepManualPK.trim()?'pointer':'not-allowed', fontSize:'11px', fontWeight:'bold', opacity:sweepManualPK.trim()?1:0.4 }}>
-                          Tambah
-                        </button>
-                      </div>
-
-                      {sweepSources.length === 0 ? (
-                        <div style={{ color:'#333', fontSize:'11px', textAlign:'center', padding:'16px 0', border:'1px dashed #1a1a1a' }}>
-                          Belum ada wallet sumber.
-                        </div>
-                      ) : (
-                        <div style={{ display:'flex', flexDirection:'column', gap:'4px' }}>
-                          {sweepSources.map((s, idx) => {
-                            const stColor = { idle:'#333', pending:'#ffaa00', success:'#4caf50', failed:'#f44336', skipped:'#888' }[s.status];
-                            return (
-                              <div key={s.id} style={{ display:'grid', gridTemplateColumns:'20px 1fr auto auto', gap:'6px', alignItems:'center', background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'7px 10px' }}>
-                                <span style={{ fontSize:'10px', color:'#444', textAlign:'right' }}>{idx+1}</span>
-                                <div style={{ minWidth:0 }}>
-                                  <div style={{ fontFamily:'monospace', fontSize:'11px', color:'#888', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.label}</div>
-                                  {s.balance && <div style={{ fontSize:'10px', color:'#4caf50', fontFamily:'monospace' }}>{s.balance}</div>}
-                                  {s.hash && selectedNetwork?.explorerUrl && (
-                                    <a href={`${selectedNetwork.explorerUrl}/tx/${s.hash}`} target="_blank" rel="noreferrer"
-                                      style={{ fontSize:'10px', color:'#01a2ff' }}>✓ {s.hash.slice(0,16)}…</a>
-                                  )}
-                                  {s.error && <div style={{ fontSize:'10px', color: s.status==='skipped'?'#888':'#f44336', marginTop:'2px', lineHeight:'1.4' }}>{s.error}</div>}
-                                </div>
-                                <span style={{ fontSize:'10px', fontWeight:'bold', color:stColor, whiteSpace:'nowrap', minWidth:'46px', textAlign:'center' }}>
-                                  {s.status === 'idle' && '—'}
-                                  {s.status === 'pending' && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
-                                  {s.status === 'success' && '✓ OK'}
-                                  {s.status === 'failed' && '✗ Fail'}
-                                  {s.status === 'skipped' && '⊘ Skip'}
-                                </span>
-                                <button onClick={() => sweepRemoveSource(s.id)} disabled={sweepRunning}
-                                  style={{ background:'none', border:'1px solid #2a2a2a', color:'#f44336', padding:'4px 7px', cursor:sweepRunning?'not-allowed':'pointer', fontSize:'11px', opacity:sweepRunning?0.3:1 }}>
-                                  ×
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Advanced (delay) */}
-                    <div>
-                      <button onClick={() => setSweepAdvanced(p => !p)}
-                        style={{ background:'none', border:'none', color:'#666', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', padding:0 }}>
-                        {sweepAdvanced ? <FaChevronUp size={9}/> : <FaChevronDown size={9}/>} Pengaturan lanjutan
-                      </button>
-                      {sweepAdvanced && (
-                        <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap', marginTop:'10px' }}>
-                          <label style={{ fontSize:'11px', color:'#555', whiteSpace:'nowrap' }}>Delay antar TX:</label>
-                          <input type="number" value={sweepDelayMs} min="0" step="500"
-                            onChange={e => setSweepDelayMs(parseInt(e.target.value)||0)}
-                            style={{ width:'80px', fontFamily:'monospace', fontSize:'12px' }}/>
-                          {([0,500,1000,2000,3000] as const).map(v => (
-                            <button key={v} onClick={() => setSweepDelayMs(v)}
-                              style={{ fontSize:'10px', padding:'4px 8px', background:'none', border:`1px solid ${sweepDelayMs===v?'#00e676':'#2a2a2a'}`, color:sweepDelayMs===v?'#00e676':'#555', cursor:'pointer' }}>
-                              {v === 0 ? 'Off' : v/1000+'s'}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Summary */}
-                    {sweepSources.length > 0 && sweepDestAddr && ethers.utils.isAddress(sweepDestAddr) && (
-                      <div style={{ background:'#001a00', border:'1px solid #00e67633', padding:'10px 14px', fontSize:'12px', color:'#00e676', fontFamily:'monospace' }}>
-                        Siap sweep <strong>{sweepSources.length} wallet</strong> → <strong>{sweepDestAddr.slice(0,10)}…{sweepDestAddr.slice(-6)}</strong>
-                        {sweepAmtMode === 'all'
-                          ? ` · sisakan ${sweepLeaveGas} ${selectedNetwork?.symbol ?? 'ETH'} gas`
-                          : ` · ${sweepFixedAmt || '?'} ${selectedNetwork?.symbol ?? 'ETH'} per wallet`}
-                      </div>
-                    )}
-
-                    {/* Run button */}
-                    <button onClick={sweepRun}
-                      disabled={sweepRunning || sweepSources.length === 0 || !ethers.utils.isAddress(sweepDestAddr)}
-                      style={{
-                        padding:'13px', fontWeight:'bold', fontSize:'14px', cursor:sweepRunning?'wait':'pointer',
-                        background: sweepRunning ? '#001a00' : (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)) ? 'transparent' : '#00e676',
-                        color: sweepRunning ? '#00e676' : '#000',
-                        border:`1px solid ${sweepRunning?'#00e67644':'#00e676'}`,
-                        display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
-                        opacity: (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)) ? 0.4 : 1,
-                        transition:'all 0.2s',
-                      }}>
-                      {sweepRunning
-                        ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Sweeping {sweepSources.filter(s=>s.status==='success').length}/{sweepSources.length}...</>
-                        : <><FaExchangeAlt/> Mulai Sweep {sweepSources.length} Wallet{txIsToken ? ` (${selectedTxToken!.symbol})` : ''}</>}
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              <div style={{ textAlign:'center' }}>
-                <button onClick={txDisconnect}
-                  style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
-                  Disconnect Wallet
-                </button>
-              </div>
-            </div>
-          )}
-          </>
-          )}
-
-          {txChain === 'sol' && (
-            <>
-              <div id="faucetsolana" style={{ marginBottom:'16px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
-                <select value={solNetId} onChange={e => switchSolNetwork(e.target.value)}
-                  style={{ flex:'1 1 260px', fontFamily:'monospace', fontSize:'13px', padding:'10px 12px', background:'#0d0d0d', border:'1px solid #1e1e1e', color:'#ccc' }}>
-                  {SOLANA_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
-                </select>
-                {solNetId !== 'mainnet' && (
-                  <span style={{ fontSize:'10px', color:'#F1C40F', border:'1px solid #4a3f10', background:'#1a1608', padding:'4px 8px', whiteSpace:'nowrap' }}>
-                    ⚠ Jaringan TEST — SOL di sini tidak bernilai, minta dari faucet
-                  </span>
-                )}
-                <a href={`${SOLANA_NETWORK.explorerUrl}${SOLANA_NETWORK.clusterParam}`} target="_blank" rel="noreferrer"
-                  style={{ fontSize:'11px', color:'#9945FF', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
-                  <FaLink size={9}/> Explorer
-                </a>
-              </div>
-
-              {!solConnected ? (
-                <div className="form-container" style={{ maxWidth:'420px', margin:'32px auto' }}>
-                  {window.location.hash.replace('#','').toLowerCase() === 'faucetsolana' && (
-                    <div style={{ background:'#1a1608', border:'1px solid #4a3f10', color:'#F1C40F', padding:'10px 14px', marginBottom:'16px', fontSize:'12px', display:'flex', alignItems:'center', gap:'8px' }}>
-                      <FaFaucet size={12} style={{ flexShrink:0 }}/> Connect wallet Solana dulu, tombol Faucet Devnet/Testnet muncul setelah connect.
-                    </div>
-                  )}
-                  <h2 style={{ textAlign:'center', marginBottom:'18px', fontSize:'15px' }}>
-                    <FaPlug style={{ marginRight:'8px' }}/>Connect ke {SOLANA_NETWORK.name}
-                  </h2>
-                  {wallets.some(w => (w.solAddresses||[]).length > 0) && (
-                    <div style={{ marginBottom:'14px' }}>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Solana tersimpan</label>
-                      <select value={solWalletSel} onChange={e => handleSolWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
-                        <option value="">-- Pilih address --</option>
-                        {wallets.flatMap((w, wi) =>
-                          (w.solAddresses||[]).map(a => (
-                            <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
-                              {w.name} · #{a.index} · {a.address.slice(0,14)}...
-                            </option>
-                          ))
-                        )}
-                      </select>
-                    </div>
-                  )}
-                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                    <FaKey style={{ marginRight:'4px' }}/>Private Key (base58)
-                  </label>
-                  <input
-                    type="password"
-                    placeholder="base58 secret key..."
-                    value={solPrivKey}
-                    onChange={e => { setSolPrivKey(e.target.value); setSolWalletSel(''); }}
-                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}
-                  />
-                  <button onClick={solConnect} disabled={solConnecting || !solPrivKey.trim()}
-                    style={{ width:'100%', padding:'12px', background:solConnecting?'#1a1a2a':SOLANA_NETWORK.color, color:'#000', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:!solPrivKey.trim()?0.5:1 }}>
-                    {solConnecting
-                      ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Connecting...</>
-                      : <><FaPlug/> Connect</>}
-                  </button>
-                </div>
-              ) : (
-                <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-
-                  {/* ── Balance / Receive card ── */}
-                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${SOLANA_NETWORK.color}`, padding:'20px' }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'16px' }}>
-                      <div>
-                        <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px' }}>Saldo</div>
-                        <div style={{ fontSize:'26px', fontWeight:'bold', fontFamily:'monospace', color:'#fff', lineHeight:1 }}>
-                          {solLoadingBal ? '···' : solBalance}
-                        </div>
-                      </div>
-                      <div style={{ display:'flex', gap:'8px' }}>
-                        {solNetId !== 'mainnet' && (
-                          <button onClick={solRequestAirdrop} disabled={solFaucetLoading}
-                            title={`Minta 1 SOL gratis di ${SOLANA_NETWORK.name}`}
-                            style={{
-                              background:'none', border:'1px solid #4a3f10', color:'#F1C40F', padding:'6px 12px', cursor:'pointer', fontSize:'11px',
-                              display:'flex', alignItems:'center', gap:'5px',
-                              boxShadow: highlightFaucet ? '0 0 0 3px #F1C40F55' : undefined,
-                              transition: 'box-shadow 0.3s ease',
-                            }}>
-                            <FaFaucet size={10} style={{ animation:solFaucetLoading?'spin 1s linear infinite':undefined }}/> {solFaucetLoading ? 'Meminta...' : 'Faucet 1 SOL'}
-                          </button>
-                        )}
-                        <button onClick={() => solRefreshBalance()} disabled={solLoadingBal}
-                          style={{ background:'none', border:'1px solid #333', color:'#666', padding:'6px 12px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
-                          <FaSync size={10} style={{ animation:solLoadingBal?'spin 1s linear infinite':undefined }}/> Refresh
-                        </button>
-                      </div>
-                    </div>
-                    <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #161616', display:'flex', alignItems:'center', gap:'8px' }}>
-                      <FaQrcode size={11} color="#444"/>
-                      <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                        {solAddress}
-                      </code>
-                      <button onClick={() => copyText(solAddress, 'sol_addr')}
-                        style={{ background:'none', border:'1px solid #333', color:copiedKey==='sol_addr'?'#4caf50':'#555', padding:'4px 8px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}>
-                        {copiedKey==='sol_addr' ? <FaCheckCircle/> : <FaCopy/>}
-                      </button>
-                      <a href={`${SOLANA_NETWORK.explorerUrl}/account/${solAddress}${SOLANA_NETWORK.clusterParam}`} target="_blank" rel="noreferrer"
-                        style={{ color:'#555', padding:'4px 8px', border:'1px solid #333', display:'flex', flexShrink:0 }}
-                        title="Lihat di Explorer">
-                        <FaLink size={11}/>
-                      </a>
-                    </div>
-                  </div>
-
-                  {/* ── Mode + Form card ── */}
-                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
-
-                    {/* Mode segmented control */}
-                    <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', padding:'2px', marginBottom:'20px' }}>
-                      {([
-                        ['single', <FaPaperPlane key="i" size={11}/>, 'Kirim'],
-                        ['multi',  <FaLayerGroup key="i" size={11}/>, 'Multi Send'],
-                        ['sweep',  <FaExchangeAlt key="i" size={11}/>, 'Sweep'],
-                        ['close',  <FaTrash key="i" size={11}/>, 'Tutup Akun'],
-                      ] as const).map(([m, icon, label]) => (
-                        <button key={m} onClick={() => setSolMode(m)} style={{
-                          flex:1, padding:'9px 8px', background: solMode===m ? SOLANA_NETWORK.color : 'transparent',
-                          border:'none', color: solMode===m ? '#000' : '#666',
-                          cursor:'pointer', fontSize:'12px', fontWeight:'bold',
-                          display:'flex', alignItems:'center', justifyContent:'center', gap:'6px',
-                        }}>
-                          {icon} {label}
-                        </button>
-                      ))}
-                    </div>
-
-                    {solMode !== 'close' && renderSolAssetSelector()}
-
-                    {/* ── Kirim (single) ── */}
-                    {solMode === 'single' && (
-                      <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
-                        <div>
-                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Address tujuan</label>
-                          <input type="text" placeholder="Solana address tujuan..." value={solSendTo}
-                            onChange={e => setSolSendTo(e.target.value)}
-                            style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
-                        </div>
-                        <div>
-                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>
-                            Jumlah {solAsset === 'native' ? '(SOL)' : '(token)'}
-                          </label>
-                          <input type="number" placeholder="0.01" step="0.0001" min="0" value={solSendAmt}
-                            onChange={e => setSolSendAmt(e.target.value)}
-                            style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
-                        </div>
-                        <button onClick={solSend} disabled={solSending || !solSendTo.trim() || !solSendAmt}
-                          style={{
-                            padding:'13px', background:solSending?'#1a1a2a':SOLANA_NETWORK.color, color:'#000', border:'none',
-                            cursor:solSending?'wait':'pointer', fontSize:'14px', fontWeight:'bold',
-                            display:'flex', alignItems:'center', justifyContent:'center', gap:'7px',
-                            opacity:(!solSendTo.trim()||!solSendAmt) ? 0.5 : 1,
-                          }}>
-                          {solSending
-                            ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
-                            : <><FaPaperPlane/> {solAsset === 'native' ? 'Kirim SOL' : 'Kirim Token'}</>}
-                        </button>
-                        {solStatus.type !== 'idle' && (
-                          <div style={{
-                            padding:'10px 12px', fontSize:'11px',
-                            background: solStatus.type==='error' ? '#1a0000' : solStatus.type==='success' ? '#001a00' : '#0a0a1a',
-                            border: `1px solid ${solStatus.type==='error'?'#440000':solStatus.type==='success'?'#004400':'#1a1a3a'}`,
-                            color: solStatus.type==='error' ? '#f44336' : solStatus.type==='success' ? '#4caf50' : '#888',
-                          }}>
-                            {solStatus.msg}
-                            {solStatus.hash && (
-                              <div style={{ marginTop:'6px' }}>
-                                <a href={`${SOLANA_NETWORK.explorerUrl}/tx/${solStatus.hash}${SOLANA_NETWORK.clusterParam}`} target="_blank" rel="noreferrer" style={{ color:'#01a2ff' }}>
-                                  <FaLink size={9} style={{ marginRight:'4px' }}/>Lihat di Explorer
-                                </a>
-                                <div style={{ fontSize:'10px', color:'#555', marginTop:'3px', wordBreak:'break-all' }}>{solStatus.hash}</div>
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    {/* ── Multi Send ── */}
-                    {solMode === 'multi' && (
-                      <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                        <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
-                          <label style={{ fontSize:'11px', color:'#555', whiteSpace:'nowrap' }}>
-                            Jumlah rata ({solIsToken ? `token ${shortAddr(selectedSolToken!.mint)}` : 'SOL'}):
-                          </label>
-                          <input type="number" placeholder="0.001" step="0.0001" min="0" value={solMultiEqualAmt}
-                            onChange={e => setSolMultiEqualAmt(e.target.value)}
-                            style={{ width:'110px', fontFamily:'monospace', fontSize:'12px' }}/>
-                          <button onClick={solMultiApplyEqual} disabled={!solMultiEqualAmt}
-                            style={{ background:'none', border:'1px solid #333', color:'#888', padding:'5px 12px', cursor:'pointer', fontSize:'11px', opacity:!solMultiEqualAmt?0.4:1 }}>
-                            Terapkan ke semua baris
-                          </button>
-                        </div>
-
-                        <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
-                          {solMultiRows.map((row, idx) => {
-                            const statusColor = { idle:'#333', pending:'#ffaa00', success:'#4caf50', failed:'#f44336' }[row.status];
-                            return (
-                              <div key={row.id} style={{ display:'grid', gridTemplateColumns:'1fr 110px 60px 26px', gap:'6px', alignItems:'center' }}>
-                                <input type="text" placeholder={`Solana address #${idx+1}`} value={row.to}
-                                  onChange={e => solMultiUpdateRow(row.id, 'to', e.target.value)}
-                                  style={{ fontFamily:'monospace', fontSize:'11px', padding:'8px 9px', background: row.status==='failed'?'#1a0000':row.status==='success'?'#001a00':'#0d0d0d', border:`1px solid ${row.status!=='idle'?statusColor+'44':'#1e1e1e'}` }}/>
-                                <input type="number" placeholder="0.001" step="0.0001" min="0" value={row.amount}
-                                  onChange={e => solMultiUpdateRow(row.id, 'amount', e.target.value)}
-                                  style={{ fontFamily:'monospace', fontSize:'11px', padding:'8px 9px', background:'#0d0d0d', border:'1px solid #1e1e1e' }}/>
-                                <div style={{ fontSize:'10px', fontWeight:'bold', color:statusColor, fontFamily:'monospace', textAlign:'center' }}>
-                                  {row.status === 'idle'    && '—'}
-                                  {row.status === 'pending' && '⟳'}
-                                  {row.status === 'success' && '✓'}
-                                  {row.status === 'failed'  && '✗'}
-                                </div>
-                                <button onClick={() => solMultiRemoveRow(row.id)} disabled={solMultiRows.length === 1}
-                                  style={{ background:'none', border:'1px solid #2a2a2a', color:'#f44336', padding:'6px', cursor: solMultiRows.length===1?'not-allowed':'pointer', fontSize:'11px', opacity:solMultiRows.length===1?0.3:1 }}>
-                                  ×
-                                </button>
-                              </div>
-                            );
-                          })}
-                        </div>
-
-                        <button onClick={solMultiAddRow} disabled={solMultiRunning}
-                          style={{ alignSelf:'flex-start', background:'none', border:'none', color:'#9945FF', padding:'2px 0', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'5px' }}>
-                          <FaPlus size={10}/> Tambah baris
-                        </button>
-
-                        {solMultiRows.some(r => r.hash || r.error) && (
-                          <div style={{ background:'#070707', border:'1px solid #1a1a1a', padding:'10px 12px', fontSize:'11px', fontFamily:'monospace', display:'flex', flexDirection:'column', gap:'5px' }}>
-                            {solMultiRows.filter(r => r.hash || r.error).map(r => (
-                              <div key={r.id + '_log'}>
-                                {r.hash && (
-                                  <span style={{ color:'#4caf50' }}>
-                                    ✓ {shortAddr(r.to)} —{' '}
-                                    <a href={`${SOLANA_NETWORK.explorerUrl}/tx/${r.hash}${SOLANA_NETWORK.clusterParam}`} target="_blank" rel="noreferrer" style={{ color:'#01a2ff' }}>{r.hash.slice(0,18)}…</a>
-                                  </span>
-                                )}
-                                {r.error && <span style={{ color:'#f44336' }}>✗ {shortAddr(r.to)} — {r.error.slice(0,80)}</span>}
-                              </div>
-                            ))}
-                          </div>
-                        )}
-
-                        <button onClick={solMultiSend}
-                          disabled={solMultiRunning || solMultiRows.every(r => !r.to || !r.amount)}
-                          style={{
-                            padding:'13px', background:solMultiRunning?'#1a1a2a':SOLANA_NETWORK.color, color:'#000', border:'none',
-                            cursor:solMultiRunning?'wait':'pointer', fontSize:'14px', fontWeight:'bold',
-                            display:'flex', alignItems:'center', justifyContent:'center', gap:'7px',
-                            opacity: solMultiRows.every(r=>!r.to||!r.amount) ? 0.5 : 1,
-                          }}>
-                          {solMultiRunning
-                            ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim {solMultiRows.filter(r=>r.status==='success').length}/{solMultiRows.filter(r=>solIsValidAddr(r.to)&&parseFloat(r.amount)>0).length}...</>
-                            : <><FaPaperPlane/> Kirim {solMultiRows.filter(r=>solIsValidAddr(r.to)&&parseFloat(r.amount)>0).length || solMultiRows.length} {solIsToken ? 'Token' : 'Transaksi'}</>}
-                        </button>
-                        <div style={{ fontSize:'10px', color:'#444', textAlign:'center' }}>
-                          Dikirim satu per satu — tiap TX menunggu konfirmasi sebelum lanjut ke baris berikutnya.
-                        </div>
-                      </div>
-                    )}
-
-                    {/* ── Sweep ── */}
-                    {solMode === 'sweep' && (
-                      <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                        <div style={{ fontSize:'11px', color:'#888', lineHeight:'1.6' }}>
-                          {solIsToken
-                            ? <>Kirim saldo token (mint <strong style={{ color:'#ccc' }}>{shortAddr(selectedSolToken!.mint)}</strong>) dari banyak wallet ke <strong style={{ color:'#ccc' }}>satu address tujuan</strong>. Wallet sumber tetap butuh sedikit SOL untuk fee — yang tidak cukup otomatis di-skip.</>
-                            : <>Kirim saldo SOL dari banyak wallet ke <strong style={{ color:'#ccc' }}>satu address tujuan</strong>. Wallet dengan saldo lebih kecil dari fee otomatis di-skip.</>}
-                        </div>
-
-                        <div>
-                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>
-                            Address tujuan (penerima)
-                          </label>
-                          <input type="text" placeholder="Solana address yang akan menerima semua dana"
-                            value={solSweepDestAddr} onChange={e => setSolSweepDestAddr(e.target.value)}
-                            style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px',
-                              borderColor: solSweepDestAddr && !solIsValidAddr(solSweepDestAddr) ? '#f44336' : undefined }}/>
-                          {solSweepDestAddr && !solIsValidAddr(solSweepDestAddr) && (
-                            <div style={{ fontSize:'10px', color:'#f44336', marginTop:'3px' }}>Address tidak valid</div>
-                          )}
-                        </div>
-
-                        <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', padding:'2px' }}>
-                          {(['all','fixed'] as const).map(m => (
-                            <button key={m} onClick={() => setSolSweepAmtMode(m)} style={{
-                              flex:1, padding:'8px', background: solSweepAmtMode===m ? SOLANA_NETWORK.color : 'transparent',
-                              border:'none', color: solSweepAmtMode===m ? '#000' : '#666', cursor:'pointer', fontSize:'11px', fontWeight:'bold',
-                            }}>
-                              {m === 'all' ? 'Semua Saldo' : 'Jumlah Tetap'}
-                            </button>
-                          ))}
-                        </div>
-
-                        {solSweepAmtMode === 'fixed' ? (
-                          <div>
-                            <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>
-                              Jumlah tetap ({solIsToken ? 'token' : 'SOL'}) per wallet
-                            </label>
-                            <input type="number" placeholder="0.01" step="0.0001" min="0" value={solSweepFixedAmt}
-                              onChange={e => setSolSweepFixedAmt(e.target.value)}
-                              style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
-                          </div>
-                        ) : solIsToken ? (
-                          <div style={{ fontSize:'10px', color:'#444' }}>
-                            Seluruh saldo token tiap wallet akan dikirim (fee dibayar terpisah pakai SOL).
-                          </div>
-                        ) : (
-                          <div>
-                            <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Sisakan di tiap wallet (SOL)</label>
-                            <input type="number" placeholder="0.00001" step="0.00001" min="0" value={solSweepLeaveBuf}
-                              onChange={e => setSolSweepLeaveBuf(e.target.value)}
-                              style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
-                          </div>
-                        )}
-
-                        <div>
-                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Delay antar TX (ms)</label>
-                          <input type="number" placeholder="1200" step="100" min="0" value={solSweepDelayMs}
-                            onChange={e => setSolSweepDelayMs(parseInt(e.target.value) || 0)}
-                            style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
-                        </div>
-
-                        {/* Sumber wallet */}
-                        <div style={{ borderTop:'1px solid #161616', paddingTop:'14px' }}>
-                          <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px' }}>
-                            Wallet Sumber ({solSweepSources.length})
-                          </div>
-                          {wallets.some(w => (w.solAddresses||[]).length > 0) && (
-                            <div style={{ marginBottom:'10px' }}>
-                              <select onChange={e => { solSweepAddFromBIP39(e.target.value); e.target.value=''; }} value=""
-                                style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
-                                <option value="">-- Tambah dari wallet tersimpan --</option>
-                                {wallets.flatMap((w, wi) =>
-                                  (w.solAddresses||[]).map(a => (
-                                    <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
-                                      {w.name} · #{a.index} · {a.address.slice(0,14)}...
-                                    </option>
-                                  ))
-                                )}
-                              </select>
-                            </div>
-                          )}
-                          <div style={{ display:'flex', gap:'8px', marginBottom:'12px' }}>
-                            <input type="password" placeholder="Atau tempel private key base58 manual..."
-                              value={solSweepManualPK} onChange={e => setSolSweepManualPK(e.target.value)}
-                              style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}/>
-                            <button onClick={solSweepAddManualPK} disabled={!solSweepManualPK.trim()}
-                              style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'11px', opacity:!solSweepManualPK.trim()?0.4:1 }}>
-                              <FaPlus size={10}/>
-                            </button>
-                          </div>
-
-                          {solSweepSources.length > 0 && (
-                            <>
-                              <button onClick={solSweepFetchBalances} disabled={solSweepFetchingBal}
-                                style={{ background:'none', border:'1px solid #333', color:'#666', padding:'6px 12px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', marginBottom:'10px' }}>
-                                <FaSync size={10} style={{ animation:solSweepFetchingBal?'spin 1s linear infinite':undefined }}/> Cek Saldo Semua
-                              </button>
-                              <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
-                                {solSweepSources.map(s => {
-                                  const statusColor = { idle:'#333', pending:'#ffaa00', success:'#4caf50', failed:'#f44336', skipped:'#666' }[s.status];
-                                  return (
-                                    <div key={s.id} style={{ display:'flex', alignItems:'center', gap:'8px', background:'#0a0a0a', border:`1px solid ${s.status!=='idle'?statusColor+'44':'#151515'}`, padding:'9px 12px' }}>
-                                      <div style={{ flex:1, minWidth:0 }}>
-                                        <div style={{ fontSize:'11px', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.label}</div>
-                                        {s.balance && <div style={{ fontSize:'10px', color:'#666' }}>{s.balance}</div>}
-                                        {s.error && <div style={{ fontSize:'10px', color:'#f44336' }}>{s.error}</div>}
-                                      </div>
-                                      <div style={{ fontSize:'10px', fontWeight:'bold', color:statusColor, fontFamily:'monospace', flexShrink:0 }}>
-                                        {s.status === 'idle'    && '—'}
-                                        {s.status === 'pending' && '⟳'}
-                                        {s.status === 'success' && '✓'}
-                                        {s.status === 'failed'  && '✗'}
-                                        {s.status === 'skipped' && 'skip'}
-                                      </div>
-                                      <button onClick={() => solSweepRemoveSource(s.id)} disabled={solSweepRunning}
-                                        style={{ background:'none', border:'none', color:'#f44336', cursor:'pointer', padding:'4px', flexShrink:0 }}>
-                                        ×
-                                      </button>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </>
-                          )}
-                        </div>
-
-                        <button onClick={solSweepRun}
-                          disabled={solSweepRunning || solSweepSources.length === 0 || !solIsValidAddr(solSweepDestAddr)}
-                          style={{
-                            padding:'13px', fontWeight:'bold', fontSize:'14px', cursor:solSweepRunning?'wait':'pointer',
-                            background: solSweepRunning ? '#001a00' : (solSweepSources.length===0||!solIsValidAddr(solSweepDestAddr)) ? 'transparent' : '#00e676',
-                            color: solSweepRunning ? '#00e676' : '#000',
-                            border:`1px solid ${solSweepRunning?'#00e67644':'#00e676'}`,
-                            display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
-                            opacity: (solSweepSources.length===0||!solIsValidAddr(solSweepDestAddr)) ? 0.4 : 1,
-                            transition:'all 0.2s',
-                          }}>
-                          {solSweepRunning
-                            ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Sweeping {solSweepSources.filter(s=>s.status==='success').length}/{solSweepSources.length}...</>
-                            : <><FaExchangeAlt/> Mulai Sweep {solSweepSources.length} Wallet{solIsToken ? ` (Token ${shortAddr(selectedSolToken!.mint)})` : ''}</>}
-                        </button>
-                      </div>
-                    )}
-
-                    {/* ── Tutup Akun Token (Close Token Account) ──
-                        Menutup token account (ATA / Token-2022) SPL untuk menarik kembali
-                        rent (± 0.002 SOL/akun) yang terkunci di dalamnya. Selalu mengikuti
-                        cluster aktif (SOLANA_NETWORK) — jadi otomatis berfungsi baik di
-                        Mainnet, Testnet, maupun Devnet tanpa perlu konfigurasi tambahan. */}
-                    {solMode === 'close' && (() => {
-                      const emptyAccs    = solCloseAccounts.filter(a => a.uiAmount === 0);
-                      const balanceAccs  = solCloseAccounts.filter(a => a.uiAmount > 0);
-                      const totalReclaim = solCloseAccounts.reduce((s, a) => s + a.lamports, 0) / LAMPORTS_PER_SOL;
-                      const selectedEmpty      = emptyAccs.filter(a => solCloseSelected.has(a.pubkey));
-                      const selectedReclaim    = selectedEmpty.reduce((s, a) => s + a.lamports, 0) / LAMPORTS_PER_SOL;
-                      const allEmptySelected   = emptyAccs.length > 0 && emptyAccs.every(a => solCloseSelected.has(a.pubkey));
-                      const q = solCloseSearch.trim().toLowerCase();
-                      const visibleAccs = solCloseAccounts
-                        .filter(a => solCloseFilter === 'all' ? true : solCloseFilter === 'empty' ? a.uiAmount === 0 : a.uiAmount > 0)
-                        .filter(a => !q || a.mint.toLowerCase().includes(q) || a.pubkey.toLowerCase().includes(q));
-
-                      return (
-                        <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                          {/* Info banner */}
-                          <div style={{ display:'flex', gap:'9px', fontSize:'11px', color:'#777', lineHeight:1.6, background:'#0a0a0a', border:'1px solid #1e1e1e', padding:'10px 12px' }}>
-                            <FaInfoCircle size={12} style={{ color:'#555', flexShrink:0, marginTop:'2px' }}/>
-                            <div>
-                              Setiap token account SPL (baik <strong style={{ color:'#ccc' }}>SPL Token</strong> klasik maupun <strong style={{ color:'#ccc' }}>Token-2022</strong>)
-                              menahan rent ± <strong style={{ color:'#ccc' }}>0.00203928 SOL</strong>. Menutup akun kosong mengembalikan rent itu ke wallet ini.
-                              Akun yang masih bersaldo harus dikosongkan dulu — kirim ke wallet lain, atau bakar langsung dari sini.
-                            </div>
-                          </div>
-
-                          {/* Kartu ringkasan */}
-                          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:'8px' }}>
-                            {[
-                              { label: 'Total Akun',      value: solCloseAccounts.length,                 color: '#ccc' },
-                              { label: 'Siap Ditutup',    value: emptyAccs.length,                        color: '#4caf50' },
-                              { label: 'Reclaim Tersedia',value: `± ${totalReclaim.toFixed(5)} SOL`,       color: SOLANA_NETWORK.color },
-                            ].map(card => (
-                              <div key={card.label} style={{ background:'#0a0a0a', border:'1px solid #1e1e1e', padding:'10px 12px', textAlign:'center' }}>
-                                <div style={{ fontSize: typeof card.value === 'number' ? '18px' : '13px', fontWeight:'bold', color: card.color, fontFamily:'monospace' }}>
-                                  {card.value}
-                                </div>
-                                <div style={{ fontSize:'9px', color:'#555', textTransform:'uppercase', letterSpacing:'0.5px', marginTop:'3px' }}>
-                                  {card.label}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-
-                          {/* Toolbar: filter + search + refresh */}
-                          <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
-                            <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', padding:'2px', flexShrink:0 }}>
-                              {([
-                                ['all',     `Semua (${solCloseAccounts.length})`],
-                                ['empty',   `Kosong (${emptyAccs.length})`],
-                                ['balance', `Bersaldo (${balanceAccs.length})`],
-                              ] as const).map(([f, label]) => (
-                                <button key={f} onClick={() => setSolCloseFilter(f)} style={{
-                                  padding:'6px 10px', background: solCloseFilter===f ? '#1a1a1a' : 'transparent',
-                                  border:'none', color: solCloseFilter===f ? '#ccc' : '#555',
-                                  cursor:'pointer', fontSize:'10px', fontWeight:'bold', whiteSpace:'nowrap',
-                                }}>
-                                  {label}
-                                </button>
-                              ))}
-                            </div>
-                            <input type="text" placeholder="Cari mint / ATA address..." value={solCloseSearch}
-                              onChange={e => setSolCloseSearch(e.target.value)}
-                              style={{ flex:1, minWidth:'160px', fontFamily:'monospace', fontSize:'11px', padding:'7px 10px' }}/>
-                            <button onClick={() => solFetchCloseAccounts()} disabled={solCloseLoading}
-                              style={{ background:'none', border:'1px solid #333', color:'#888', padding:'7px 12px', cursor: solCloseLoading?'wait':'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', flexShrink:0 }}>
-                              <FaSync size={9} style={{ animation:solCloseLoading?'spin 1s linear infinite':undefined }}/> Refresh
-                            </button>
-                          </div>
-
-                          {/* Loading skeleton */}
-                          {solCloseLoading && solCloseAccounts.length === 0 && (
-                            <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
-                              {[0,1,2].map(i => (
-                                <div key={i} style={{ height:'52px', background:'#0a0a0a', border:'1px solid #1e1e1e', opacity:0.5 - i*0.1,
-                                  animation:'pulse 1.4s ease-in-out infinite' }}/>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Empty state */}
-                          {!solCloseLoading && solCloseAccounts.length === 0 && (
-                            <div style={{ textAlign:'center', padding:'32px 0', color:'#333' }}>
-                              <FaCoins size={22} style={{ color:'#222', marginBottom:'8px' }}/>
-                              <p style={{ fontSize:'12px', margin:0 }}>
-                                Tidak ada token account SPL di wallet ini pada cluster {SOLANA_NETWORK.name}.
-                              </p>
-                            </div>
-                          )}
-
-                          {/* Tidak ada hasil filter/pencarian, tapi datanya ada */}
-                          {!solCloseLoading && solCloseAccounts.length > 0 && visibleAccs.length === 0 && (
-                            <p style={{ color:'#333', fontSize:'12px', textAlign:'center', padding:'16px 0', margin:0 }}>
-                              Tidak ada akun yang cocok dengan filter/pencarian saat ini.
-                            </p>
-                          )}
-
-                          {/* Pilih semua akun kosong */}
-                          {emptyAccs.length > 1 && solCloseFilter !== 'balance' && (
-                            <label style={{ display:'flex', alignItems:'center', gap:'7px', fontSize:'11px', color:'#888', cursor:'pointer', userSelect:'none' }}>
-                              <input type="checkbox" checked={allEmptySelected}
-                                onChange={() => solCloseToggleSelectAll(emptyAccs.map(a => a.pubkey))}/>
-                              Pilih semua akun kosong ({emptyAccs.length})
-                            </label>
-                          )}
-
-                          {/* Daftar akun */}
-                          {visibleAccs.length > 0 && (
-                            <div style={{ display:'flex', flexDirection:'column', gap:'8px', maxHeight:'420px', overflowY:'auto', paddingRight:'2px' }}>
-                              {visibleAccs.map(acc => {
-                                const isClosing  = solClosingId === acc.pubkey;
-                                const hasBalance = acc.uiAmount > 0;
-                                const burnFirst  = !!solCloseBurnFirst[acc.pubkey];
-                                const isSelected = solCloseSelected.has(acc.pubkey);
-                                const reclaimSol = (acc.lamports / LAMPORTS_PER_SOL).toFixed(6);
-                                const isToken22  = acc.programId === TOKEN_2022_PROGRAM_ID.toBase58();
-                                const accentColor= hasBalance ? '#f4a300' : '#4caf50';
-                                // ── Nama tampilan: pakai nama/simbol on-chain kalau ketemu, kalau nggak ada
-                                //    metadata (token polos) jatuh ke label netral — bukan dibiarkan kosong. ──
-                                const displayName  = acc.name || acc.symbol || (acc.metaLoaded ? 'Token Tidak Dikenal' : '');
-                                const avatarLetter = (acc.name || acc.symbol || acc.mint).trim().charAt(0).toUpperCase() || '?';
-                                const createdLabel = acc.createdAtLoaded
-                                  ? (acc.createdAt
-                                      ? new Date(acc.createdAt).toLocaleDateString('id-ID', { day:'2-digit', month:'short', year:'numeric' })
-                                      : 'tidak diketahui')
-                                  : null;
-                                return (
-                                  <div key={acc.pubkey} style={{
-                                    padding:'11px 12px', background:'#0a0a0a', borderTop:'1px solid #1e1e1e', borderRight:'1px solid #1e1e1e', borderBottom:'1px solid #1e1e1e',
-                                    borderLeft:`3px solid ${accentColor}55`,
-                                    display:'flex', flexDirection:'column', gap:'9px',
-                                  }}>
-                                    <div style={{ display:'flex', alignItems:'flex-start', gap:'10px' }}>
-                                      {!hasBalance && (
-                                        <input type="checkbox" checked={isSelected} onChange={() => solCloseToggleSelect(acc.pubkey)}
-                                          style={{ marginTop:'3px', flexShrink:0, cursor:'pointer' }}/>
-                                      )}
-                                      {/* Avatar: logo token kalau ada, kalau nggak avatar inisial berwarna —
-                                          supaya kartu akun kosong nggak nampak blank hitam polos. */}
-                                      <div style={{
-                                        width:'30px', height:'30px', borderRadius:'50%', flexShrink:0, marginTop:'1px',
-                                        overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center',
-                                        background: acc.image ? '#111' : `${accentColor}22`,
-                                        border:`1px solid ${accentColor}55`,
-                                      }}>
-                                        {acc.image
-                                          ? <img src={acc.image} alt="" style={{ width:'100%', height:'100%', objectFit:'cover' }}
-                                              onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}/>
-                                          : <span style={{ fontSize:'12px', fontWeight:'bold', color: accentColor }}>{avatarLetter}</span>}
-                                      </div>
-                                      <div style={{ minWidth:0, flex:1 }}>
-                                        <div style={{ display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap' }}>
-                                          <span style={{ fontSize:'12px', color:'#eee', fontWeight:'bold' }}>
-                                            {displayName || <span style={{ display:'inline-block', width:'70px', height:'10px', background:'#1a1a1a', borderRadius:'2px' }}/>}
-                                          </span>
-                                          {acc.symbol && acc.name && (
-                                            <span style={{ fontSize:'10px', color:'#777' }}>{acc.symbol}</span>
-                                          )}
-                                          <span style={{
-                                            fontSize:'9px', fontWeight:'bold', padding:'1px 6px',
-                                            color: isToken22 ? '#c792ea' : '#569cd6',
-                                            background: isToken22 ? '#c792ea1a' : '#569cd61a',
-                                            border:`1px solid ${isToken22 ? '#c792ea33' : '#569cd633'}`,
-                                          }}>
-                                            {isToken22 ? 'Token-2022' : 'SPL Token'}
-                                          </span>
-                                        </div>
-                                        <div style={{ display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap', marginTop:'3px' }}>
-                                          <span style={{ fontSize:'11px', color:'#ccc', fontFamily:'monospace' }}>Mint {shortAddr(acc.mint)}</span>
-                                          <button onClick={() => copyText(acc.mint, `close_mint_${acc.pubkey}`)}
-                                            style={{ background:'none', border:'none', color: copiedKey===`close_mint_${acc.pubkey}` ? '#4caf50' : '#444', cursor:'pointer', padding:'2px', display:'flex' }}>
-                                            {copiedKey===`close_mint_${acc.pubkey}` ? <FaCheckCircle size={9}/> : <FaCopy size={9}/>}
-                                          </button>
-                                        </div>
-                                        <div style={{ display:'flex', alignItems:'center', gap:'6px', marginTop:'3px' }}>
-                                          <span style={{ fontSize:'10px', color:'#555', fontFamily:'monospace' }}>ATA {shortAddr(acc.pubkey)}</span>
-                                          <button onClick={() => copyText(acc.pubkey, `close_ata_${acc.pubkey}`)}
-                                            style={{ background:'none', border:'none', color: copiedKey===`close_ata_${acc.pubkey}` ? '#4caf50' : '#333', cursor:'pointer', padding:'2px', display:'flex' }}>
-                                            {copiedKey===`close_ata_${acc.pubkey}` ? <FaCheckCircle size={9}/> : <FaCopy size={9}/>}
-                                          </button>
-                                        </div>
-                                        <div style={{ fontSize:'10px', color:'#555', marginTop:'3px' }}>
-                                          Dibuat: {createdLabel ?? <span style={{ display:'inline-block', width:'60px', height:'8px', background:'#1a1a1a', borderRadius:'2px', verticalAlign:'middle' }}/>}
-                                        </div>
-                                      </div>
-                                      <div style={{ textAlign:'right', flexShrink:0 }}>
-                                        <div style={{ fontSize:'11px', color: hasBalance ? '#ffb300' : '#4caf50', fontWeight:'bold' }}>
-                                          saldo {acc.uiAmount}
-                                        </div>
-                                        <div style={{ fontSize:'10px', color:'#666' }}>reclaim ± {reclaimSol} SOL</div>
-                                      </div>
-                                    </div>
-
-                                    {hasBalance && (
-                                      <label style={{ display:'flex', alignItems:'center', gap:'6px', fontSize:'10px', color:'#f4a300', cursor:'pointer' }}>
-                                        <input type="checkbox" checked={burnFirst}
-                                          onChange={e => setSolCloseBurnFirst(prev => ({ ...prev, [acc.pubkey]: e.target.checked }))}/>
-                                        Bakar sisa saldo dulu, lalu tutup akun (tindakan permanen — token akan hilang)
-                                      </label>
-                                    )}
-
-                                    <button onClick={() => solCloseTokenAccount(acc)}
-                                      disabled={isClosing || solCloseAllRunning || (hasBalance && !burnFirst)}
-                                      style={{
-                                        padding:'9px', fontSize:'11px', fontWeight:'bold',
-                                        background: isClosing ? '#1a0000' : (hasBalance && !burnFirst) ? 'transparent' : '#f44336',
-                                        color: isClosing ? '#f44336' : '#fff',
-                                        border: `1px solid ${(hasBalance && !burnFirst) ? '#333' : '#f44336'}`,
-                                        cursor: isClosing ? 'wait' : (hasBalance && !burnFirst) ? 'not-allowed' : 'pointer',
-                                        opacity: (hasBalance && !burnFirst) ? 0.4 : 1,
-                                        display:'flex', alignItems:'center', justifyContent:'center', gap:'6px',
-                                      }}>
-                                      {isClosing
-                                        ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Menutup...</>
-                                        : <><FaTrash size={10}/> {hasBalance ? 'Bakar & Tutup Akun' : 'Tutup Akun'}</>}
-                                    </button>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-
-                          {/* Bar aksi batch — nempel di bawah daftar, aktif kalau ada akun kosong yang dicentang */}
-                          {emptyAccs.length > 0 && (
-                            <div style={{
-                              display:'flex', alignItems:'center', justifyContent:'space-between', gap:'12px', flexWrap:'wrap',
-                              background:'#0a0a0a', border:'1px solid #1e1e1e', padding:'10px 12px',
-                            }}>
-                              <div style={{ fontSize:'11px', color:'#888' }}>
-                                {selectedEmpty.length > 0
-                                  ? <>{selectedEmpty.length} akun dipilih · reclaim ± <strong style={{ color:'#4caf50' }}>{selectedReclaim.toFixed(6)} SOL</strong></>
-                                  : 'Belum ada akun kosong yang dipilih.'}
-                              </div>
-                              <button onClick={solCloseSelectedAccounts} disabled={solCloseAllRunning || !!solClosingId || selectedEmpty.length === 0}
-                                style={{
-                                  padding:'10px 16px', fontWeight:'bold', fontSize:'12px',
-                                  cursor: (solCloseAllRunning || selectedEmpty.length===0) ? (solCloseAllRunning?'wait':'not-allowed') : 'pointer',
-                                  background: solCloseAllRunning ? '#001a00' : selectedEmpty.length===0 ? 'transparent' : '#00e676',
-                                  color: solCloseAllRunning ? '#00e676' : selectedEmpty.length===0 ? '#555' : '#000',
-                                  border: `1px solid ${solCloseAllRunning ? '#00e67644' : selectedEmpty.length===0 ? '#333' : '#00e676'}`,
-                                  display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
-                                  opacity: !!solClosingId ? 0.5 : 1, flexShrink:0,
-                                }}>
-                                {solCloseAllRunning
-                                  ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Menutup...</>
-                                  : <><FaTrash/> Tutup {selectedEmpty.length || ''} Akun Terpilih</>}
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  {/* ── Riwayat Transaksi Solana ── */}
-                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'18px' }}>
-                    <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'12px' }}>
-                      Riwayat Transaksi Solana
-                    </div>
-                    {(() => {
-                      const solHistory = agHistory.filter(h => h.description.includes(SOLANA_NETWORK.name)).slice(0, 15);
-                      if (solHistory.length === 0) {
-                        return <p style={{ color:'#333', fontSize:'12px', textAlign:'center', padding:'16px 0', margin:0 }}>Belum ada transaksi Solana.</p>;
-                      }
-                      return (
-                        <div style={{ display:'flex', flexDirection:'column', gap:'7px' }}>
-                          {solHistory.map(h => (
-                            <div key={h.id} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', padding:'8px 0', borderBottom:'1px solid #141414' }}>
-                              <div style={{ minWidth:0, flex:1 }}>
-                                <div style={{ fontSize:'11px', color:'#ccc', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{h.description}</div>
-                                <div style={{ fontSize:'10px', color:'#444' }}>{h.timestamp ? new Date(h.timestamp).toLocaleString('id-ID') : ''}</div>
-                              </div>
-                              {h.txHash && (
-                                <a href={`${SOLANA_NETWORK.explorerUrl}/tx/${h.txHash}${SOLANA_NETWORK.clusterParam}`} target="_blank" rel="noreferrer"
-                                  style={{ color:'#9945FF', flexShrink:0, display:'flex', alignItems:'center', gap:'4px', fontSize:'10px', textDecoration:'none' }}>
-                                  <FaLink size={9}/> Lihat
-                                </a>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  <div style={{ textAlign:'center' }}>
-                    <button onClick={solDisconnect}
-                      style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
-                      Disconnect Wallet
-                    </button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          {txChain === 'tron' && (
-            <>
-              <div style={{ marginBottom:'16px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
-                <select value={tronNetId} onChange={e => switchTronNetwork(e.target.value)}
-                  style={{ flex:'1 1 260px', fontFamily:'monospace', fontSize:'13px', padding:'10px 12px', background:'#0d0d0d', border:'1px solid #1e1e1e', color:'#ccc' }}>
-                  {TRON_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
-                </select>
-                {!tronNetwork.isMainnet && (
-                  <span style={{ fontSize:'10px', color:'#F1C40F', border:'1px solid #4a3f10', background:'#1a1608', padding:'4px 8px', whiteSpace:'nowrap' }}>
-                    ⚠ Jaringan TEST — TRX di sini tidak bernilai, minta dari faucet Nile/Shasta
-                  </span>
-                )}
-                {!tronNetwork.isMainnet && tronNetwork.faucetUrl && (
-                  <button onClick={openTronFaucet}
-                    style={{ fontSize:'11px', color:'#000', background:'#F1C40F', border:'none', padding:'6px 10px', cursor:'pointer', display:'flex', alignItems:'center', gap:'5px', whiteSpace:'nowrap', fontWeight:'bold' }}>
-                    <FaFaucet size={10}/> Faucet {tronNetwork.name.replace('Tron ', '').replace(' Testnet', '')}
-                  </button>
-                )}
-                <a href={`${tronNetwork.explorerUrl}`} target="_blank" rel="noreferrer"
-                  style={{ fontSize:'11px', color:'#EF0027', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
-                  <FaLink size={9}/> Explorer
-                </a>
-              </div>
-
-              {!tronConnected ? (
-                <div className="form-container" style={{ maxWidth:'420px', margin:'32px auto' }}>
-                  <h2 style={{ textAlign:'center', marginBottom:'18px', fontSize:'15px' }}>
-                    <FaPlug style={{ marginRight:'8px' }}/>Connect ke {tronNetwork.name}
-                  </h2>
-                  {wallets.some(w => (w.tronAddresses||[]).length > 0) && (
-                    <div style={{ marginBottom:'14px' }}>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Tron tersimpan</label>
-                      <select value={tronWalletSel} onChange={e => handleTronWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
-                        <option value="">-- Pilih address --</option>
-                        {wallets.flatMap((w, wi) =>
-                          (w.tronAddresses||[]).map(a => (
-                            <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
-                              {w.name} · #{a.index} · {a.address.slice(0,14)}...
-                            </option>
-                          ))
-                        )}
-                      </select>
-                    </div>
-                  )}
-                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                    <FaKey style={{ marginRight:'4px' }}/>Private Key (hex)
-                  </label>
-                  <input
-                    type="password"
-                    placeholder="0x... atau hex tanpa prefix"
-                    value={tronPrivKey}
-                    onChange={e => { setTronPrivKey(e.target.value); setTronWalletSel(''); }}
-                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}
-                  />
-                  <button onClick={tronConnect} disabled={tronConnecting || !tronPrivKey.trim()}
-                    style={{ width:'100%', padding:'12px', background:tronConnecting?'#2a1a1a':tronNetwork.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:!tronPrivKey.trim()?0.5:1 }}>
-                    {tronConnecting
-                      ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Connecting...</>
-                      : <><FaPlug/> Connect</>}
-                  </button>
-                </div>
-              ) : (
-                <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-
-                  {/* ── Balance / Receive card ── */}
-                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${tronNetwork.color}`, padding:'20px' }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'16px' }}>
-                      <div>
-                        <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px' }}>Saldo</div>
-                        <div style={{ fontSize:'22px', fontWeight:'bold', fontFamily:'monospace' }}>
-                          {tronLoadingBal ? <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> : tronBalance}
-                        </div>
-                      </div>
-                      <button onClick={() => { tronRefreshBalance(); tronRefreshResources(); }} disabled={tronLoadingBal}
-                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
-                        <FaSync size={11} style={{ animation:tronLoadingBal?'spin 1s linear infinite':undefined }}/> Refresh
-                      </button>
-                    </div>
-                    <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #1a1a1a' }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                        <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'8px 10px' }}>
-                          {tronAddress}
-                        </code>
-                        <button onClick={() => copyText(tronAddress, 'tron_recv')} style={{ background:'none', border:'1px solid #333', color:copiedKey==='tron_recv'?'#4caf50':'#888', cursor:'pointer', padding:'8px 10px' }}>
-                          {copiedKey==='tron_recv' ? <FaCheckCircle size={12}/> : <FaCopy size={12}/>}
-                        </button>
-                        <button onClick={() => setQrAddress(tronAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
-                          <FaQrcode size={12}/>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* ── Resources card: Bandwidth & Energy ── */}
-                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
-                      <h3 style={{ fontSize:'13px', margin:0 }}><FaBolt style={{ marginRight:'6px', color:'#F1C40F' }}/>Resources</h3>
-                      <button onClick={() => tronRefreshResources()} disabled={tronResourcesLoading}
-                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'5px 10px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
-                        <FaSync size={10} style={{ animation:tronResourcesLoading?'spin 1s linear infinite':undefined }}/> Refresh
-                      </button>
-                    </div>
-
-                    {tronResourcesLoading && !tronResources ? (
-                      <div style={{ textAlign:'center', color:'#555', padding:'10px 0', fontSize:'12px' }}>
-                        <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Memuat kuota resource...
-                      </div>
-                    ) : !tronResources ? (
-                      <div style={{ textAlign:'center', color:'#444', padding:'10px 0', fontSize:'12px' }}>Gagal memuat resource. Coba refresh.</div>
-                    ) : (
-                      <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                        {([
-                          { label: 'Bandwidth', icon: <FaNetworkWired size={11} color="#01a2ff"/>, used: tronResources.freeNetUsed + tronResources.netUsed, limit: tronResources.freeNetLimit + tronResources.netLimit, color:'#01a2ff' },
-                          { label: 'Energy',    icon: <FaBolt size={11} color="#F1C40F"/>,          used: tronResources.energyUsed,                                limit: tronResources.energyLimit,                             color:'#F1C40F' },
-                        ] as const).map(r => {
-                          const pct = r.limit > 0 ? Math.min(100, (r.used / r.limit) * 100) : 0;
-                          const avail = Math.max(0, r.limit - r.used);
-                          return (
-                            <div key={r.label}>
-                              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px', fontSize:'11px' }}>
-                                <span style={{ display:'flex', alignItems:'center', gap:'6px', color:'#888' }}>{r.icon} {r.label}</span>
-                                <span style={{ fontFamily:'monospace', color:'#666' }}>
-                                  {avail.toLocaleString('en-US')} tersedia · {r.used.toLocaleString('en-US')}/{r.limit.toLocaleString('en-US')}
-                                </span>
-                              </div>
-                              <div style={{ height:'6px', background:'#1a1a1a', overflow:'hidden' }}>
-                                <div style={{ height:'100%', width:`${pct}%`, background:r.color, transition:'width .3s' }}/>
-                              </div>
-                            </div>
-                          );
-                        })}
-                        <div style={{ fontSize:'10px', color:'#555' }}>
-                          Kuota gratis pulih tiap 24 jam. Kurang? Selisihnya di-"burn" pakai TRX saat kirim, atau tambah kuota lewat Freeze TRX (governance) di Tronscan.
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* ── Mode toggle: Single / Multi / Sweep ── */}
-                  <div style={{ display:'flex', gap:'8px' }}>
-                    {([['single','Kirim'],['multi','Multi-Send'],['sweep','Sweep']] as const).map(([m, label]) => (
-                      <button key={m} onClick={() => setTronMode(m)}
-                        style={{ flex:1, padding:'9px', background:tronMode===m?tronNetwork.color:'none', color:tronMode===m?'#fff':'#888', border:`1px solid ${tronMode===m?tronNetwork.color:'#333'}`, cursor:'pointer', fontSize:'12px', fontWeight:'bold' }}>
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-
-                  {tronMode === 'single' && (
-                    <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
-                      <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaPaperPlane style={{ marginRight:'6px' }}/>Kirim TRX</h3>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Asset</label>
-                      <select value={tronAsset} onChange={e => setTronAsset(e.target.value)}
-                        style={{ width:'100%', fontFamily:'monospace', fontSize:'13px', marginBottom:'6px' }}>
-                        <option value="native">TRX (native)</option>
-                        {trc20Tokens.filter(t => t.netId === tronNetId && t.address).map(t => (
-                          <option key={t.address} value={t.address}>{t.symbol} — {t.name}</option>
-                        ))}
-                      </select>
-                      {tronAsset !== 'native' && (
-                        <div style={{ fontSize:'11px', color:'#888', marginBottom:'12px' }}>
-                          Saldo: {tronAssetBalLoading ? '...' : tronAssetBal}
-                        </div>
-                      )}
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
-                      <input placeholder="T..." value={tronSendTo} onChange={e => setTronSendTo(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                        Jumlah ({tronAsset === 'native' ? 'TRX' : (trc20Tokens.find(t=>t.address===tronAsset)?.symbol || 'Token')})
-                      </label>
-                      <input type="number" placeholder="0.0" value={tronSendAmt} onChange={e => setTronSendAmt(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'16px' }}/>
-
-                      {(tronFeeEstimating || tronFeeEstimate) && (
-                        <div style={{ background:'#0a0a0a', border:'1px solid #1a1a1a', padding:'10px 12px', marginBottom:'16px', fontSize:'11px' }}>
-                          <div style={{ display:'flex', alignItems:'center', gap:'6px', color:'#666', marginBottom: tronFeeEstimate ? '8px' : 0, textTransform:'uppercase', letterSpacing:'0.5px', fontSize:'10px' }}>
-                            <FaGasPump size={10}/> Estimasi Fee
-                            {tronFeeEstimating && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
-                          </div>
-                          {tronFeeEstimate && (
-                            <>
-                              {tronFeeEstimate.destinationIsNew && (
-                                <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', color:'#ffaa00', marginBottom:'8px', paddingBottom:'8px', borderBottom:'1px solid #1a1a1a' }}>
-                                  <FaExclamationTriangle size={10} style={{ marginTop:'2px', flexShrink:0 }}/>
-                                  <span>Address tujuan belum pernah aktif di jaringan Tron — ada fee aktivasi ekstra ~{sunToTrx(tronFeeEstimate.newAccountFeeSun)} TRX yang otomatis dipotong, di luar bandwidth biasa.</span>
-                                </div>
-                              )}
-                              <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
-                                <span style={{ color:'#888' }}><FaNetworkWired size={9} style={{ marginRight:'5px' }}/>Bandwidth</span>
-                                <span style={{ fontFamily:'monospace', color: tronFeeEstimate.bandwidthNeeded <= tronFeeEstimate.bandwidthAvailable ? '#4caf50' : '#ffaa00' }}>
-                                  {tronFeeEstimate.bandwidthNeeded} / {tronFeeEstimate.bandwidthAvailable} tersedia
-                                </span>
-                              </div>
-                              {tronFeeEstimate.newAccountFeeSun > 0 && (
-                                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
-                                  <span style={{ color:'#888' }}><FaRocket size={9} style={{ marginRight:'5px' }}/>Fee aktivasi akun baru</span>
-                                  <span style={{ fontFamily:'monospace', color:'#ffaa00' }}>
-                                    ~{sunToTrx(tronFeeEstimate.newAccountFeeSun)} TRX
-                                  </span>
-                                </div>
-                              )}
-                              {tronFeeEstimate.energyNeeded > 0 && (
-                                <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'4px' }}>
-                                  <span style={{ color:'#888' }}><FaBolt size={9} style={{ marginRight:'5px' }}/>Energy</span>
-                                  <span style={{ fontFamily:'monospace', color: tronFeeEstimate.energyNeeded <= tronFeeEstimate.energyAvailable ? '#4caf50' : '#ffaa00' }}>
-                                    {tronFeeEstimate.energyNeeded} / {tronFeeEstimate.energyAvailable} tersedia
-                                  </span>
-                                </div>
-                              )}
-                              <div style={{ display:'flex', justifyContent:'space-between', paddingTop:'6px', borderTop:'1px solid #1a1a1a' }}>
-                                <span style={{ color:'#888' }}>Total biaya</span>
-                                <span style={{ fontFamily:'monospace', fontWeight:'bold', color: tronFeeEstimate.coveredByFree ? '#4caf50' : '#ffaa00' }}>
-                                  {tronFeeEstimate.coveredByFree ? 'Gratis (dicover kuota)' : `~${sunToTrx(tronFeeEstimate.feeSun)} TRX`}
-                                </span>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      )}
-
-                      {tronFeeEstimateError && (
-                        <div style={{ background:'#2a0d0d', border:'1px solid #5a1e1e', color:'#ff8888', padding:'10px 12px', marginBottom:'16px', fontSize:'11px', display:'flex', gap:'8px', alignItems:'flex-start' }}>
-                          <FaExclamationTriangle style={{ marginTop:'1px', flexShrink:0 }} size={11}/>
-                          <span>{tronFeeEstimateError}</span>
-                        </div>
-                      )}
-
-                      <button onClick={tronSend} disabled={tronSending || !tronSendTo.trim() || !tronSendAmt || !!tronFeeEstimateError}
-                        style={{ width:'100%', padding:'12px', background:tronSending?'#2a1a1a':tronNetwork.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!tronSendTo.trim()||!tronSendAmt||!!tronFeeEstimateError)?0.5:1 }}>
-                        {tronSending
-                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
-                          : <><FaPaperPlane/> Kirim {tronAsset === 'native' ? 'TRX' : (trc20Tokens.find(t=>t.address===tronAsset)?.symbol || 'Token')}</>}
-                      </button>
-                      {tronStatus.type !== 'idle' && (
-                        <div style={{
-                          marginTop:'14px', padding:'12px', fontSize:'12px',
-                          background: tronStatus.type==='error' ? '#2a0d0d' : tronStatus.type==='success' ? '#0d2a0d' : '#1a1a0d',
-                          border: `1px solid ${tronStatus.type==='error' ? '#5a1e1e' : tronStatus.type==='success' ? '#1e5a1e' : '#5a5a1e'}`,
-                          color: tronStatus.type==='error' ? '#ff8888' : tronStatus.type==='success' ? '#88ff88' : '#ffff88',
-                        }}>
-                          {tronStatus.msg}
-                          {tronStatus.hash && (
-                            <a href={`${tronNetwork.explorerUrl}/transaction/${tronStatus.hash}`} target="_blank" rel="noreferrer"
-                              style={{ display:'block', marginTop:'6px', color:'#EF0027', wordBreak:'break-all' }}>
-                              <FaLink size={9}/> {tronStatus.hash}
-                            </a>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {tronMode === 'multi' && (
-                    <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
-                      <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaLayerGroup style={{ marginRight:'6px' }}/>Multi-Send TRX</h3>
-                      <div style={{ display:'flex', gap:'8px', marginBottom:'12px' }}>
-                        <input placeholder="Samakan semua jumlah (TRX)" value={tronMultiEqualAmt} onChange={e => setTronMultiEqualAmt(e.target.value)}
-                          style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}/>
-                        <button onClick={tronMultiApplyEqual} style={{ background:'none', border:'1px solid #333', color:'#888', padding:'0 14px', cursor:'pointer', fontSize:'12px' }}>Terapkan</button>
-                      </div>
-                      {tronMultiRows.map(row => (
-                        <div key={row.id} style={{ display:'flex', gap:'6px', marginBottom:'8px', alignItems:'center' }}>
-                          <input placeholder="Address tujuan" value={row.to} onChange={e => tronMultiUpdateRow(row.id, 'to', e.target.value)}
-                            style={{ flex:2, fontFamily:'monospace', fontSize:'12px' }}/>
-                          <input placeholder="Jumlah" type="number" value={row.amount} onChange={e => tronMultiUpdateRow(row.id, 'amount', e.target.value)}
-                            style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}/>
-                          <span style={{ fontSize:'10px', width:'70px', flexShrink:0, color: row.status==='success'?'#4caf50':row.status==='failed'?'#f44336':row.status==='pending'?'#ffaa00':'#444' }}>
-                            {row.status==='idle' ? '' : row.status}
-                          </span>
-                          <button onClick={() => tronMultiRemoveRow(row.id)} disabled={tronMultiRows.length<=1}
-                            style={{ background:'none', border:'none', color:'#f44336', cursor:'pointer', padding:'6px' }}><FaTrash size={11}/></button>
-                        </div>
-                      ))}
-                      <button onClick={tronMultiAddRow} style={{ background:'none', border:'1px dashed #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', marginBottom:'16px' }}>
-                        <FaPlus size={10}/> Tambah Baris
-                      </button>
-                      <button onClick={tronMultiSend} disabled={tronMultiRunning}
-                        style={{ width:'100%', padding:'12px', background:tronMultiRunning?'#2a1a1a':tronNetwork.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold' }}>
-                        {tronMultiRunning ? 'Mengirim...' : `Kirim ke ${tronMultiRows.filter(r=>isValidTronAddress(r.to)&&parseFloat(r.amount)>0).length} Penerima`}
-                      </button>
-                    </div>
-                  )}
-
-                  {tronMode === 'sweep' && (
-                    <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
-                      <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaExchangeAlt style={{ marginRight:'6px' }}/>Sweep TRX</h3>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan (kumpulkan ke sini)</label>
-                      <input placeholder="T..." value={tronSweepDestAddr} onChange={e => setTronSweepDestAddr(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
-                      <div style={{ display:'flex', gap:'8px', marginBottom:'12px' }}>
-                        <select value={tronSweepAmtMode} onChange={e => setTronSweepAmtMode(e.target.value as any)} style={{ fontSize:'12px' }}>
-                          <option value="all">Sapu Semua Saldo</option>
-                          <option value="fixed">Jumlah Tetap</option>
-                        </select>
-                        {tronSweepAmtMode === 'all' ? (
-                          <input placeholder="Sisakan (TRX)" value={tronSweepLeaveBuf} onChange={e => setTronSweepLeaveBuf(e.target.value)} style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}/>
-                        ) : (
-                          <input placeholder="Jumlah tetap (TRX)" value={tronSweepFixedAmt} onChange={e => setTronSweepFixedAmt(e.target.value)} style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}/>
-                        )}
-                      </div>
-
-                      <div style={{ display:'flex', gap:'8px', marginBottom:'10px' }}>
-                        <select value="" onChange={e => tronSweepAddFromBIP39(e.target.value)} style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}>
-                          <option value="">-- Tambah dari Wallet BIP39 --</option>
-                          {wallets.flatMap((w, wi) =>
-                            (w.tronAddresses||[]).map(a => (
-                              <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>{w.name} · #{a.index} · {a.address.slice(0,14)}...</option>
-                            ))
-                          )}
-                        </select>
-                      </div>
-                      <div style={{ display:'flex', gap:'8px', marginBottom:'14px' }}>
-                        <input placeholder="Atau tempel private key manual" value={tronSweepManualPK} onChange={e => setTronSweepManualPK(e.target.value)}
-                          style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}/>
-                        <button onClick={tronSweepAddManualPK} style={{ background:'none', border:'1px solid #333', color:'#888', padding:'0 14px', cursor:'pointer', fontSize:'12px' }}>Tambah</button>
-                      </div>
-
-                      {tronSweepSources.length > 0 && (
-                        <>
-                          <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'8px' }}>
-                            <span style={{ fontSize:'11px', color:'#555' }}>{tronSweepSources.length} wallet sumber</span>
-                            <button onClick={tronSweepFetchBalances} disabled={tronSweepFetchingBal}
-                              style={{ background:'none', border:'1px solid #333', color:'#888', padding:'4px 10px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
-                              <FaSync size={10} style={{ animation:tronSweepFetchingBal?'spin 1s linear infinite':undefined }}/> Cek Saldo Semua
-                            </button>
-                          </div>
-                          {tronSweepSources.map(s => (
-                            <div key={s.id} style={{ display:'flex', alignItems:'center', gap:'8px', padding:'8px 0', borderBottom:'1px solid #141414', fontSize:'11px' }}>
-                              <span style={{ flex:1, color:'#888', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{s.label}</span>
-                              <span style={{ color:'#4caf50', fontFamily:'monospace' }}>{s.balance ?? '—'}</span>
-                              <span style={{ width:'60px', color: s.status==='success'?'#4caf50':s.status==='failed'?'#f44336':s.status==='skipped'?'#ffaa00':s.status==='pending'?'#ffaa00':'#444' }}>{s.status==='idle'?'':s.status}</span>
-                              <button onClick={() => tronSweepRemoveSource(s.id)} style={{ background:'none', border:'none', color:'#f44336', cursor:'pointer', padding:'4px' }}><FaTrash size={10}/></button>
-                            </div>
-                          ))}
-                        </>
-                      )}
-
-                      <button onClick={tronSweepRun} disabled={tronSweepRunning || tronSweepSources.length===0}
-                        style={{ width:'100%', marginTop:'16px', padding:'12px', background:tronSweepRunning?'#2a1a1a':tronNetwork.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', opacity:tronSweepSources.length===0?0.5:1 }}>
-                        {tronSweepRunning ? 'Menyapu...' : `Sweep dari ${tronSweepSources.length} Wallet`}
-                      </button>
-                    </div>
-                  )}
-
-                  <div style={{ textAlign:'center' }}>
-                    <button onClick={tronDisconnect}
-                      style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
-                      Disconnect Wallet
-                    </button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          {txChain === 'axm' && (
-            <>
-              <div style={{ marginBottom:'16px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
-                <select value={axmNetId} onChange={e => switchAxmNetwork(e.target.value)}
-                  style={{ flex:'1 1 260px', fontFamily:'monospace', fontSize:'13px', padding:'10px 12px', background:'#0d0d0d', border:'1px solid #1e1e1e', color:'#ccc' }}>
-                  {AXIOME_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
-                </select>
-                <a href={`${AXIOME_NETWORK.explorerUrl}`} target="_blank" rel="noreferrer"
-                  style={{ fontSize:'11px', color:'#75bbe9', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
-                  <FaLink size={9}/> Explorer
-                </a>
-              </div>
-
-              {AXIOME_NETWORK.rpcUrls.length === 0 && (
-                <div style={{ background:'#1a1608', border:'1px solid #4a3f10', color:'#F1C40F', padding:'12px 14px', marginBottom:'16px', fontSize:'11px', display:'flex', gap:'8px', alignItems:'flex-start' }}>
-                  <FaExclamationTriangle size={12} style={{ marginTop:'1px', flexShrink:0 }}/>
-                  <span>Belum ada RPC/REST Axiome yang dikonfigurasi — isi <code>AXIOME_NETWORKS[].rpcUrls</code> / <code>restUrls</code> di <code>Axiomenet.ts</code> dengan endpoint node yang kamu punya akses (kirim & cek saldo butuh ini).</span>
-                </div>
-              )}
-
-              {!axmConnected ? (
-                <div className="form-container" style={{ maxWidth:'420px', margin:'32px auto' }}>
-                  <h2 style={{ textAlign:'center', marginBottom:'18px', fontSize:'15px' }}>
-                    <FaPlug style={{ marginRight:'8px' }}/>Connect ke {AXIOME_NETWORK.name}
-                  </h2>
-                  {wallets.some(w => (w.axmAddresses||[]).length > 0) && (
-                    <div style={{ marginBottom:'14px' }}>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Axiome tersimpan</label>
-                      <select value={axmWalletSel} onChange={e => handleAxmWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
-                        <option value="">-- Pilih address --</option>
-                        {wallets.flatMap((w, wi) =>
-                          (w.axmAddresses||[]).map(a => (
-                            <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
-                              {w.name} · #{a.index} · {a.address.slice(0,14)}...
-                            </option>
-                          ))
-                        )}
-                      </select>
-
-                    </div>
-                  )}
-                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                    <FaKey style={{ marginRight:'4px' }}/>Private Key (hex)
-                  </label>
-                  <input
-                    type="password"
-                    placeholder="0x... atau hex tanpa prefix"
-                    value={axmPrivKey}
-                    onChange={e => { setAxmPrivKey(e.target.value); setAxmWalletSel(''); }}
-                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}
-                  />
-                  <button onClick={axmConnect} disabled={axmConnecting || !axmPrivKey.trim()}
-                    style={{ width:'100%', padding:'12px', background:axmConnecting?'#2a1a1a':AXIOME_NETWORK.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:!axmPrivKey.trim()?0.5:1 }}>
-                    {axmConnecting
-                      ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Connecting...</>
-                      : <><FaPlug/> Connect</>}
-                  </button>
-                </div>
-              ) : (
-                <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-
-                  {/* ── Balance / Receive card ── */}
-                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${AXIOME_NETWORK.color}`, padding:'20px' }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'16px' }}>
-                      <div>
-                        <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px' }}>Saldo</div>
-                        <div style={{ fontSize:'22px', fontWeight:'bold', fontFamily:'monospace' }}>
-                          {axmLoadingBal ? <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> : axmBalance}
-                        </div>
-                      </div>
-                      <button onClick={() => axmRefreshBalance()} disabled={axmLoadingBal}
-                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
-                        <FaSync size={11} style={{ animation:axmLoadingBal?'spin 1s linear infinite':undefined }}/> Refresh
-                      </button>
-                    </div>
-                    <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #1a1a1a' }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                        <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'8px 10px' }}>
-                          {axmAddress}
-                        </code>
-                        <button onClick={() => copyText(axmAddress, 'axm_recv')} style={{ background:'none', border:'1px solid #333', color:copiedKey==='axm_recv'?'#4caf50':'#888', cursor:'pointer', padding:'8px 10px' }}>
-                          {copiedKey==='axm_recv' ? <FaCheckCircle size={12}/> : <FaCopy size={12}/>}
-                        </button>
-                        <button onClick={() => setQrAddress(axmAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
-                          <FaQrcode size={12}/>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
-                    <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaPaperPlane style={{ marginRight:'6px' }}/>Kirim AXM</h3>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
-                      <input placeholder="axm1..." value={axmSendTo} onChange={e => setAxmSendTo(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Jumlah (AXM)</label>
-                      <input type="number" placeholder="0.0" value={axmSendAmt} onChange={e => setAxmSendAmt(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'16px' }}/>
-
-                      {(axmFeeEstimating || axmFeeEstimate || axmFeeEstimateError) && (
-                        <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px', marginBottom:'16px' }}>
-                          <div style={{ display:'flex', alignItems:'center', gap:'6px', color:'#666', marginBottom: (axmFeeEstimate || axmFeeEstimateError) ? '8px' : 0, textTransform:'uppercase', letterSpacing:'0.5px', fontSize:'10px' }}>
-                            <FaGasPump size={10}/> Estimasi Fee
-                            {axmFeeEstimating && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
-                          </div>
-                          {axmFeeEstimate && (
-                            <div style={{ display:'flex', flexWrap:'wrap', gap:'6px 16px', fontSize:'11px' }}>
-                              <span style={{ color:'#888' }}>Gas: <span style={{ fontFamily:'monospace', color:'#ccc' }}>{axmFeeEstimate.gasUnits.toLocaleString('en-US')}</span> unit</span>
-                              <span style={{ color:'#888' }}>Harga: <span style={{ fontFamily:'monospace', color:'#ccc' }}>{axmFeeEstimate.gasPriceUaxm}</span> uaxm/unit</span>
-                              <span style={{ fontFamily:'monospace', fontWeight:'bold', color:'#4caf50' }}>
-                                ≈ {axmFeeEstimate.feeAxm.toLocaleString('en-US', { maximumFractionDigits: 6 })} AXM
-                              </span>
-                            </div>
-                          )}
-                          {axmFeeEstimateError && (
-                            <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', color:'#ffaa00', fontSize:'11px' }}>
-                              <FaExclamationTriangle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
-                              <span>{axmFeeEstimateError}</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-
-                      <button onClick={axmSend} disabled={axmSending || !axmSendTo.trim() || !axmSendAmt || AXIOME_NETWORK.rpcUrls.length===0}
-                        style={{ width:'100%', padding:'12px', background:axmSending?'#2a1a1a':AXIOME_NETWORK.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!axmSendTo.trim()||!axmSendAmt||AXIOME_NETWORK.rpcUrls.length===0)?0.5:1 }}>
-                        {axmSending
-                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
-                          : <><FaPaperPlane/> Kirim AXM</>}
-                      </button>
-                      {axmStatus.type !== 'idle' && (
-                        <div style={{
-                          marginTop:'14px', padding:'12px', fontSize:'12px',
-                          background: axmStatus.type==='error' ? '#2a0d0d' : axmStatus.type==='success' ? '#0d2a0d' : '#1a1a0d',
-                          border: `1px solid ${axmStatus.type==='error' ? '#5a1e1e' : axmStatus.type==='success' ? '#1e5a1e' : '#5a5a1e'}`,
-                          color: axmStatus.type==='error' ? '#ff8888' : axmStatus.type==='success' ? '#88ff88' : '#ffff88',
-                        }}>
-                          {axmStatus.msg}
-                          {axmStatus.hash && (
-                            <a href={`${AXIOME_NETWORK.explorerUrl}/tx/${axmStatus.hash}`} target="_blank" rel="noreferrer"
-                              style={{ display:'block', marginTop:'6px', color:'#75bbe9', wordBreak:'break-all' }}>
-                              <FaLink size={9}/> {axmStatus.hash}
-                            </a>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                  <div style={{ textAlign:'center' }}>
-                    <button onClick={axmDisconnect}
-                      style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
-                      Disconnect Wallet
-                    </button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          {txChain === 'atom' && (
-            <>
-              <div style={{ marginBottom:'16px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
-                <select value={atomNetId} onChange={e => switchAtomNetwork(e.target.value)}
-                  style={{ flex:'1 1 260px', fontFamily:'monospace', fontSize:'13px', padding:'10px 12px', background:'#0d0d0d', border:'1px solid #1e1e1e', color:'#ccc' }}>
-                  {COSMOS_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
-                </select>
-                <a href={`${COSMOS_NETWORK.explorerUrl}`} target="_blank" rel="noreferrer"
-                  style={{ fontSize:'11px', color:'#2E3148', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
-                  <FaLink size={9}/> Explorer
-                </a>
-              </div>
-
-              {COSMOS_NETWORK.rpcUrls.length === 0 && (
-                <div style={{ background:'#1a1608', border:'1px solid #4a3f10', color:'#F1C40F', padding:'12px 14px', marginBottom:'16px', fontSize:'11px', display:'flex', gap:'8px', alignItems:'flex-start' }}>
-                  <FaExclamationTriangle size={12} style={{ marginTop:'1px', flexShrink:0 }}/>
-                  <span>Belum ada RPC/REST Cosmos Hub yang dikonfigurasi — isi <code>COSMOS_NETWORKS[].rpcUrls</code> / <code>restUrls</code> di <code>Cosmosnet.ts</code> dengan endpoint node yang kamu punya akses (kirim & cek saldo butuh ini).</span>
-                </div>
-              )}
-
-              {!atomConnected ? (
-                <div className="form-container" style={{ maxWidth:'420px', margin:'32px auto' }}>
-                  <h2 style={{ textAlign:'center', marginBottom:'18px', fontSize:'15px' }}>
-                    <FaPlug style={{ marginRight:'8px' }}/>Connect ke {COSMOS_NETWORK.name}
-                  </h2>
-                  {wallets.some(w => (w.atomAddresses||[]).length > 0) && (
-                    <div style={{ marginBottom:'14px' }}>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Cosmos tersimpan</label>
-                      <select value={atomWalletSel} onChange={e => handleAtomWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
-                        <option value="">-- Pilih address --</option>
-                        {wallets.flatMap((w, wi) =>
-                          (w.atomAddresses||[]).map(a => (
-                            <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
-                              {w.name} · #{a.index} · {a.address.slice(0,14)}...
-                            </option>
-                          ))
-                        )}
-                      </select>
-
-                    </div>
-                  )}
-                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                    <FaKey style={{ marginRight:'4px' }}/>Private Key (hex)
-                  </label>
-                  <input
-                    type="password"
-                    placeholder="0x... atau hex tanpa prefix"
-                    value={atomPrivKey}
-                    onChange={e => { setAtomPrivKey(e.target.value); setAtomWalletSel(''); }}
-                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}
-                  />
-                  <button onClick={atomConnect} disabled={atomConnecting || !atomPrivKey.trim()}
-                    style={{ width:'100%', padding:'12px', background:atomConnecting?'#2a1a1a':COSMOS_NETWORK.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:!atomPrivKey.trim()?0.5:1 }}>
-                    {atomConnecting
-                      ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Connecting...</>
-                      : <><FaPlug/> Connect</>}
-                  </button>
-                </div>
-              ) : (
-                <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-
-                  {/* ── Balance / Receive card ── */}
-                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${COSMOS_NETWORK.color}`, padding:'20px' }}>
-                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'16px' }}>
-                      <div>
-                        <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px' }}>Saldo</div>
-                        <div style={{ fontSize:'22px', fontWeight:'bold', fontFamily:'monospace' }}>
-                          {atomLoadingBal ? <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> : atomBalance}
-                        </div>
-                      </div>
-                      <button onClick={() => atomRefreshBalance()} disabled={atomLoadingBal}
-                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
-                        <FaSync size={11} style={{ animation:atomLoadingBal?'spin 1s linear infinite':undefined }}/> Refresh
-                      </button>
-                    </div>
-                    <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #1a1a1a' }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                        <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'8px 10px' }}>
-                          {atomAddress}
-                        </code>
-                        <button onClick={() => copyText(atomAddress, 'atom_recv')} style={{ background:'none', border:'1px solid #333', color:copiedKey==='atom_recv'?'#4caf50':'#888', cursor:'pointer', padding:'8px 10px' }}>
-                          {copiedKey==='atom_recv' ? <FaCheckCircle size={12}/> : <FaCopy size={12}/>}
-                        </button>
-                        <button onClick={() => setQrAddress(atomAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
-                          <FaQrcode size={12}/>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
-                    <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaPaperPlane style={{ marginRight:'6px' }}/>Kirim ATOM</h3>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
-                      <input placeholder="cosmos1..." value={atomSendTo} onChange={e => setAtomSendTo(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Jumlah (ATOM)</label>
-                      <input type="number" placeholder="0.0" value={atomSendAmt} onChange={e => setAtomSendAmt(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'16px' }}/>
-
-                      {renderAtomGasFeeBox()}
-
-                      {atomFeeEstimateError && (
-                        <div style={{ background:'#1a1608', border:'1px solid #4a3f10', padding:'10px 12px', marginBottom:'16px', display:'flex', gap:'6px', alignItems:'flex-start', color:'#ffaa00', fontSize:'11px' }}>
-                          <FaExclamationTriangle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
-                          <span>{atomFeeEstimateError}</span>
-                        </div>
-                      )}
-
-                      {atomFeeEstimate && (
-                        <div style={{ fontSize:'10px', color:'#555', marginTop:'-10px', marginBottom:'16px' }}>
-                          Estimasi gas: <span style={{ fontFamily:'monospace', color:'#888' }}>{atomFeeEstimate.gasUnits.toLocaleString('en-US')}</span> unit (dari simulate() dry-run)
-                        </div>
-                      )}
-
-                      <button onClick={atomSend} disabled={atomSending || !atomSendTo.trim() || !atomSendAmt || COSMOS_NETWORK.rpcUrls.length===0}
-                        style={{ width:'100%', padding:'12px', background:atomSending?'#2a1a1a':COSMOS_NETWORK.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!atomSendTo.trim()||!atomSendAmt||COSMOS_NETWORK.rpcUrls.length===0)?0.5:1 }}>
-                        {atomSending
-                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
-                          : <><FaPaperPlane/> Kirim ATOM</>}
-                      </button>
-                      {atomStatus.type !== 'idle' && (
-                        <div style={{
-                          marginTop:'14px', padding:'12px', fontSize:'12px',
-                          background: atomStatus.type==='error' ? '#2a0d0d' : atomStatus.type==='success' ? '#0d2a0d' : '#1a1a0d',
-                          border: `1px solid ${atomStatus.type==='error' ? '#5a1e1e' : atomStatus.type==='success' ? '#1e5a1e' : '#5a5a1e'}`,
-                          color: atomStatus.type==='error' ? '#ff8888' : atomStatus.type==='success' ? '#88ff88' : '#ffff88',
-                        }}>
-                          {atomStatus.msg}
-                          {atomStatus.hash && (
-                            <a href={`${COSMOS_NETWORK.explorerUrl}/tx/${atomStatus.hash}`} target="_blank" rel="noreferrer"
-                              style={{ display:'block', marginTop:'6px', color:'#2E3148', wordBreak:'break-all' }}>
-                              <FaLink size={9}/> {atomStatus.hash}
-                            </a>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                  <div style={{ textAlign:'center' }}>
-                    <button onClick={atomDisconnect}
-                      style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
-                      Disconnect Wallet
-                    </button>
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          {CHAIN_OPTIONS.find(o => o.id === txChain)?.soon && (
-            <div style={{ textAlign:'center', padding:'40px', color:'#333', border:'1px dashed #222' }}>
-              Network ini akan segera hadir.
-            </div>
-          )}
-        </>
-      )}
-
-      {activeTab === 'garap' && (
-        <>
-          <div style={{ display:'flex', flexWrap:'wrap', gap:'10px', marginBottom:'16px' }}>
-            {[
-              { label:'Total Task',  value: atStats.total,  color:'#01a2ff' },
-              { label:'Todo',        value: atStats.todo,   color:'#ffaa00' },
-              { label:'Done',        value: atStats.done,   color:'#4caf50' },
-              { label:'Failed',      value: atStats.failed, color:'#f44336' },
-            ].map(s => (
-              <div key={s.label} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:`3px solid ${s.color}`, padding:'12px 18px', flex:1, minWidth:'110px' }}>
-                <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'4px' }}>{s.label}</div>
-                <div style={{ fontSize:'24px', fontWeight:'bold', fontFamily:'monospace', color:s.color }}>{s.value}</div>
-              </div>
-            ))}
-          </div>
-
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
-            <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
-              <button onClick={() => { setAtShowForm(p => !p); setAtEditId(null); setAtForm(atEmptyForm); }}
-                style={{ background:'#01a2ff', color:'#000', border:'none', padding:'9px 18px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px' }}>
-                <FaPlus/> Tambah Task
-              </button>
-              <button
-                onClick={() => {
-                  if (batchSelectedIds.size > 0) {
-                    setBatchModalOpen(true);
-                  } else {
-                    // Auto-select all todo tasks with contract
-                    const todoIds = new Set(airdropTasks.filter(t => t.status === 'todo' && t.contractAddress).map(t => t.id));
-                    if (todoIds.size > 0) { setBatchSelectedIds(todoIds); setBatchModalOpen(true); }
-                    else { showAlert('Tidak ada task todo dengan contract address.', 'info'); }
-                  }
-                }}
-                style={{
-                  background: batchSelectedIds.size > 0 ? '#1a0d2a' : '#111',
-                  border:`1px solid ${batchSelectedIds.size > 0 ? '#836EFD' : '#333'}`,
-                  color: batchSelectedIds.size > 0 ? '#836EFD' : '#555',
-                  padding:'9px 16px', cursor:'pointer', fontSize:'12px', fontWeight:'bold',
-                  display:'flex', alignItems:'center', gap:'6px',
-                }}>
-                <FaLayerGroup size={12}/> Garap Batch {batchSelectedIds.size > 0 ? `(${batchSelectedIds.size})` : ''}
-              </button>
-              {batchSelectedIds.size > 0 && (
-                <button onClick={() => setBatchSelectedIds(new Set())}
-                  style={{ background:'none', border:'1px solid #333', color:'#555', padding:'6px 10px', cursor:'pointer', fontSize:'11px' }}>
-                  Batal Pilih
-                </button>
-              )}
-              <button onClick={exportGarapan} disabled={airdropTasks.length === 0}
-                style={{ background:'none', border:'1px solid #4caf5044', color:'#4caf50', padding:'8px 14px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'5px', opacity: airdropTasks.length === 0 ? 0.4 : 1 }}>
-                <FaFileExport size={12}/> Export
-              </button>
-              <button onClick={() => garapImportRef.current?.click()}
-                style={{ background:'none', border:'1px solid #ffaa0044', color:'#ffaa00', padding:'8px 14px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'5px' }}>
-                <FaFileImport size={12}/> Import
-              </button>
-              <input ref={garapImportRef} type="file" accept=".json" style={{ display:'none' }} onChange={handleGarapImport} />
-            </div>
-            <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
-              {(['all','todo','done','failed'] as const).map(f => (
-                <button key={f} onClick={() => setAtFilter(f)} style={{
-                  padding:'6px 14px', fontSize:'11px', cursor:'pointer', fontWeight:'bold',
-                  background: atFilter === f ? (f==='all'?'#01a2ff':f==='todo'?'#ffaa00':f==='done'?'#4caf50':'#f44336') : '#111',
-                  color: atFilter === f ? '#000' : '#555',
-                  border:`1px solid ${atFilter===f?(f==='all'?'#01a2ff':f==='todo'?'#ffaa00':f==='done'?'#4caf50':'#f44336'):'#333'}`,
-                }}>
-                  {f.toUpperCase()}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {atShowForm && (
-            <div className="form-container" style={{ marginBottom:'20px' }}>
-              <h3 style={{ marginTop:0, marginBottom:'14px', fontSize:'13px', textTransform:'uppercase', letterSpacing:'1px', color:'#01a2ff' }}>
-                {atEditId ? <><FaEdit/> Edit Task</> : <><FaPlus/> Task Baru</>}
-              </h3>
-              <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(180px,1fr))', gap:'10px', marginBottom:'10px' }}>
-                <input placeholder="Nama Project *" value={atForm.projectName}
-                  onChange={e => setAtForm(p => ({ ...p, projectName: e.target.value }))} required/>
-                <input placeholder="Network (Monad, Base, ...)" value={atForm.network}
-                  onChange={e => setAtForm(p => ({ ...p, network: e.target.value }))}/>
-                <select value={atForm.taskType} onChange={e => setAtForm(p => ({ ...p, taskType: e.target.value as AirdropTask['taskType'] }))}>
-                  {TASK_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-                </select>
-                <select value={atForm.priority} onChange={e => setAtForm(p => ({ ...p, priority: e.target.value as AirdropTask['priority'] }))}>
-                  <option value="low">Priority: Low</option>
-                  <option value="medium">Priority: Medium</option>
-                  <option value="high">Priority: High</option>
-                </select>
-                <select value={atForm.status} onChange={e => setAtForm(p => ({ ...p, status: e.target.value as AirdropTask['status'] }))}>
-                  <option value="todo">Status: Todo</option>
-                  <option value="done">Status: Done</option>
-                  <option value="failed">Status: Failed</option>
-                </select>
-                <input type="date" value={atForm.deadline} title="Deadline"
-                  onChange={e => setAtForm(p => ({ ...p, deadline: e.target.value }))}/>
-                <input placeholder="Wallet address (opsional)" value={atForm.walletAddress}
-                  onChange={e => setAtForm(p => ({ ...p, walletAddress: e.target.value }))}
-                  style={{ gridColumn:'span 2', fontFamily:'monospace', fontSize:'12px' }}/>
-                <input placeholder="Deskripsi task" value={atForm.description}
-                  onChange={e => setAtForm(p => ({ ...p, description: e.target.value }))}
-                  style={{ gridColumn:'span 2' }}/>
-                <input placeholder="TX Hash (isi setelah selesai)" value={atForm.txHash}
-                  onChange={e => setAtForm(p => ({ ...p, txHash: e.target.value }))}
-                  style={{ gridColumn:'span 2', fontFamily:'monospace', fontSize:'11px' }}/>
-                <textarea placeholder="Catatan tambahan..." value={atForm.notes}
-                  onChange={e => setAtForm(p => ({ ...p, notes: e.target.value }))}
-                  rows={2} style={{ gridColumn:'1/-1', resize:'vertical', fontFamily:'inherit', fontSize:'12px' }}/>
-              </div>
-
-              <SmartContractConfig
-                value={{
-                  contractAddress: atForm.contractAddress || '',
-                  contractAbi:     atForm.contractAbi     || '',
-                  contractFunc:    atForm.contractFunc    || '',
-                  contractArgs:    atForm.contractArgs    || '[]',
-                  ethValue:        atForm.ethValue        || '0',
-                }}
-                onChange={(cfg) => setAtForm(p => ({ ...p, ...cfg }))}
-                defaultOpen={!!atEditId}
-              />
-
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
-                <button onClick={saveAirdropTask} className="btn-manage btn-import" style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:'6px' }}>
-                  <FaCheckCircle/> {atEditId ? 'Update' : 'Simpan Task'}
-                </button>
-                <button onClick={() => { setAtShowForm(false); setAtEditId(null); setAtForm(atEmptyForm); }} className="cancel-btn">Batal</button>
-              </div>
-            </div>
-          )}
-
-          <div className="search-filter-bar" style={{ marginBottom:'16px' }}>
-            <div className="search-input-wrapper" style={{ flex:1 }}>
-              <FaSearch className="search-icon"/>
-              <input type="search" placeholder="Cari project / network / deskripsi..." value={atSearch}
-                onChange={e => setAtSearch(e.target.value)}/>
-            </div>
-          </div>
-
-          <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
-            {filteredAtTasks.length === 0 && (
-              <div style={{ textAlign:'center', padding:'40px', color:'#333', border:'1px dashed #222' }}>
-                {atSearch ? 'Tidak ditemukan.' : 'Belum ada task. Klik "Tambah Task" untuk mulai.'}
-              </div>
-            )}
-            {filteredAtTasks.map(task => {
-              const isDone         = task.status === 'done';
-              const isFailed       = task.status === 'failed';
-              const taskTypeInfo   = TASK_TYPES.find(t => t.value === task.taskType);
-              const deadlineOverdue = task.deadline && task.status === 'todo'
-                ? new Date(task.deadline) < new Date(new Date().toDateString())
-                : false;
-              const isExecOpen     = execTaskId === task.id;
-              const explorerNet    = networks.find(n => n.id === execNetId);
-
-              return (
-                <div key={task.id} style={{
-                  background:'#0d0d0d',
-                  border:`1px solid ${isDone?'#1e3a1e':isFailed?'#3a1e1e':'#1e1e1e'}`,
-                  borderLeft:`3px solid ${isDone?'#4caf50':isFailed?'#f44336':PRIORITY_COLORS[task.priority]}`,
-                  overflow:'hidden',
-                }}>
-                  <div style={{ padding:'14px 16px', display:'flex', alignItems:'flex-start', gap:'12px', flexWrap:'wrap' }}>
-                    <div style={{ flex:1, minWidth:'200px' }}>
-                      <div style={{ display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap', marginBottom:'6px' }}>
-                        <span style={{ fontWeight:'bold', fontSize:'14px', textDecoration:isDone?'line-through':'none', color:isDone?'#555':'#fff' }}>
-                          {task.projectName}
-                        </span>
-                        {taskTypeInfo && (
-                          <span style={{ fontSize:'10px', color:taskTypeInfo.color, border:`1px solid ${taskTypeInfo.color}44`, padding:'2px 8px', fontWeight:'bold' }}>
-                            {taskTypeInfo.label}
-                          </span>
-                        )}
-                        <span style={{ fontSize:'10px', color:PRIORITY_COLORS[task.priority], border:`1px solid ${PRIORITY_COLORS[task.priority]}44`, padding:'2px 8px' }}>
-                          {PRIORITY_LABELS[task.priority]}
-                        </span>
-                        {task.network && (
-                          <span style={{ fontSize:'10px', color:'#888', border:'1px solid #333', padding:'2px 8px' }}>{task.network}</span>
-                        )}
-                        {task.contractAddress && (
-                          <span style={{ fontSize:'10px', color:'#836EFD', border:'1px solid #836EFD44', padding:'2px 8px', display:'flex', alignItems:'center', gap:'3px' }}>
-                            <FaCode size={9}/> Contract
-                          </span>
-                        )}
-                        {deadlineOverdue && (
-                          <span style={{ fontSize:'10px', color:'#ff3333', border:'1px solid #ff333344', padding:'2px 8px', display:'flex', alignItems:'center', gap:'4px' }}>
-                            <FaExclamationTriangle size={9}/> OVERDUE
-                          </span>
-                        )}
-                      </div>
-                      {task.description && <div style={{ fontSize:'12px', color:'#666', marginBottom:'4px' }}>{task.description}</div>}
-                      <div style={{ display:'flex', gap:'14px', flexWrap:'wrap', fontSize:'11px', color:'#444', marginTop:'4px' }}>
-                        {task.deadline && (
-                          <span style={{ display:'flex', alignItems:'center', gap:'4px', color:deadlineOverdue?'#ff5555':'#555' }}>
-                            <FaCalendarAlt size={10}/> {task.deadline}
-                          </span>
-                        )}
-                        {task.walletAddress && (
-                          <span style={{ fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', maxWidth:'180px', whiteSpace:'nowrap' }}>
-                            {shortAddr(task.walletAddress)}
-                          </span>
-                        )}
-                        {task.doneAt && <span style={{ color:'#4caf50' }}>✓ {new Date(task.doneAt).toLocaleDateString('id-ID')}</span>}
-                      </div>
-                      {task.txHash && (
-                        <div style={{ marginTop:'6px', display:'flex', alignItems:'center', gap:'6px' }}>
-                          <span style={{ fontSize:'10px', color:'#555' }}>TX:</span>
-                          <code style={{ fontSize:'10px', color:'#888', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'220px' }}>
-                            {task.txHash}
-                          </code>
-                          <button onClick={() => copyText(task.txHash, 'txh_'+task.id)}
-                            style={{ background:'none', border:'none', color:copiedKey==='txh_'+task.id?'#4caf50':'#444', cursor:'pointer', padding:'2px', flexShrink:0 }}>
-                            {copiedKey==='txh_'+task.id ? <FaCheckCircle size={10}/> : <FaCopy size={10}/>}
-                          </button>
-                        </div>
-                      )}
-                      {task.notes && <div style={{ fontSize:'11px', color:'#444', marginTop:'5px', fontStyle:'italic' }}>{task.notes}</div>}
-                    </div>
-
-                    <div style={{ display:'flex', gap:'6px', flexShrink:0, flexWrap:'wrap', justifyContent:'flex-end', alignItems:'flex-start' }}>
-                      {/* Batch checkbox */}
-                      {task.contractAddress && (
-                        <button
-                          title="Pilih untuk Batch"
-                          onClick={() => setBatchSelectedIds(prev => {
-                            const next = new Set(prev);
-                            if (next.has(task.id)) next.delete(task.id); else next.add(task.id);
-                            return next;
-                          })}
-                          style={{
-                            background: batchSelectedIds.has(task.id) ? '#1a0d2a' : '#0a0a0a',
-                            border:`1px solid ${batchSelectedIds.has(task.id) ? '#836EFD' : '#2a2a2a'}`,
-                            color: batchSelectedIds.has(task.id) ? '#836EFD' : '#333',
-                            padding:'6px 8px', cursor:'pointer', fontSize:'11px',
-                            display:'flex', alignItems:'center', gap:'4px',
-                          }}>
-                          <FaLayerGroup size={10}/> {batchSelectedIds.has(task.id) ? '✓' : '+'}
-                        </button>
-                      )}
-                      <button
-                        onClick={() => {
-                          if (isExecOpen) { setExecTaskId(null); }
-                          else { openExecPanel(task); }
-                        }}
-                        title="Execute Smart Contract"
-                        style={{
-                          background: isExecOpen ? '#1a0d2a' : (task.contractAddress ? '#0d0a1a' : '#0a0a0a'),
-                          border:`1px solid ${isExecOpen ? '#836EFD' : task.contractAddress ? '#836EFD55' : '#333'}`,
-                          color: isExecOpen ? '#836EFD' : task.contractAddress ? '#836EFD' : '#555',
-                          padding:'6px 10px', cursor:'pointer', fontSize:'12px',
-                          display:'flex', alignItems:'center', gap:'5px', fontWeight:'bold',
-                        }}>
-                        <FaBolt size={11}/> {isExecOpen ? 'Tutup' : 'Execute'}
-                      </button>
-                      <button onClick={() => markTaskDone(task.id)} title={isDone?'Tandai Ulang':'Tandai Selesai'}
-                        style={{ background:isDone?'#1e3a1e':'#0a1a0a', border:`1px solid ${isDone?'#4caf50':'#333'}`, color:isDone?'#4caf50':'#555', padding:'6px 10px', cursor:'pointer', fontSize:'12px' }}>
-                        <FaCheckCircle/>
-                      </button>
-                      <button onClick={() => editAirdropTask(task)} title="Edit"
-                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'6px 10px', cursor:'pointer', fontSize:'12px' }}>
-                        <FaEdit/>
-                      </button>
-                      <button onClick={() => deleteAirdropTask(task.id)} title="Hapus"
-                        style={{ background:'none', border:'1px solid #333', color:'#f44336', padding:'6px 10px', cursor:'pointer', fontSize:'12px' }}>
-                        <FaTrash/>
-                      </button>
-                    </div>
-                  </div>
-
-                  {isExecOpen && (
-                    <div style={{ borderTop:'1px solid #1a0d2a', background:'#080810', padding:'16px' }}>
-                      <div style={{ fontSize:'11px', color:'#836EFD', textTransform:'uppercase', letterSpacing:'1.5px', marginBottom:'14px', display:'flex', alignItems:'center', gap:'6px' }}>
-                        <FaBolt size={10}/> Execute — {task.projectName}
-                      </div>
-
-                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'12px' }}>
-                        <div>
-                          <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
-                            <FaWallet style={{ marginRight:'4px' }}/>Wallet (dari BIP39)
-                          </label>
-                          <select value={execWalSel} onChange={e => handleExecWalSel(e.target.value)}
-                            style={{ width:'100%', fontFamily:'monospace', fontSize:'11px' }}>
-                            <option value="">-- Pilih wallet --</option>
-                            {wallets.flatMap((w, wi) =>
-                              w.addresses.map(a => (
-                                <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
-                                  {w.name} · #{a.index} · {shortAddr(a.address)}
-                                </option>
-                              ))
-                            )}
-                          </select>
-                          {!execWalSel && (
-                            <input type="password" placeholder="Atau paste Private Key (0x...)"
-                              value={execPrivKey}
-                              onChange={e => { setExecPrivKey(e.target.value); setExecWalSel(''); }}
-                              style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px', marginTop:'6px' }}/>
-                          )}
-                        </div>
-
-                        <div>
-                          <label style={{ fontSize:'10px', color:'#555', display:'block', marginBottom:'4px', textTransform:'uppercase', letterSpacing:'0.5px' }}>
-                            <FaNetworkWired style={{ marginRight:'4px' }}/>Network
-                          </label>
-                          <select value={execNetId} onChange={e => setExecNetId(e.target.value)}
-                            style={{ width:'100%', fontFamily:'monospace', fontSize:'11px' }}>
-                            {networks.map(n => (
-                              <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>
-                            ))}
-                          </select>
-                        </div>
-                      </div>
-
-                      <div style={{ display:'flex', gap:'6px', marginBottom:'12px' }}>
-                        {(['contract','raw'] as const).map(m => (
-                          <button key={m} onClick={() => setExecMode(m)} style={{
-                            padding:'5px 14px', fontSize:'11px', cursor:'pointer', fontWeight:'bold',
-                            background: execMode===m ? '#1a0d2a' : '#111',
-                            border:`1px solid ${execMode===m ? '#836EFD' : '#333'}`,
-                            color: execMode===m ? '#836EFD' : '#555',
-                          }}>
-                            {m === 'contract' ? <><FaCode style={{ marginRight:'4px' }}/>Contract Call</> : <><FaPaperPlane style={{ marginRight:'4px' }}/>Raw ETH Send</>}
-                          </button>
-                        ))}
-                      </div>
-
-                      {execMode === 'contract' ? (
-                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'10px' }}>
-                          <input placeholder="Contract Address (0x...)" value={execContract.contractAddress}
-                            onChange={e => setExecContract(p => ({ ...p, contractAddress: e.target.value }))}
-                            style={{ fontFamily:'monospace', fontSize:'11px', gridColumn:'span 2' }}/>
-                          <input placeholder="Function Name (mint, claim, stake, ...)" value={execContract.contractFunc}
-                            onChange={e => setExecContract(p => ({ ...p, contractFunc: e.target.value }))}/>
-                          <input placeholder='Args JSON — simple: ["0xabc","1000"] | tuple: [["40245","0x...","1000"],["108874","0"],"0x..."]' value={execContract.contractArgs}
-                            onChange={e => setExecContract(p => ({ ...p, contractArgs: e.target.value }))}
-                            style={{ fontFamily:'monospace', fontSize:'11px' }}/>
-                          <input placeholder="ETH Value (e.g. 0.01 — atau 0 jika payable dengan value 0)" value={execContract.ethValue}
-                            onChange={e => setExecContract(p => ({ ...p, ethValue: e.target.value }))}/>
-                          <div style={{ fontSize:'10px', color:'#555', alignSelf:'center' }}>
-                            💡 Kosongkan ABI = raw calldata
-                          </div>
-                          <textarea placeholder='ABI JSON (opsional) — contoh: [{"inputs":[{"name":"quantity","type":"uint256"}],"name":"mint","outputs":[],"stateMutability":"payable","type":"function"}]'
-                            value={execContract.contractAbi}
-                            onChange={e => setExecContract(p => ({ ...p, contractAbi: e.target.value }))}
-                            rows={3} style={{ gridColumn:'span 2', resize:'vertical', fontFamily:'monospace', fontSize:'10px' }}/>
-                          <div style={{ gridColumn:'span 2', display:'flex', gap:'5px', flexWrap:'wrap' }}>
-                            {AUTO_ACTION_TEMPLATES.filter(t => t.abi).map(t => (
-                              <button key={t.id} onClick={() => {
-                                setExecContract(p => ({ ...p, contractAbi: t.abi }));
-                                if (t.id === 'erc20_approve') setExecContract(p => ({ ...p, contractFunc: 'approve' }));
-                                if (t.id === 'erc20_transfer') setExecContract(p => ({ ...p, contractFunc: 'transfer' }));
-                                if (t.id === 'nft_mint') setExecContract(p => ({ ...p, contractFunc: 'mint' }));
-                              }}
-                              style={{ fontSize:'10px', padding:'3px 8px', background:'#111', border:'1px solid #333', color:'#888', cursor:'pointer' }}>
-                                {t.label}
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      ) : (
-                        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px', marginBottom:'10px' }}>
-                          <input placeholder="To Address (0x...)" value={execRawTo}
-                            onChange={e => setExecRawTo(e.target.value)}
-                            style={{ fontFamily:'monospace', fontSize:'11px', gridColumn:'span 2' }}/>
-                          <input placeholder="ETH Amount (e.g. 0.001)" value={execRawVal}
-                            onChange={e => setExecRawVal(e.target.value)} type="number" step="any" min="0"/>
-                          <input placeholder="Calldata (0x, opsional)" value={execRawData}
-                            onChange={e => setExecRawData(e.target.value)}
-                            style={{ fontFamily:'monospace', fontSize:'11px' }}/>
-                        </div>
-                      )}
-
-                      <div style={{ marginBottom:'8px' }}>
-                        <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'5px', display:'flex', alignItems:'center', gap:'5px' }}>
-                          <FaGasPump size={9}/> Gas Limit
-                          <span style={{ color:'#333', fontStyle:'italic', textTransform:'none', letterSpacing:0 }}>(kosong = auto-estimate)</span>
-                        </div>
-                        <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
-                          <input
-                            type="number"
-                            placeholder="auto"
-                            value={execGasLimit}
-                            onChange={e => { setExecGasLimit(e.target.value); setExecSimFailed(false); }}
-                            min="21000"
-                            style={{ flex:1, fontFamily:'monospace', fontSize:'12px',
-                              borderColor: execSimFailed ? '#ffaa00' : undefined }}
-                          />
-                          {(['100000','200000','300000','500000'] as const).map(v => (
-                            <button key={v} type="button"
-                              onClick={() => { setExecGasLimit(v); setExecSimFailed(false); }}
-                              style={{ fontSize:'10px', padding:'4px 7px', background:'#111', border:'1px solid #2a2a2a',
-                                color: execGasLimit === v ? '#836EFD' : '#555', cursor:'pointer',
-                                borderColor: execGasLimit === v ? '#836EFD' : '#2a2a2a' }}>
-                              {parseInt(v)/1000}k
-                            </button>
-                          ))}
-                          {execGasLimit && (
-                            <button type="button" onClick={() => { setExecGasLimit(''); setExecSimFailed(false); }}
-                              style={{ background:'none', border:'none', color:'#444', cursor:'pointer', fontSize:'12px' }}>✕</button>
-                          )}
-                        </div>
-                      </div>
-
-                      {execSimFailed && (
-                        <div style={{
-                          background:'rgba(255,170,0,0.07)', border:'1px solid #ffaa0055',
-                          borderLeft:'3px solid #ffaa00', padding:'10px 12px', marginBottom:'8px',
-                          fontSize:'11px', color:'#ffcc44', lineHeight:'1.6',
-                        }}>
-                          <div style={{ fontWeight:'bold', marginBottom:'4px', display:'flex', alignItems:'center', gap:'6px' }}>
-                            <FaExclamationTriangle size={11}/> Simulasi TX revert
-                          </div>
-                          <div>TX kemungkinan akan gagal. Set gas limit manual di atas dan klik <strong>Force Send</strong> untuk tetap mengirim (risiko gas hangus).</div>
-                        </div>
-                      )}
-
-                      <button
-                        onClick={() => runExec(task)}
-                        disabled={execRunning || !execPrivKey}
-                        style={{
-                          width:'100%', padding:'11px', marginBottom:'10px',
-                          background: execRunning ? '#1a0d2a' : execSimFailed ? '#3a2a00' : '#836EFD',
-                          color: '#fff', border: execSimFailed ? '1px solid #ffaa00' : 'none',
-                          cursor: execRunning || !execPrivKey ? 'not-allowed' : 'pointer',
-                          fontSize:'13px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
-                          opacity: !execPrivKey ? 0.5 : 1,
-                        }}>
-                        {execRunning
-                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Executing...</>
-                          : execSimFailed
-                            ? <><FaExclamationTriangle size={12}/> Force Send (⚠️ Berisiko)</>
-                            : <><FaBolt/> Eksekusi TX / Call</>}
-                      </button>
-
-                      {execReadResult !== null && (
-                        <div style={{
-                          background:'#001a0d', border:'1px solid #00e67644', borderLeft:'3px solid #00e676',
-                          padding:'10px 14px', marginBottom:'10px', fontSize:'12px',
-                        }}>
-                          <div style={{ fontSize:'10px', color:'#00e676', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px', display:'flex', alignItems:'center', gap:'5px' }}>
-                            <FaCheckCircle size={10}/> Hasil Read-Only (eth_call)
-                          </div>
-                          <code style={{ fontFamily:'monospace', color:'#aaffcc', wordBreak:'break-all', lineHeight:'1.7', display:'block' }}>
-                            {execReadResult}
-                          </code>
-                        </div>
-                      )}
-
-                      {execLog.length > 0 && (
-                        <div style={{ background:'#030308', border:'1px solid #0e0e1a', padding:'10px', fontFamily:'monospace', fontSize:'10px', color:'#888', maxHeight:'140px', overflowY:'auto', lineHeight:'1.7' }}>
-                          {execLog.map((l, i) => (
-                            <div key={i} style={{
-                              color: l.includes('[done]')||l.includes('DIKONFIRMASI')||l.includes('[result]') ? '#4caf50'
-                                   : l.includes('[X]') ? '#f44336'
-                                   : l.includes('[read-only]') ? '#01a2ff'
-                                   : l.includes('[execute]')||l.includes('[send]') ? '#836EFD'
-                                   : l.includes('⏳') ? '#ffaa00'
-                                   : '#666',
-                            }}>{l}</div>
-                          ))}
-                        </div>
-                      )}
-
-                      {task.txHash && task.status === 'done' && explorerNet?.explorerUrl && (
-                        <div style={{ marginTop:'8px', textAlign:'center' }}>
-                          <a href={`${explorerNet.explorerUrl}/tx/${task.txHash}`} target="_blank" rel="noreferrer"
-                            style={{ fontSize:'11px', color:'#836EFD', textDecoration:'none', display:'inline-flex', alignItems:'center', gap:'5px' }}>
-                            <FaLink size={10}/> Lihat TX di {explorerNet.name} Explorer ↗
-                          </a>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          {airdropTasks.length > 0 && (
-            <div style={{ marginTop:'20px', textAlign:'center' }}>
-              <button
-                onClick={() => setConfirmData({ isOpen:true, title:'HAPUS SEMUA TASK?', message:'Semua airdrop task akan dihapus.',
-                  action:()=>{ setAirdropTasks([]); showAlert('Semua task dihapus.','hapus'); } })}
-                style={{ background:'none', border:'1px solid #333', color:'#555', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
-                Hapus Semua Task
-              </button>
-            </div>
-          )}
-
-          <div style={{ marginTop:'28px', background:'#0a0a0a', border:'1px solid #1e1e1e', borderTop:'2px solid #836EFD' }}>
-            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', padding:'14px 18px', borderBottom:'1px solid #141414' }}>
-              <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                <FaChartBar color="#836EFD" size={13}/>
-                <span style={{ fontSize:'11px', textTransform:'uppercase', letterSpacing:'1.5px', color:'#836EFD', fontWeight:'bold' }}>
-                  TX History
-                </span>
-                <span style={{ fontSize:'11px', color:'#333', border:'1px solid #222', padding:'2px 8px', fontFamily:'monospace' }}>
-                  {agHistory.length} tx
-                </span>
-              </div>
-              {agHistory.length > 0 && (
-                <button
-                  onClick={() => setConfirmData({ isOpen:true, title:'HAPUS HISTORY TX?', message:'Semua riwayat transaksi akan dihapus.',
-                    action:()=>{ setAgHistory([]); showAlert('History TX dihapus.','hapus'); } })}
-                  style={{ background:'none', border:'1px solid #2a2a2a', color:'#444', padding:'5px 12px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
-                  <FaTrash size={10}/> Clear
-                </button>
-              )}
-            </div>
-
-            {agHistory.length === 0 ? (
-              <div style={{ padding:'32px', textAlign:'center', color:'#2a2a2a', fontSize:'12px' }}>
-                Belum ada transaksi. History akan muncul setelah TX berhasil.
-              </div>
-            ) : (
-              <div style={{ maxHeight:'420px', overflowY:'auto' }}>
-                {agHistory.slice(0, 100).map((h, idx) => {
-                  const histNet = h.description.includes('·')
-                    ? networks.find(n => h.description.toLowerCase().includes(n.id.toLowerCase()) || h.description.toLowerCase().includes(n.name.toLowerCase()))
-                    : null;
-                  const timeStr = h.timestamp
-                    ? new Date(h.timestamp).toLocaleString('id-ID', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })
-                    : '—';
-                  const isBatch = h.description.startsWith('[BATCH]');
-                  return (
-                    <div key={h.id ?? idx} style={{
-                      display:'flex', alignItems:'flex-start', gap:'12px',
-                      padding:'12px 18px', borderBottom:'1px solid #111',
-                      transition:'background 0.15s',
-                    }}
-                    onMouseEnter={e => (e.currentTarget.style.background = '#0d0d0d')}
-                    onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}>
-                      {/* status dot */}
-                      <div style={{ width:'8px', height:'8px', borderRadius:'50%', background: h.status === 'success' ? '#4caf50' : h.status === 'failed' ? '#f44336' : '#ffaa00', flexShrink:0, marginTop:'5px' }}/>
-                      <div style={{ flex:1, minWidth:0 }}>
-                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'8px', flexWrap:'wrap' }}>
-                          <div style={{ minWidth:0 }}>
-                            <div style={{ fontSize:'12px', fontWeight:'bold', color:'#ddd', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                              {isBatch && <span style={{ fontSize:'10px', color:'#836EFD', border:'1px solid #836EFD44', padding:'1px 5px', marginRight:'6px', fontWeight:'normal' }}>BATCH</span>}
-                              {h.taskName}
-                            </div>
-                            <div style={{ fontSize:'11px', color:'#555', marginTop:'2px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
-                              {h.description}
-                            </div>
-                          </div>
-                          <span style={{ fontSize:'10px', color:'#444', whiteSpace:'nowrap', flexShrink:0 }}>{timeStr}</span>
-                        </div>
-                        {h.txHash && (
-                          <div style={{ marginTop:'6px', display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
-                            <code style={{ fontSize:'10px', color:'#555', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', maxWidth:'220px' }}>
-                              {h.txHash}
-                            </code>
-                            <button
-                              onClick={() => copyText(h.txHash!, `hist_${h.id}`)}
-                              style={{ background:'none', border:'none', color: copiedKey === `hist_${h.id}` ? '#4caf50' : '#333', cursor:'pointer', padding:'2px', flexShrink:0 }}
-                              title="Salin TX Hash">
-                              {copiedKey === `hist_${h.id}` ? <FaCheckCircle size={10}/> : <FaCopy size={10}/>}
-                            </button>
-                            {histNet?.explorerUrl && (
-                              <a href={`${histNet.explorerUrl}/tx/${h.txHash}`} target="_blank" rel="noreferrer"
-                                style={{ fontSize:'10px', color:'#836EFD', textDecoration:'none', display:'flex', alignItems:'center', gap:'3px', flexShrink:0 }}>
-                                <FaLink size={9}/> Explorer ↗
-                              </a>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-                {agHistory.length > 100 && (
-                  <div style={{ padding:'12px', textAlign:'center', fontSize:'11px', color:'#333' }}>
-                    Menampilkan 100 dari {agHistory.length} tx terakhir
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        </>
-      )}
-      {activeTab === 'networks' && (
-        <>
-          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', flexWrap:'wrap', gap:'8px' }}>
-            <div className="search-input-wrapper" style={{ flex:1 }}>
-              <FaSearch className="search-icon"/>
-              <input type="search" placeholder="Cari network / symbol..." value={netSearch} onChange={e => setNetSearch(e.target.value)}/>
-            </div>
-            <span style={{ fontSize:'12px', color:'#555', whiteSpace:'nowrap' }}>{filteredNetworks.length} network</span>
-            <button onClick={() => { setShowNetForm(p => !p); setNetEditId(null); setNetForm({ name:'', chainId:0, symbol:'', rpcUrls:[], rpcRaw:'', explorerUrl:'', color:'#01a2ff' }); }}
-              style={{ background:'#01a2ff', color:'#000', border:'none', padding:'8px 16px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px' }}>
-              <FaPlus/> Tambah Network
-            </button>
-          </div>
-
-          {showNetForm && (
-            <div className="form-container" style={{ marginBottom:'20px' }}>
-              <h3 style={{ marginTop:0, marginBottom:'14px', fontSize:'13px', textTransform:'uppercase', letterSpacing:'1px', color:'#01a2ff' }}>
-                {netEditId ? <><FaEdit/> Edit Network</> : <><FaPlus/> Network Baru</>}
-              </h3>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
-                <input placeholder="Nama Network" value={netForm.name} onChange={e => setNetForm(p => ({ ...p, name:e.target.value }))}/>
-                <input type="number" placeholder="Chain ID" value={netForm.chainId||''} onChange={e => setNetForm(p => ({ ...p, chainId:parseInt(e.target.value)||0 }))}/>
-                <input placeholder="Symbol (ETH, BNB, ...)" value={netForm.symbol} onChange={e => setNetForm(p => ({ ...p, symbol:e.target.value.toUpperCase() }))}/>
-                <input placeholder="Block Explorer URL" value={netForm.explorerUrl} onChange={e => setNetForm(p => ({ ...p, explorerUrl:e.target.value }))}/>
-                <div style={{ gridColumn:'1/-1' }}>
-                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>RPC URLs (satu per baris):</label>
-                  <textarea placeholder="https://rpc.example.com" value={netForm.rpcRaw} onChange={e => setNetForm(p => ({ ...p, rpcRaw:e.target.value }))}
-                    rows={3} style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px', resize:'vertical' }}/>
-                </div>
-                <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                  <label style={{ fontSize:'12px', color:'#888' }}>Warna:</label>
-                  <input type="color" value={netForm.color} onChange={e => setNetForm(p => ({ ...p, color:e.target.value }))}
-                    style={{ width:'40px', height:'32px', padding:'2px', border:'1px solid #333', background:'#111', cursor:'pointer' }}/>
-                  <span style={{ fontSize:'12px', color:netForm.color, fontFamily:'monospace' }}>{netForm.color}</span>
-                </div>
-              </div>
-              <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
-                <button onClick={saveNetwork} className="btn-manage btn-import" style={{ display:'flex', alignItems:'center', justifyContent:'center', gap:'6px' }}>
-                  <FaCheckCircle/> {netEditId ? 'Update' : 'Tambah'}
-                </button>
-                <button onClick={() => { setShowNetForm(false); setNetEditId(null); }} className="cancel-btn">Batal</button>
-              </div>
-            </div>
-          )}
-
-          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))', gap:'12px' }}>
-            {filteredNetworks.map(n => (
-              <div key={n.id} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:`3px solid ${n.color}`, padding:'16px', display:'flex', flexDirection:'column', gap:'10px' }}>
-                <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', gap:'8px' }}>
-                  <div>
-                    <div style={{ fontWeight:'bold', fontSize:'13px', color:n.color }}>{n.name}</div>
-                    <div style={{ fontSize:'11px', color:'#444', marginTop:'2px' }}>Chain ID: {n.chainId} · {n.symbol}</div>
-                  </div>
-                  <div style={{ display:'flex', gap:'5px', flexShrink:0 }}>
-                    <button onClick={() => { setNetForm({ ...n, rpcRaw:n.rpcUrls.join('\n') }); setNetEditId(n.id); setShowNetForm(true); }} title="Edit"
-                      style={{ background:'none', border:'1px solid #333', color:'#888', padding:'4px 7px', cursor:'pointer', fontSize:'11px' }}><FaEdit/></button>
-                    <button onClick={() => setConfirmData({ isOpen:true, title:'HAPUS NETWORK?', message:'Network ini akan dihapus.',
-                        action:()=>{ setNetworks(prev => prev.filter(x => x.id !== n.id)); showAlert('Network dihapus.','hapus'); } })} title="Hapus"
-                      style={{ background:'none', border:'1px solid #333', color:'#f44336', padding:'4px 7px', cursor:'pointer', fontSize:'11px' }}><FaTrash/></button>
-                  </div>
-                </div>
-                <div>
-                  <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px' }}>
-                    <FaLink style={{ marginRight:'4px' }}/>RPC Endpoints
-                  </div>
-                  {n.rpcUrls.map((url, i) => (
-                    <div key={i} style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'4px' }}>
-                      <code style={{ flex:1, fontSize:'10px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'4px 8px', border:'1px solid #141414' }}>
-                        {url}
-                      </code>
-                      <button onClick={() => copyText(url, `rpc_${n.id}_${i}`)} title="Salin RPC"
-                        style={{ background:'none', border:'none', color:copiedKey===`rpc_${n.id}_${i}`?'#4caf50':'#333', cursor:'pointer', padding:'3px', flexShrink:0 }}>
-                        {copiedKey===`rpc_${n.id}_${i}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
-                      </button>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ display:'flex', gap:'6px', marginTop:'4px', flexWrap:'wrap' }}>
-                  {n.explorerUrl && (
-                    <a href={n.explorerUrl} target="_blank" rel="noreferrer"
-                      style={{ fontSize:'11px', color:n.color, border:`1px solid ${n.color}30`, padding:'5px 10px', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px' }}>
-                      <FaLink size={10}/> Explorer
-                    </a>
-                  )}
-                  <button onClick={() => addToMetaMask(n)}
-                    style={{ fontSize:'11px', color:'#f6851b', border:'1px solid #f6851b30', padding:'5px 10px', cursor:'pointer', background:'none', display:'flex', alignItems:'center', gap:'4px' }}>
-                    <FaPlug size={10}/> + MetaMask
-                  </button>
-                  <button onClick={() => { copyText(n.rpcUrls[0]||'', 'chain_'+n.id); showAlert('RPC URL disalin!','success'); }}
-                    style={{ fontSize:'11px', color:'#888', border:'1px solid #1e1e1e', padding:'5px 10px', cursor:'pointer', background:'none', display:'flex', alignItems:'center', gap:'4px' }}>
-                    <FaCopy size={10}/> Salin RPC
-                  </button>
-                  <button onClick={() => { setTxNetworkId(n.id); setActiveTab('transfer'); }}
-                    style={{ fontSize:'11px', color:'#4caf50', border:'1px solid #4caf5030', padding:'5px 10px', cursor:'pointer', background:'none', display:'flex', alignItems:'center', gap:'4px' }}>
-                    <FaExchangeAlt size={10}/> Send/Receive
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-
-          <div style={{ marginTop:'20px', textAlign:'center' }}>
-            <button
-              onClick={() => setConfirmData({ isOpen:true, title:'RESET NETWORKS?', message:'Semua network akan direset ke default.',
-                action:()=>{ setNetworks(DEFAULT_NETWORKS); showAlert('Networks direset ke default.','success'); } })}
-              style={{ background:'none', border:'1px solid #333', color:'#555', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
-              Reset ke Default Networks
-            </button>
-          </div>
-        </>
-      )}
+      {activeTab === 'networks' && <NetworksTab ctx={ctx} />}
 
       {activeTab === 'bytecode' && (
         <BytecodeExplorer />
@@ -8797,783 +6313,7 @@ export const WalletGenerator: React.FC = () => {
         />
       )}
 
-      {activeTab === 'token' && (
-        <>
-          {/* ── Pilih Chain: EVM (ERC-20) / Solana (SPL Token) ── */}
-          <div style={{ marginBottom:'16px' }}>
-            <label style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'block', marginBottom:'8px' }}>
-              <FaCoins style={{ marginRight:'5px' }}/>Buat Token Baru
-            </label>
-            <div style={{ display:'flex', gap:'6px' }}>
-              <button onClick={() => setTcChain('evm')} style={{
-                background: tcChain === 'evm' ? '#01a2ff' : 'none',
-                color: tcChain === 'evm' ? '#000' : '#888',
-                border: `1px solid ${tcChain === 'evm' ? '#01a2ff' : '#333'}`,
-                padding:'8px 16px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
-              }}>ERC-20 (EVM)</button>
-              <button onClick={() => setTcChain('sol')} style={{
-                background: tcChain === 'sol' ? '#9945FF' : 'none',
-                color: tcChain === 'sol' ? '#000' : '#888',
-                border: `1px solid ${tcChain === 'sol' ? '#9945FF' : '#333'}`,
-                padding:'8px 16px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
-              }}>SPL Token (Solana)</button>
-              <button onClick={() => setTcChain('tron')} style={{
-                background: tcChain === 'tron' ? '#EF0027' : 'none',
-                color: tcChain === 'tron' ? '#fff' : '#888',
-                border: `1px solid ${tcChain === 'tron' ? '#EF0027' : '#333'}`,
-                padding:'8px 16px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
-              }}>TRC-20 (Tron)</button>
-            </div>
-          </div>
-
-          {/* ══════════ ERC-20 ══════════ */}
-          {tcChain === 'evm' && (
-            <>
-              <div style={{ marginBottom:'16px' }}>
-                <label style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'block', marginBottom:'6px' }}>
-                  <FaGlobe style={{ marginRight:'4px' }}/>Network Deploy
-                </label>
-                <div style={{ display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
-                  <select value={tcNetworkId} onChange={e => setTcNetworkId(e.target.value)}
-                    style={{ flex:'1 1 260px', fontFamily:'monospace', fontSize:'13px', padding:'10px 12px' }}>
-                    {networks.map(n => (
-                      <option key={n.id} value={n.id}>{n.name} · {n.symbol} · Chain {n.chainId}</option>
-                    ))}
-                  </select>
-                  {tcSelectedNetwork && (
-                    <span style={{ fontSize:'11px', color:'#555', fontFamily:'monospace', whiteSpace:'nowrap' }}>Chain {tcSelectedNetwork.chainId}</span>
-                  )}
-                </div>
-                <p style={{ fontSize:'11px', color:'#444', marginTop:'6px' }}>
-                  <FaInfoCircle style={{ marginRight:'4px' }}/>
-                  Disarankan coba di testnet dulu (Sepolia / Holesky / BNB Testnet) sebelum deploy ke mainnet.
-                </p>
-              </div>
-
-              <div style={{ marginBottom:'16px', display:'flex', gap:'8px' }}>
-                <button onClick={() => setTcEvmMode('template')}
-                  style={{ flex:1, padding:'10px', fontSize:'12px', cursor:'pointer',
-                    background: tcEvmMode === 'template' ? '#01a2ff' : 'none',
-                    color: tcEvmMode === 'template' ? '#000' : '#888',
-                    border: `1px solid ${tcEvmMode === 'template' ? '#01a2ff' : '#333'}` }}>
-                  <FaFileCode style={{ marginRight:'6px' }}/>Template Bawaan
-                </button>
-                <button onClick={() => setTcEvmMode('custom')}
-                  style={{ flex:1, padding:'10px', fontSize:'12px', cursor:'pointer',
-                    background: tcEvmMode === 'custom' ? '#01a2ff' : 'none',
-                    color: tcEvmMode === 'custom' ? '#000' : '#888',
-                    border: `1px solid ${tcEvmMode === 'custom' ? '#01a2ff' : '#333'}` }}>
-                  <FaCode style={{ marginRight:'6px' }}/>Kode Solidity Kustom
-                </button>
-              </div>
-
-              <div className="form-container" style={{ maxWidth:'520px', margin:'0 auto 24px' }}>
-                <h2 style={{ textAlign:'center', marginBottom:'16px', fontSize:'15px' }}>
-                  <FaRocket style={{ marginRight:'8px' }}/>{tcEvmMode === 'custom' ? 'Deploy Kontrak Kustom' : 'Deploy Token ERC-20'}
-                </h2>
-
-                {wallets.length > 0 && (
-                  <div style={{ marginBottom:'14px' }}>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Deployer (dari BIP39 tersimpan)</label>
-                    <select value={tcWalletSel} onChange={e => handleTcWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
-                      <option value="">-- Pilih address --</option>
-                      {wallets.flatMap((w, wi) =>
-                        w.addresses.map(a => (
-                          <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
-                            {w.name} · #{a.index} · {a.address.slice(0,14)}...
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
-                )}
-                <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                  <FaKey style={{ marginRight:'4px' }}/>Private Key Deployer
-                </label>
-                <input type="password" placeholder="0x..." value={tcPrivKey} onChange={e => setTcPrivKey(e.target.value)}
-                  style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px', marginBottom:'14px' }}/>
-
-                {tcEvmMode === 'template' && (
-                <>
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Nama Token</label>
-                    <input placeholder="misal: My Awesome Token" value={tcName} onChange={e => setTcName(e.target.value)} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Symbol</label>
-                    <input placeholder="misal: MAT" value={tcSymbol} onChange={e => setTcSymbol(e.target.value.toUpperCase())} style={{ textTransform:'uppercase' }}/>
-                  </div>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Decimals</label>
-                    <input type="number" min={0} max={18} placeholder="18" value={tcDecimals} onChange={e => setTcDecimals(e.target.value)} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Total Supply</label>
-                    <input type="number" min={1} placeholder="1000000" value={tcSupply} onChange={e => setTcSupply(e.target.value)} />
-                  </div>
-                </div>
-
-                <p style={{ fontSize:'11px', color:'#444', margin:'4px 0 14px' }}>
-                  Seluruh total supply akan di-mint ke address deployer saat kontrak dideploy. Kontrak
-                  mendukung <code>mint</code> tambahan (owner-only), <code>burn</code>, dan transfer ownership.
-                </p>
-                </>
-                )}
-
-                {tcEvmMode === 'custom' && (
-                <>
-                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                    <FaFileCode style={{ marginRight:'4px' }}/>Kode Solidity (.sol) — 1 file, tanpa import eksternal
-                  </label>
-                  <textarea
-                    value={tcCustomSolidity}
-                    onChange={e => { setTcCustomSolidity(e.target.value); setTcCompiled(null); setTcCompileError(''); }}
-                    placeholder={'// SPDX-License-Identifier: MIT\npragma solidity ^0.8.24;\n\ncontract MyToken {\n  string public name = "My Token";\n  string public symbol = "MTK";\n  ...\n}'}
-                    rows={12}
-                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px', background:'#0a0a0a', color:'#ccc', border:'1px solid #262626', padding:'10px', resize:'vertical', marginBottom:'8px' }}
-                  />
-                  <p style={{ fontSize:'10px', color:'#555', margin:'0 0 12px' }}>
-                    Kode harus 1 file mandiri (semua kode ditulis langsung di sini, tidak ada <code>import</code> ke file lain).
-                    Kompilasi berjalan di browser via <code>solc</code> — kontrak kompleks bisa makan waktu beberapa detik.
-                  </p>
-
-                  <div style={{ display:'flex', gap:'8px', marginBottom:'12px', flexWrap:'wrap' }}>
-                    <button onClick={compileTcCustomContract} disabled={tcCompiling || !tcCustomSolidity.trim()}
-                      className="btn-manage" style={{ flex:'1 1 160px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: tcCompiling ? 0.6 : 1 }}>
-                      {tcCompiling ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Compiling... (percobaan pertama unduh compiler ~10-15MB dari CDN, bisa beberapa detik)</> : <><FaTerminal/> Compile</>}
-                    </button>
-                  </div>
-
-                  {tcCompileError && (
-                    <div style={{ marginBottom:'12px', padding:'10px 12px', fontSize:'11px', color:'#ff6666', border:'1px solid #f4433644', borderLeft:'3px solid #f44336', whiteSpace:'pre-wrap', fontFamily:'monospace' }}>
-                      {tcCompileError}
-                    </div>
-                  )}
-                  {tcCompiled && (
-                    <div style={{ marginBottom:'12px', padding:'10px 12px', fontSize:'11px', color:'#4caf50', border:'1px solid #4caf5044', borderLeft:'3px solid #4caf50' }}>
-                      <FaCheckCircle style={{ marginRight:'6px' }}/>Compile OK — contract <code>{tcCompiled.contractName}</code>
-                      {' · '}{tcCompiled.abi.filter((f:any)=>f.type==='function').length} function
-                      {tcCompiled.warnings.length > 0 && <div style={{ color:'#F1C40F', marginTop:'4px' }}>{tcCompiled.warnings.length} warning compiler (non-fatal)</div>}
-                    </div>
-                  )}
-
-                  {tcCompiled && (
-                    <div style={{ marginBottom:'14px' }}>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                        Constructor Arguments (JSON array{tcCompiled.abi.find((f:any)=>f.type==='constructor')?.inputs?.length ? `, ${tcCompiled.abi.find((f:any)=>f.type==='constructor').inputs.map((i:any)=>i.name||i.type).join(', ')}` : ' — constructor tanpa argumen'})
-                      </label>
-                      <input placeholder='["MyToken","MTK",18,"1000000000000000000000000"]' value={tcCustomCtorArgs} onChange={e => setTcCustomCtorArgs(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px' }}/>
-                    </div>
-                  )}
-
-                  <p style={{ fontSize:'11px', color:'#444', margin:'4px 0 14px' }}>
-                    <FaInfoCircle style={{ marginRight:'4px' }}/>
-                    Wajib compile dulu sebelum tombol deploy aktif. Tetap review kode sendiri sebelum deploy
-                    ke mainnet, apalagi kalau kontrak akan memegang dana orang lain.
-                  </p>
-                </>
-                )}
-
-                {/* ── Estimasi Gas ── */}
-                <div style={{ margin:'4px 0 16px', padding:'12px 14px', background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #F1C40F' }}>
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'8px' }}>
-                    <span style={{ fontSize:'11px', color:'#888', display:'flex', alignItems:'center', gap:'6px' }}>
-                      <FaGasPump size={11}/> Estimasi Gas Deploy
-                    </span>
-                    <button onClick={estimateTcEvmGas} disabled={tcGasLoading || (tcEvmMode === 'custom' && !tcCompiled)}
-                      style={{ fontSize:'11px', color:'#F1C40F', background:'none', border:'1px solid #F1C40F55', padding:'5px 10px', cursor:'pointer', display:'flex', alignItems:'center', gap:'5px', opacity:(tcEvmMode === 'custom' && !tcCompiled) ? 0.5 : 1 }}>
-                      {tcGasLoading ? <><FaSpinner size={10} style={{ animation:'spin 1s linear infinite' }}/> Menghitung...</> : <><FaSync size={10}/> Cek Estimasi Gas</>}
-                    </button>
-                  </div>
-                  {tcGasError && (
-                    <div style={{ marginTop:'8px', fontSize:'11px', color:'#ff6666' }}>{tcGasError}</div>
-                  )}
-                  {tcGasPriceGwei !== null && !tcGasError && (
-                    <div style={{ marginTop:'10px', display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(120px,1fr))', gap:'10px' }}>
-                      <div>
-                        <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Gas Price</div>
-                        <div style={{ fontSize:'13px', color:'#ccc', fontFamily:'monospace' }}>{tcGasPriceGwei.toFixed(4)} Gwei</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Estimasi Gas Limit</div>
-                        <div style={{ fontSize:'13px', color:'#ccc', fontFamily:'monospace' }}>{parseInt(tcGasLimitEst || '0').toLocaleString('en-US')}</div>
-                      </div>
-                      <div>
-                        <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Estimasi Total Fee</div>
-                        <div style={{ fontSize:'14px', color:'#F1C40F', fontFamily:'monospace', fontWeight:'bold' }}>≈ {tcGasFeeNative} {tcSelectedNetwork?.symbol}</div>
-                      </div>
-                    </div>
-                  )}
-                  {tcGasPriceGwei === null && !tcGasError && (
-                    <p style={{ fontSize:'10px', color:'#444', margin:'8px 0 0' }}>
-                      Klik "Cek Estimasi Gas" untuk lihat perkiraan biaya deploy sebelum submit — gas price diambil live dari RPC {tcSelectedNetwork?.name}, gas limit dari <code>estimateGas</code> transaksi deploy sesungguhnya (sudah dengan buffer 15%).
-                    </p>
-                  )}
-                </div>
-
-                {tcDeployStatus.type !== 'idle' && (
-                  <div style={{
-                    marginBottom:'14px', padding:'10px 12px', fontSize:'12px',
-                    border: `1px solid ${{pending:'#ffaa0044',success:'#4caf5044',error:'#f4433644',idle:'#33333344'}[tcDeployStatus.type]}`,
-                    borderLeft: `3px solid ${{pending:'#ffaa00',success:'#4caf50',error:'#f44336',idle:'#555'}[tcDeployStatus.type]}`,
-                    color: {pending:'#ffcc44',success:'#4caf50',error:'#ff6666',idle:'#888'}[tcDeployStatus.type],
-                    wordBreak:'break-all',
-                  }}>
-                    {tcDeployStatus.type === 'pending' && <FaSpinner style={{ marginRight:'6px', animation:'spin 1s linear infinite' }}/>}
-                    {tcDeployStatus.msg}
-                  </div>
-                )}
-
-                <button onClick={deployErc20Token}
-                  disabled={tcDeploying || (tcEvmMode === 'custom' && !tcCompiled)}
-                  className="btn-manage btn-import"
-                  style={{ width:'100%', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity: tcDeploying ? 0.6 : 1 }}>
-                  {tcDeploying ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Deploying...</> : <><FaRocket/> {tcEvmMode === 'custom' ? 'Deploy Kontrak' : 'Deploy Token'}</>}
-                </button>
-              </div>
-
-              {erc20Tokens.length > 0 && (
-                <div style={{ marginBottom:'20px' }}>
-                  <h3 style={{ fontSize:'11px', textTransform:'uppercase', letterSpacing:'1.5px', color:'#01a2ff', marginBottom:'10px' }}>
-                    <FaList style={{ marginRight:'6px' }}/>Token yang Sudah Dideploy ({erc20Tokens.length})
-                  </h3>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))', gap:'12px' }}>
-                    {erc20Tokens.map(t => {
-                      const net = networks.find(n => n.id === t.networkId);
-                      return (
-                        <div key={t.id} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:`3px solid #01a2ff`, padding:'14px', display:'flex', flexDirection:'column', gap:'8px' }}>
-                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
-                            <div>
-                              <div style={{ fontWeight:'bold', fontSize:'13px' }}>{t.name} <span style={{ color:'#555' }}>({t.symbol})</span></div>
-                              <div style={{ fontSize:'10px', color:'#444', marginTop:'2px' }}>{t.networkName} · {t.decimals} dec · supply {Number(t.initialSupply).toLocaleString()}</div>
-                            </div>
-                            <button onClick={() => deleteErc20Token(t.id)} title="Hapus catatan"
-                              style={{ background:'none', border:'1px solid #333', color:'#f44336', padding:'4px 7px', cursor:'pointer', fontSize:'11px' }}><FaTrash/></button>
-                          </div>
-                          <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
-                            <code style={{ flex:1, fontSize:'10px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'5px 8px', border:'1px solid #141414' }}>
-                              {t.address}
-                            </code>
-                            <button onClick={() => copyText(t.address, `erc20_${t.id}`)} title="Salin address"
-                              style={{ background:'none', border:'none', color:copiedKey===`erc20_${t.id}`?'#4caf50':'#333', cursor:'pointer', padding:'3px', flexShrink:0 }}>
-                              {copiedKey===`erc20_${t.id}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
-                            </button>
-                          </div>
-                          {net?.explorerUrl && (
-                            <a href={`${net.explorerUrl}/address/${t.address}`} target="_blank" rel="noreferrer"
-                              style={{ fontSize:'11px', color:'#01a2ff', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px' }}>
-                              <FaLink size={10}/> Lihat di Explorer
-                            </a>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          {/* ══════════ SPL TOKEN ══════════ */}
-          {tcChain === 'sol' && (
-            <>
-              <div className="form-container" style={{ maxWidth:'520px', margin:'16px auto 24px' }}>
-                <h2 style={{ textAlign:'center', marginBottom:'16px', fontSize:'15px' }}>
-                  <FaRocket style={{ marginRight:'8px' }}/>Buat SPL Token
-                </h2>
-
-                <div style={{ marginBottom:'14px', display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
-                  <select value={tcSolNetId} onChange={e => setTcSolNetId(e.target.value)}
-                    style={{ flex:'1 1 200px', fontFamily:'monospace', fontSize:'12px', padding:'8px 10px', background:'#0d0d0d', border:'1px solid #1e1e1e', color:'#ccc' }}>
-                    {SOLANA_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
-                  </select>
-                  {tcSolNetId !== 'mainnet' && (
-                    <span style={{ fontSize:'10px', color:'#F1C40F', border:'1px solid #4a3f10', background:'#1a1608', padding:'4px 8px', whiteSpace:'nowrap' }}>
-                      ⚠ Jaringan TEST — token dibuat di {SOLANA_NETWORKS.find(n => n.id === tcSolNetId)?.name}, tidak muncul di mainnet
-                    </span>
-                  )}
-                </div>
-
-                {wallets.length > 0 && (
-                  <div style={{ marginBottom:'14px' }}>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Solana (dari BIP39 tersimpan)</label>
-                    <select value={tcSolWalletSel} onChange={e => handleTcSolWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
-                      <option value="">-- Pilih address --</option>
-                      {wallets.flatMap((w, wi) =>
-                        (w.solAddresses || []).map(a => (
-                          <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
-                            {w.name} · #{a.index} · {a.address.slice(0,14)}...
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
-                )}
-                <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                  <FaKey style={{ marginRight:'4px' }}/>Private Key (base58)
-                </label>
-                <input type="password" placeholder="Private key Solana (base58)" value={tcSolPrivKey} onChange={e => setTcSolPrivKey(e.target.value)}
-                  style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px', marginBottom:'14px' }}/>
-
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Nama Token</label>
-                    <input placeholder="misal: My Solana Token" value={tcSolName} onChange={e => setTcSolName(e.target.value)} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Symbol</label>
-                    <input placeholder="misal: MST" value={tcSolSymbol} onChange={e => setTcSolSymbol(e.target.value.toUpperCase())} style={{ textTransform:'uppercase' }}/>
-                  </div>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Decimals (0–9)</label>
-                    <input type="number" min={0} max={9} placeholder="9" value={tcSolDecimals} onChange={e => setTcSolDecimals(e.target.value)} />
-                  </div>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Total Supply</label>
-                    <input type="number" min={1} placeholder="1000000" value={tcSolSupply} onChange={e => setTcSolSupply(e.target.value)} />
-                  </div>
-                </div>
-
-                <div style={{ margin:'14px 0', padding:'12px', background:'#0d0d0d', border:'1px solid #1e1e1e' }}>
-                  <label style={{ display:'flex', alignItems:'center', gap:'8px', fontSize:'12px', color:'#ccc', cursor:'pointer', marginBottom: tcSolAddMeta ? '12px' : 0 }}>
-                    <input type="checkbox" checked={tcSolAddMeta} onChange={e => setTcSolAddMeta(e.target.checked)} />
-                    <FaHashtag size={11}/> Sertakan Metadata On-chain (Metaplex)
-                  </label>
-
-                  {tcSolAddMeta && (
-                    <>
-                      <p style={{ fontSize:'10px', color:'#555', margin:'0 0 12px' }}>
-                        Isi form di bawah. Saat token dibuat, data ini dirangkai jadi JSON lalu di-upload ke{' '}
-                        <strong style={{ color:'#888' }}>IPFS lewat Pinata</strong> — link gateway https://-nya (bukan base64
-                        data URI) yang dipakai sebagai <code>uri</code> on-chain, supaya explorer/wallet (Solscan, Solana
-                        Explorer, Phantom, dst) bisa benar-benar menampilkan logo & deskripsi token ini.
-                      </p>
-
-                      <div style={{ marginBottom:'12px' }}>
-                        <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                          Pinata JWT API Key <span style={{ color:'#444' }}>(gratis — daftar &amp; buat di app.pinata.cloud/keys)</span>
-                        </label>
-                        <input type="password" placeholder="eyJhbGciOi..." value={tcSolPinataJwt}
-                          onChange={e => setTcSolPinataJwt(e.target.value)}
-                          style={{ width:'100%', boxSizing:'border-box' }}/>
-                        <p style={{ fontSize:'10px', color:'#555', margin:'6px 0 0' }}>
-                          Disimpan lokal di browser kamu saja, dipakai buat upload gambar & JSON metadata ke IPFS.
-                        </p>
-                        <p style={{ fontSize:'10px', color:'#555', margin:'6px 0 0' }}>
-                          <strong style={{ color:'#888' }}>Cara buat key-nya:</strong> di app.pinata.cloud/keys klik{' '}
-                          <strong>New Key</strong>, lalu nyalain toggle <strong>Admin</strong> (paling gampang) — atau kalau
-                          mau lebih terbatas, cukup centang scope <strong>pinFileToIPFS</strong> dan{' '}
-                          <strong>pinJSONToIPFS</strong> di bagian Pinning. Copy yang <strong>JWT</strong>-nya (bukan
-                          API Key/Secret biasa), lalu tempel di kolom di atas.
-                        </p>
-                        <p style={{ fontSize:'10px', color:'#f4a300', margin:'6px 0 0' }}>
-                          ⚠ Kalau lupa centang scope-nya, upload akan gagal dengan error 403 "NO_SCOPES_FOUND" — key-nya
-                          valid tapi nggak punya izin nge-pin file/JSON.
-                        </p>
-                      </div>
-
-                      <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px' }}>
-                        <div>
-                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Image URL (opsional)</label>
-                          <input placeholder="https://.../logo.png" value={tcSolImageUrl}
-                            onChange={e => setTcSolImageUrl(e.target.value)}
-                            style={{ width:'100%', boxSizing:'border-box' }}/>
-                          <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'6px' }}>
-                            <label className="btn-manage" style={{ fontSize:'10px', padding:'4px 8px', cursor:'pointer', display:'inline-flex', alignItems:'center', gap:'6px', opacity: tcSolImageUploading ? 0.6 : 1, pointerEvents: tcSolImageUploading ? 'none' : 'auto' }}>
-                              <FaUpload size={10}/> {tcSolImageUploading ? 'Meng-upload ke IPFS...' : 'Upload dari file'}
-                              <input type="file" accept="image/*" onChange={handleTcSolImageFile} style={{ display:'none' }} disabled={tcSolImageUploading}/>
-                            </label>
-                            {tcSolImageUrl.trim() && (
-                              <button type="button" onClick={() => setTcSolImageUrl('')}
-                                style={{ fontSize:'10px', color:'#f44336', background:'none', border:'none', cursor:'pointer', padding:0 }}>
-                                Hapus
-                              </button>
-                            )}
-                          </div>
-                          <p style={{ fontSize:'10px', color:'#555', margin:'6px 0 0' }}>
-                            Isi salah satu: tempel link URL gambar yang sudah di-hosting, atau upload file dari komputer/HP
-                            (otomatis diupload ke IPFS lewat Pinata — butuh JWT API Key di atas).
-                          </p>
-                        </div>
-                        <div>
-                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Deskripsi (opsional)</label>
-                          <input placeholder="Deskripsi singkat token" value={tcSolDescription} onChange={e => setTcSolDescription(e.target.value)}
-                            style={{ width:'100%', boxSizing:'border-box' }}/>
-                        </div>
-                      </div>
-
-                      {tcSolImageUrl.trim() && (
-                        <div style={{ marginTop:'10px', display:'flex', alignItems:'center', gap:'8px' }}>
-                          <img src={tcSolImageUrl.trim()} alt="preview logo token"
-                            style={{ width:'36px', height:'36px', borderRadius:'50%', objectFit:'cover', border:'1px solid #262626' }}
-                            onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}/>
-                          <span style={{ fontSize:'10px', color:'#555' }}>Pratinjau logo</span>
-                        </div>
-                      )}
-
-                      <div style={{ marginTop:'12px' }}>
-                        <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                          Preview JSON metadata (akan di-upload ke IPFS saat token dibuat)
-                        </label>
-                        <pre style={{
-                          margin:0, padding:'8px 10px', background:'#000', border:'1px solid #1e1e1e',
-                          fontSize:'11px', color:'#8bc34a', whiteSpace:'pre-wrap', wordBreak:'break-all',
-                        }}>
-                          {JSON.stringify(tcSolMetaPreview.json, null, 2)}
-                        </pre>
-                      </div>
-                    </>
-                  )}
-                </div>
-
-                <p style={{ fontSize:'11px', color:'#444', margin:'4px 0 14px' }}>
-                  <FaInfoCircle style={{ marginRight:'4px' }}/>
-                  Membuat mint account SPL Token baru + associated token account, lalu mint seluruh total
-                  supply ke wallet ini.{' '}
-                  {tcSolAddMeta
-                    ? 'Metadata (nama, symbol, URI) akan ditulis on-chain lewat Metaplex Token Metadata Program, jadi wallet/explorer lain (Phantom, Solscan, dll) bisa menampilkan nama & logo token dengan benar.'
-                    : 'Metadata on-chain dimatikan — nama/symbol hanya tersimpan lokal di daftar bawah, wallet lain mungkin menampilkan token ini sebagai "Unknown Token".'}
-                </p>
-
-                {/* ── Estimasi Gas / Biaya ── */}
-                <div style={{ margin:'4px 0 16px', padding:'12px 14px', background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #9945FF' }}>
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'8px' }}>
-                    <span style={{ fontSize:'11px', color:'#888', display:'flex', alignItems:'center', gap:'6px' }}>
-                      <FaGasPump size={11}/> Estimasi Biaya Buat Token
-                    </span>
-                    <button onClick={estimateTcSolFee} disabled={tcSolFeeLoading}
-                      style={{ fontSize:'11px', color:'#9945FF', background:'none', border:'1px solid #9945FF55', padding:'5px 10px', cursor:'pointer', display:'flex', alignItems:'center', gap:'5px' }}>
-                      {tcSolFeeLoading ? <><FaSpinner size={10} style={{ animation:'spin 1s linear infinite' }}/> Menghitung...</> : <><FaSync size={10}/> Cek Estimasi Biaya</>}
-                    </button>
-                  </div>
-                  {tcSolFeeError && (
-                    <div style={{ marginTop:'8px', fontSize:'11px', color:'#ff6666' }}>{tcSolFeeError}</div>
-                  )}
-                  {tcSolFeeDetail && !tcSolFeeError && (
-                    <>
-                      <div style={{ marginTop:'10px', display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(130px,1fr))', gap:'10px' }}>
-                        <div>
-                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Rent Mint Account</div>
-                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(tcSolFeeDetail.mintRent / LAMPORTS_PER_SOL).toFixed(6)} SOL</div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Rent Token Account</div>
-                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(tcSolFeeDetail.ataRent / LAMPORTS_PER_SOL).toFixed(6)} SOL</div>
-                        </div>
-                        {tcSolFeeDetail.metadataRent > 0 && (
-                          <div>
-                            <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Rent Metadata (Metaplex)</div>
-                            <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>≈ {(tcSolFeeDetail.metadataRent / LAMPORTS_PER_SOL).toFixed(6)} SOL</div>
-                          </div>
-                        )}
-                        <div>
-                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Network Fee (2 signature)</div>
-                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(tcSolFeeDetail.networkFee / LAMPORTS_PER_SOL).toFixed(6)} SOL</div>
-                        </div>
-                      </div>
-                      <div style={{ marginTop:'10px', paddingTop:'10px', borderTop:'1px solid #1e1e1e' }}>
-                        <span style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Estimasi Total</span>
-                        <div style={{ fontSize:'14px', color:'#9945FF', fontFamily:'monospace', fontWeight:'bold' }}>≈ {tcSolFeeSol} SOL</div>
-                      </div>
-                    </>
-                  )}
-                  {!tcSolFeeDetail && !tcSolFeeError && (
-                    <p style={{ fontSize:'10px', color:'#444', margin:'8px 0 0' }}>
-                      Sebagian besar biaya di Solana adalah rent (deposit yang balik lagi kalau akun ditutup), bukan "gas" yang hangus — klik "Cek Estimasi Biaya" untuk rinciannya sebelum submit.
-                      {tcSolStandard === 'classic' && tcSolAddMeta && ' Rent akun Metadata Metaplex di sini adalah perkiraan; nilai persisnya dihitung otomatis on-chain saat instruksi dieksekusi.'}
-                    </p>
-                  )}
-                </div>
-
-                {tcSolStatus.type !== 'idle' && (
-                  <div style={{
-                    marginBottom:'14px', padding:'10px 12px', fontSize:'12px',
-                    border: `1px solid ${{pending:'#ffaa0044',success:'#4caf5044',error:'#f4433644',idle:'#33333344'}[tcSolStatus.type]}`,
-                    borderLeft: `3px solid ${{pending:'#ffaa00',success:'#4caf50',error:'#f44336',idle:'#555'}[tcSolStatus.type]}`,
-                    color: {pending:'#ffcc44',success:'#4caf50',error:'#ff6666',idle:'#888'}[tcSolStatus.type],
-                    wordBreak:'break-all',
-                  }}>
-                    {tcSolStatus.type === 'pending' && <FaSpinner style={{ marginRight:'6px', animation:'spin 1s linear infinite' }}/>}
-                    {tcSolStatus.msg}
-                  </div>
-                )}
-
-                <button onClick={createSplToken} disabled={tcSolCreating} className="btn-manage btn-import"
-                  style={{ width:'100%', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity: tcSolCreating ? 0.6 : 1 }}>
-                  {tcSolCreating ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Membuat Token...</> : <><FaHashtag/> Buat SPL Token</>}
-                </button>
-              </div>
-
-              {splTokens.length > 0 && (
-                <div style={{ marginBottom:'20px' }}>
-                  <h3 style={{ fontSize:'11px', textTransform:'uppercase', letterSpacing:'1.5px', color:'#9945FF', marginBottom:'10px' }}>
-                    <FaList style={{ marginRight:'6px' }}/>SPL Token yang Sudah Dibuat ({splTokens.length})
-                  </h3>
-                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))', gap:'12px' }}>
-                    {splTokens.map(t => {
-                      const tNet = SOLANA_NETWORKS.find(n => n.id === t.networkId) ?? SOLANA_NETWORKS[0];
-                      return (
-                      <div key={t.id} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:`3px solid #9945FF`, padding:'14px', display:'flex', flexDirection:'column', gap:'8px' }}>
-                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
-                          <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                            {t.imageUrl && (
-                              <img src={t.imageUrl} alt={t.symbol}
-                                style={{ width:'28px', height:'28px', borderRadius:'50%', objectFit:'cover', border:'1px solid #262626', flexShrink:0 }}
-                                onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}/>
-                            )}
-                            <div>
-                              <div style={{ fontWeight:'bold', fontSize:'13px' }}>{t.name} <span style={{ color:'#555' }}>({t.symbol})</span></div>
-                              <div style={{ fontSize:'10px', color:'#444', marginTop:'2px' }}>
-                                {t.networkName || 'Solana Mainnet'}
-                                {tNet.id !== 'mainnet' && <span style={{ color:'#F1C40F' }}> (TEST)</span>}
-                                {' · '}{t.decimals} dec · supply {Number(t.initialSupply).toLocaleString()}
-                              </div>
-                              {t.description && (
-                                <div style={{ fontSize:'10px', color:'#555', marginTop:'3px' }}>{t.description}</div>
-                              )}
-                            </div>
-                          </div>
-                          <button onClick={() => deleteSplToken(t.id)} title="Hapus catatan"
-                            style={{ background:'none', border:'1px solid #333', color:'#f44336', padding:'4px 7px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}><FaTrash/></button>
-                        </div>
-
-                        {t.hasMetadata ? (
-                          <span style={{ alignSelf:'flex-start', fontSize:'9px', color:'#4caf50', border:'1px solid #1c3a1c', background:'#0e1a0e', padding:'2px 7px', display:'flex', alignItems:'center', gap:'4px' }}>
-                            <FaCheckCircle size={9}/> Metadata on-chain (Metaplex)
-                          </span>
-                        ) : (
-                          <span style={{ alignSelf:'flex-start', fontSize:'9px', color:'#888', border:'1px solid #2a2a2a', background:'#111', padding:'2px 7px' }}>
-                            Tanpa metadata on-chain
-                          </span>
-                        )}
-
-                        <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
-                          <code style={{ flex:1, fontSize:'10px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'5px 8px', border:'1px solid #141414' }}>
-                            {t.mint}
-                          </code>
-                          <button onClick={() => copyText(t.mint, `spl_${t.id}`)} title="Salin mint address"
-                            style={{ background:'none', border:'none', color:copiedKey===`spl_${t.id}`?'#4caf50':'#333', cursor:'pointer', padding:'3px', flexShrink:0 }}>
-                            {copiedKey===`spl_${t.id}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
-                          </button>
-                        </div>
-                        <div style={{ display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
-                          <a href={`${tNet.explorerUrl}/token/${t.mint}${tNet.clusterParam}`} target="_blank" rel="noreferrer"
-                            style={{ fontSize:'11px', color:'#9945FF', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px' }}>
-                            <FaLink size={10}/> Lihat di Solscan
-                          </a>
-                          {t.metadataUri && (
-                            <a href={t.metadataUri} target="_blank" rel="noreferrer"
-                              style={{ fontSize:'11px', color:'#555', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px' }}>
-                              <FaLink size={10}/> Lihat JSON Metadata
-                            </a>
-                          )}
-                        </div>
-                      </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </>
-          )}
-
-          {tcChain === 'tron' && (
-            <div style={{ display:'flex', flexDirection:'column', gap:'16px' }}>
-              <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:'2px solid #EF0027', padding:'20px' }}>
-                <h3 style={{ fontSize:'13px', marginBottom:'16px' }}><FaCoins style={{ marginRight:'6px' }}/>Deploy Token TRC-20</h3>
-
-                <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Network</label>
-                <select value={tcTronNetId} onChange={e => setTcTronNetId(e.target.value)}
-                  style={{ width:'100%', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}>
-                  {TRON_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
-                </select>
-                {!(TRON_NETWORKS.find(n => n.id === tcTronNetId)?.isMainnet) && (
-                  <div style={{ fontSize:'10px', color:'#F1C40F', border:'1px solid #4a3f10', background:'#1a1608', padding:'6px 10px', marginBottom:'14px' }}>
-                    ⚠ Disarankan test deploy di jaringan ini dulu sebelum ke Mainnet — bytecode ERC-20 memakai opcode yang belum tentu didukung semua versi TVM.
-                  </div>
-                )}
-
-                {wallets.some(w => (w.tronAddresses||[]).length > 0) && (
-                  <>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Deploy dari Wallet Tron tersimpan</label>
-                    <select value={tcTronWalletSel} onChange={e => handleTcTronWalletSel(e.target.value)}
-                      style={{ width:'100%', fontFamily:'monospace', fontSize:'12px', marginBottom:'14px' }}>
-                      <option value="">-- Pilih address --</option>
-                      {wallets.flatMap((w, wi) =>
-                        (w.tronAddresses||[]).map(a => (
-                          <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
-                            {w.name} · #{a.index} · {a.address.slice(0,14)}...
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </>
-                )}
-
-                <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                  <FaKey style={{ marginRight:'4px' }}/>Atau Private Key (hex) manual
-                </label>
-                <input
-                  type="password"
-                  placeholder="0x... atau hex tanpa prefix"
-                  value={tcTronPrivKey}
-                  onChange={e => { setTcTronPrivKey(e.target.value); setTcTronWalletSel(''); }}
-                  style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'18px' }}
-                />
-
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Nama Token</label>
-                    <input placeholder="mis. My Awesome Token" value={tcTronName} onChange={e => setTcTronName(e.target.value)}
-                      style={{ width:'100%', boxSizing:'border-box', fontSize:'13px' }}/>
-                  </div>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Simbol</label>
-                    <input placeholder="mis. MAT" value={tcTronSymbol} onChange={e => setTcTronSymbol(e.target.value.toUpperCase())}
-                      style={{ width:'100%', boxSizing:'border-box', fontSize:'13px', textTransform:'uppercase' }}/>
-                  </div>
-                </div>
-                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'18px' }}>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Decimals</label>
-                    <input type="number" min={0} max={18} value={tcTronDecimals} onChange={e => setTcTronDecimals(e.target.value)}
-                      style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px' }}/>
-                  </div>
-                  <div>
-                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Total Supply</label>
-                    <input type="number" min={0} value={tcTronSupply} onChange={e => setTcTronSupply(e.target.value)}
-                      style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px' }}/>
-                  </div>
-                </div>
-
-                {/* ── Estimasi Energy / Bandwidth / Fee TRX ── */}
-                <div style={{ margin:'4px 0 18px', padding:'12px 14px', background:'#0a0a0a', border:'1px solid #1e1e1e', borderLeft:'3px solid #EF0027' }}>
-                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'8px' }}>
-                    <span style={{ fontSize:'11px', color:'#888', display:'flex', alignItems:'center', gap:'6px' }}>
-                      <FaGasPump size={11}/> Estimasi Energy &amp; Fee
-                    </span>
-                    <button onClick={estimateTcTronFee} disabled={tcTronFeeLoading || !tcTronPrivKey.trim()}
-                      style={{ fontSize:'11px', color:'#EF0027', background:'none', border:'1px solid #EF002755', padding:'5px 10px', cursor:'pointer', display:'flex', alignItems:'center', gap:'5px', opacity: !tcTronPrivKey.trim() ? 0.5 : 1 }}>
-                      {tcTronFeeLoading ? <><FaSpinner size={10} style={{ animation:'spin 1s linear infinite' }}/> Menghitung...</> : <><FaSync size={10}/> Cek Estimasi</>}
-                    </button>
-                  </div>
-                  {tcTronFeeError && (
-                    <div style={{ marginTop:'8px', fontSize:'11px', color:'#ff6666' }}>{tcTronFeeError}</div>
-                  )}
-                  {tcTronFeeEstimate && !tcTronFeeError && (
-                    <>
-                      <div style={{ marginTop:'10px', display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(150px,1fr))', gap:'10px' }}>
-                        <div>
-                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Energy Dibutuhkan</div>
-                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>
-                            {tcTronFeeEstimate.energyNeeded.toLocaleString('en-US')}
-                            <span style={{ color:'#555' }}> / {tcTronFeeEstimate.energyAvailable.toLocaleString('en-US')} tersedia</span>
-                          </div>
-                        </div>
-                        <div>
-                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Bandwidth Dibutuhkan</div>
-                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>
-                            {tcTronFeeEstimate.bandwidthNeeded.toLocaleString('en-US')}
-                            <span style={{ color:'#555' }}> / {tcTronFeeEstimate.bandwidthAvailable.toLocaleString('en-US')} tersedia</span>
-                          </div>
-                        </div>
-                      </div>
-                      <div style={{ marginTop:'10px', paddingTop:'10px', borderTop:'1px solid #1e1e1e' }}>
-                        <span style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Estimasi Fee yang Di-burn</span>
-                        <div style={{ fontSize:'14px', color: tcTronFeeEstimate.coveredByFree ? '#4caf50' : '#EF0027', fontFamily:'monospace', fontWeight:'bold' }}>
-                          {tcTronFeeEstimate.coveredByFree
-                            ? '0 TRX — tertutup penuh Energy/Bandwidth gratis'
-                            : `≈ ${sunToTrx(tcTronFeeEstimate.feeSun)} TRX`}
-                        </div>
-                      </div>
-                    </>
-                  )}
-                  {!tcTronFeeEstimate && !tcTronFeeError && (
-                    <p style={{ fontSize:'10px', color:'#444', margin:'8px 0 0' }}>
-                      {tcTronPrivKey.trim()
-                        ? 'Klik "Cek Estimasi" — kebutuhan Energy dihitung via dry-run (triggerconstantcontract) ke constructor deploy, dicek terhadap Energy/Bandwidth gratis & staked akun ini; kekurangannya yang bakal di-burn jadi TRX.'
-                        : 'Isi private key deployer dulu supaya Energy/Bandwidth yang tersedia bisa dicek.'}
-                    </p>
-                  )}
-                </div>
-
-                <button onClick={deployTrc20Token} disabled={tcTronCreating || !tcTronPrivKey.trim() || !tcTronName.trim() || !tcTronSymbol.trim()}
-                  style={{ width:'100%', padding:'13px', background:tcTronCreating?'#2a1a1a':'#EF0027', color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!tcTronPrivKey.trim()||!tcTronName.trim()||!tcTronSymbol.trim())?0.5:1 }}>
-                  {tcTronCreating
-                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Deploying...</>
-                    : <><FaRocket/> Deploy Token</>}
-                </button>
-
-                {tcTronStatus.type !== 'idle' && (
-                  <div style={{
-                    marginTop:'14px', padding:'12px', fontSize:'12px', wordBreak:'break-all',
-                    background: tcTronStatus.type==='error' ? '#2a0d0d' : tcTronStatus.type==='success' ? '#0d2a0d' : '#1a1a0d',
-                    border: `1px solid ${tcTronStatus.type==='error' ? '#5a1e1e' : tcTronStatus.type==='success' ? '#1e5a1e' : '#5a5a1e'}`,
-                    color: tcTronStatus.type==='error' ? '#ff8888' : tcTronStatus.type==='success' ? '#88ff88' : '#ffff88',
-                  }}>
-                    {tcTronStatus.msg}
-                  </div>
-                )}
-              </div>
-
-              {trc20Tokens.length > 0 && (
-                <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
-                  <h3 style={{ fontSize:'12px', color:'#888', marginBottom:'14px', textTransform:'uppercase', letterSpacing:'1px' }}>
-                    Token TRC-20 yang Sudah Dibuat
-                  </h3>
-                  <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
-                    {trc20Tokens.map((t, i) => {
-                      const tNet = TRON_NETWORKS.find(n => n.id === t.netId) ?? TRON_NETWORKS[0];
-                      return (
-                        <div key={t.txId + i} style={{ border:'1px solid #1a1a1a', padding:'12px 14px' }}>
-                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px', flexWrap:'wrap', gap:'8px' }}>
-                            <div>
-                              <strong style={{ fontSize:'13px' }}>{t.name}</strong>{' '}
-                              <span style={{ fontSize:'11px', color:'#EF0027' }}>{t.symbol}</span>
-                              <span style={{ fontSize:'10px', color:'#444', marginLeft:'8px' }}>{tNet.name} · decimals {t.decimals} · supply {t.supply}</span>
-                            </div>
-                            {t.address && (
-                              <button onClick={() => copyText(t.address, `trc20_${i}`)}
-                                style={{ background:'none', border:'1px solid #333', color:copiedKey===`trc20_${i}`?'#4caf50':'#888', cursor:'pointer', padding:'6px 10px', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
-                                {copiedKey===`trc20_${i}` ? <FaCheckCircle size={10}/> : <FaCopy size={10}/>} {t.address.slice(0,10)}...
-                              </button>
-                            )}
-                          </div>
-                          <div style={{ display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
-                            {t.address ? (
-                              <a href={`${tNet.explorerUrl}/token20/${t.address}`} target="_blank" rel="noreferrer"
-                                style={{ fontSize:'11px', color:'#EF0027', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px' }}>
-                                <FaLink size={10}/> Lihat di Tronscan
-                              </a>
-                            ) : (
-                              <a href={`${tNet.explorerUrl}/transaction/${t.txId}`} target="_blank" rel="noreferrer"
-                                style={{ fontSize:'11px', color:'#555', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px' }}>
-                                <FaLink size={10}/> Lihat TX Deploy
-                              </a>
-                            )}
-                            {t.pending && (
-                              <>
-                                <span style={{ fontSize:'10px', color:'#F1C40F' }}>⏳ Menunggu konfirmasi</span>
-                                <button onClick={() => refreshPendingTrc20(t.txId, t.netId)} disabled={tcTronRefreshing === t.txId}
-                                  style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'5px 9px', fontSize:'10px', display:'flex', alignItems:'center', gap:'5px', opacity: tcTronRefreshing === t.txId ? 0.6 : 1 }}>
-                                  {tcTronRefreshing === t.txId ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Mengecek...</> : <><FaSync size={10}/> Cek Status</>}
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </>
-      )}
-
+      {activeTab === 'token' && <TokenTab ctx={ctx} />}
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 0.6; } }
