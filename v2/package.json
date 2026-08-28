@@ -1,7 +1,7 @@
 {
   "name": "iac-community",
   "private": true,
-  "version": "2.2.3",
+  "version": "2.2.5",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -21,6 +21,8 @@
     "@orbs-network/ton-access": "^2.3.3",
     "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.98.4",
+    "@ston-fi/api": "^0.32.0",
+    "@ston-fi/sdk": "^2.7.0",
     "@ton/crypto": "^3.3.0",
     "@ton/ton": "^16.3.0",
     "bs58": "^6.0.0",
