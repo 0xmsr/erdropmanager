@@ -21,6 +21,16 @@ interface Version {
 
 const CHANGELOG: Version[] = [
   {
+    version: '2.2.5',
+    date: '29 Agu 2026',
+    title: 'Memberbaiki sedikit error pada jaringan Solana & Gram Network (Prev TON Blockchain)',
+    changes: [
+      { type: 'feature', text: 'Memperbaiki transfer failed signature dan menambahkan fitur max send pada Solana Network' },
+      { type: 'feature', text: 'Wallet-Gen Support Seed Phrase / Mnemonic 24 Kata telegram wallet untuk Gram Network' },
+      { type: 'feature', text: 'Wallet- pertama kali wenambahkan fitur SWAP Jetton di Gram Network' },
+    ],
+  }, 
+  {
     version: '2.2.3',
     date: '20 Agu 2026',
     title: 'Update UI Wallet Gen yang terlalu berat </> lalu support Gram Network (Prev Ton) ke Wallet gen',
