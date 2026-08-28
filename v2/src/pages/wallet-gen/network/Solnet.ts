@@ -1,6 +1,7 @@
 import { ethers } from 'ethers';
 import {
   Keypair as SolKeypair, Connection, PublicKey,
+  Transaction as SolTransaction, sendAndConfirmTransaction,
 } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
 import { PROGRAM_ID as METADATA_PROGRAM_ID } from '@metaplex-foundation/mpl-token-metadata';
@@ -97,6 +98,68 @@ export async function getSolanaConnection(net: SolNetworkCfg): Promise<Connectio
   throw new Error(`Tidak dapat connect ke ${net.name}. Cek koneksi / RPC.`);
 }
 
+
+// ── Kirim + konfirmasi TX Solana dengan aman terhadap "block height exceeded". ──
+// sendAndConfirmTransaction bawaan web3.js polling konfirmasi memakai window
+// validitas blockhash (~150 block / 60-90 detik). Kalau RPC lambat / network padat,
+// window itu bisa habis DULUAN sebelum RPC sempat lihat tx-nya confirmed — padahal
+// tx itu sendiri sudah tervalidasi & landed on-chain. Bug ini bikin transfer yang
+// SEBENARNYA BERHASIL malah dilaporkan gagal ke user.
+//
+// Fix: begitu error TransactionExpiredBlockheightExceededError muncul, jangan
+// langsung anggap gagal — cross-check langsung ke chain pakai getSignatureStatus.
+// Signature transaksi sudah tersedia di tx.signature karena signing terjadi
+// SEBELUM broadcast (di dalam sendAndConfirmTransaction/sendTransaction), jadi
+// kita tetap bisa melacaknya walau pemanggilnya keburu throw.
+export async function sendAndConfirmTransactionSafe(
+  connection: Connection,
+  tx: SolTransaction,
+  signers: SolKeypair[],
+  opts?: { retries?: number; retryDelayMs?: number },
+): Promise<string> {
+  try {
+    return await sendAndConfirmTransaction(connection, tx, signers);
+  } catch (err: any) {
+    const msg = err?.message || '';
+    const isExpired =
+      err?.name === 'TransactionExpiredBlockheightExceededError' ||
+      /block height exceeded/i.test(msg);
+    if (!isExpired) throw err;
+
+    const sigBytes = tx.signature;
+    if (!sigBytes) throw err; // belum sempat signed, memang gagal total
+
+    const sig = bs58.encode(sigBytes);
+    const retries = opts?.retries ?? 6;
+    const delayMs = opts?.retryDelayMs ?? 2000;
+
+    for (let i = 0; i < retries; i++) {
+      await new Promise(r => setTimeout(r, delayMs));
+      try {
+        const status = await connection.getSignatureStatus(sig, { searchTransactionHistory: true });
+        const st = status?.value;
+        if (st) {
+          if (st.err) {
+            throw new Error(`Transaksi ditolak on-chain: ${JSON.stringify(st.err)}`);
+          }
+          if (st.confirmationStatus === 'confirmed' || st.confirmationStatus === 'finalized') {
+            return sig; // Sudah landed — cuma RPC/client-nya yang telat lihat.
+          }
+        }
+      } catch (checkErr: any) {
+        if (checkErr?.message?.startsWith('Transaksi ditolak')) throw checkErr;
+        // lanjut retry kalau ini cuma error jaringan sesaat
+      }
+    }
+
+    // Setelah semua retry tetap tidak ketemu status "confirmed" → benar-benar expired,
+    // lempar error asli tapi sertakan signature biar user bisa cek manual.
+    throw new Error(
+      `${msg} — cek manual dulu di explorer sebelum retry (signature: ${sig}), ` +
+      `karena tx bisa saja tetap landed meski konfirmasi timeout.`
+    );
+  }
+}
 
 export async function getSolBalanceWithFallback(net: SolNetworkCfg, address: string): Promise<number> {
   const pubkey = new PublicKey(address);
