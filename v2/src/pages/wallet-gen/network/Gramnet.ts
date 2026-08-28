@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import { derivePath as deriveEd25519Path } from 'ed25519-hd-key';
-import { keyPairFromSeed, sha256_sync } from '@ton/crypto';
+import { keyPairFromSeed, sha256_sync, mnemonicValidate, mnemonicToPrivateKey } from '@ton/crypto';
 // Gram = rebrand dari TON (The Open Network) — chain & address format tetap
 // identik. Derivasi pakai mnemonic BIP39 yang sama dengan chain lain di app
 // ini (persis pola deriveSolanaAddress), lewat SLIP-0010 ed25519.
@@ -10,6 +10,8 @@ import {
 } from '@ton/ton';
 import { Address, SendMode, Cell, beginCell, contractAddress, Dictionary } from '@ton/core';
 import { getHttpEndpoints } from '@orbs-network/ton-access';
+import { StonApiClient, AssetTag } from '@ston-fi/api';
+import { dexFactory, Client as StonSdkClient } from '@ston-fi/sdk';
 import type { GramVersion } from '../types';
 import type { DetectedToken } from '../Walletgenerator';
 
@@ -40,6 +42,54 @@ export function keypairFromGramPrivateKey(privateKeyHex: string): GramKeypair {
     throw new Error('Private key Gram (TON) tidak valid — harus 64 byte (128 karakter hex).');
   }
   return { secretKey, publicKey: secretKey.subarray(32, 64) };
+}
+
+// ── Import mnemonic dari Telegram Wallet / Tonkeeper / wallet TON native lain ──
+// PENTING: mnemonic yang di-generate wallet TON "native" (app Wallet bawaan
+// Telegram, Tonkeeper, MyTonWallet, dst) TIDAK memakai skema BIP39+BIP32/SLIP-0010
+// seperti deriveGramKeypair() di atas (yang dipakai untuk menurunkan address Gram
+// dari mnemonic multi-chain buatan app ini sendiri). Wallet TON native derive
+// key langsung dari kata-kata mnemonic lewat PBKDF2-HMAC-SHA512 (opsional + salt
+// password), TANPA path derivation apapun — lihat spec resmi di
+// https://docs.ton.org/develop/dapps/asset-processing/mnemonics/wallet-mnemonics.
+// Karena beda algoritma total, mnemonic dari Telegram Wallet:
+//   1) hampir pasti gagal lolos validasi checksum BIP39 biasa (ethers.utils.isValidMnemonic)
+//   2) kalaupun "dipaksa" lewat deriveGramKeypair(), akan menghasilkan address Gram
+//      yang SALAH / tidak cocok dengan yang muncul di app Telegram Wallet aslinya.
+// Makanya proses import-nya harus lewat fungsi khusus ini.
+export async function isValidTonMnemonic(words: string[], password: string = ''): Promise<boolean> {
+  try {
+    return await mnemonicValidate(words, password || undefined);
+  } catch {
+    return false;
+  }
+}
+
+export async function deriveGramFromTonMnemonic(
+  words: string[],
+  version: GramVersion = 'v5r1',
+  password: string = '',
+): Promise<{ address: string; privateKey: string; publicKey: string; version: GramVersion }> {
+  const cleaned = words.map(w => w.trim().toLowerCase()).filter(Boolean);
+  if (cleaned.length !== 24) {
+    throw new Error(`Mnemonic wallet TON (Telegram Wallet / Tonkeeper) harus 24 kata, ditemukan ${cleaned.length} kata.`);
+  }
+  const valid = await isValidTonMnemonic(cleaned, password);
+  if (!valid) {
+    throw new Error(
+      password
+        ? 'Mnemonic TON tidak valid untuk password yang dimasukkan. Cek ejaan kata & password-nya lagi.'
+        : 'Mnemonic TON tidak valid. Kalau wallet aslinya pakai password tambahan, isi kolom password dulu.'
+    );
+  }
+  const keyPair = await mnemonicToPrivateKey(cleaned, password || undefined);
+  const wallet  = buildGramWallet(keyPair.publicKey, version);
+  return {
+    address:    wallet.address.toString({ bounceable: false, testOnly: false }),
+    privateKey: Buffer.from(keyPair.secretKey).toString('hex'),
+    publicKey:  Buffer.from(keyPair.publicKey).toString('hex'),
+    version,
+  };
 }
 
 export function buildGramWallet(publicKey: Buffer, version: GramVersion) {
@@ -610,9 +660,24 @@ export async function fetchGramTokenPortfolio(address: string, net: GramNetworkC
   const holdings = jettonWallets.filter((w: any) => Number(w?.balance ?? 0) > 0);
   if (holdings.length === 0) return [];
 
-  const masterAddrs = Array.from(new Set(holdings.map((h: any) => h.jetton as string)));
+  // ── Normalisasi address master Jetton ke format "user-friendly" (base64) ──
+  // TonCenter API v3 (/api/v3/jetton/wallets) balikin field `jetton` (& `address`)
+  // dalam format RAW (mis. "0:83dfd552e63729b472fcbcc8c45ebcc6691702558b68ec7527e1ba403a0f31a"),
+  // BUKAN format yang biasa ditampilkan Explorer (tonscan.org / tonviewer.com) —
+  // yaitu base64 dengan prefix EQ.../UQ... Kalau raw address ini langsung dipakai
+  // di UI Send/Receive tanpa dikonversi, hasilnya keliatan beda total dari yang
+  // ditampilkan Explorer meskipun address-nya sama persis di chain (bikin orang
+  // ragu itu address yang benar apa bukan). Konversi ini: raw → friendly
+  // bounceable (EQ...), sesuai konvensi Explorer buat address kontrak (jetton
+  // master beda dari address wallet biasa yang pakai non-bounceable UQ...).
+  const toFriendlyBounceable = (raw: string): string => {
+    try { return Address.parse(raw).toString({ bounceable: true, testOnly: net.isTestnet }); }
+    catch { return raw; }
+  };
+
+  const masterAddrsRaw = Array.from(new Set(holdings.map((h: any) => h.jetton as string)));
   const metaMap: Record<string, { name?: string; symbol?: string; decimals?: number; image?: string }> = {};
-  await Promise.all(masterAddrs.map(async (addr) => {
+  await Promise.all(masterAddrsRaw.map(async (addr) => {
     const resolved = await resolveGramJettonMeta(net, addr);
     if (resolved) metaMap[addr] = resolved;
   }));
@@ -623,7 +688,7 @@ export async function fetchGramTokenPortfolio(address: string, net: GramNetworkC
     const balance   = Number(h.balance) / Math.pow(10, decimals);
     return {
       chain: 'gram',
-      address: h.jetton,
+      address: toFriendlyBounceable(h.jetton),
       symbol: meta.symbol || 'JETTON',
       name: meta.name || 'Unknown Jetton',
       decimals,
@@ -868,7 +933,18 @@ function decodeGramOnchainContentDict(cell: Cell): {
   name?: string; symbol?: string; decimals?: number; image?: string; description?: string;
 } | null {
   try {
-    const dict = Dictionary.load(Dictionary.Keys.BigUint(256), Dictionary.Values.Cell(), cell.beginParse());
+    const slice = cell.beginParse();
+    // ── BUGFIX: cell content Jetton (TEP-64) selalu diawali tag 8-bit sebelum
+    // isinya — 0x00 untuk onchain (dict), 0x01 untuk offchain (URI), persis
+    // seperti yang sudah benar di-skip di decodeGramOffChainContentUri().
+    // Sebelumnya dictionary di-load langsung dari cell.beginParse() TANPA
+    // skip tag ini dulu, jadi bit dictionary-nya selalu mis-align 8 bit dari
+    // seharusnya → hampir semua/semua jetton dgn metadata onchain gagal
+    // di-decode dan jatuh ke default "Unknown Jetton" / "JETTON".
+    if (slice.remainingBits < 8) return null;
+    const tag = slice.loadUint(8);
+    if (tag !== 0x00) return null; // bukan onchain content
+    const dict = Dictionary.load(Dictionary.Keys.BigUint(256), Dictionary.Values.Cell(), slice);
     const readKey = (attr: string): string | undefined => {
       const hash = BigInt('0x' + sha256_sync(Buffer.from(attr, 'utf8')).toString('hex'));
       const valueCell = dict.get(hash);
@@ -1233,4 +1309,417 @@ export async function sendGramJetton(
     } catch (e) { lastErr = e; markGramEndpointUnhealthy(endpoint); }
   }
   throw lastErr || new Error('Semua RPC Gram gagal saat kirim Jetton.');
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ── Swap DEX (STON.fi) — tukar TON⇄Jetton / Jetton⇄Jetton langsung dari
+//    tab Send & Receive Gram, pakai wallet yang lagi connect (private key
+//    lokal), tanpa perlu TonConnect / extension wallet eksternal.
+//
+//    Alurnya (sesuai rekomendasi resmi STON.fi, "API-driven workflow"):
+//      1) fetchGramSwapAssets()   → daftar token yang bisa di-swap (dari
+//         STON.fi API, sudah difilter yang liquidity-nya layak).
+//      2) getGramSwapQuote()      → simulateSwap ke STON.fi API: dapat
+//         perkiraan output, minimum-received (udah dipotong slippage),
+//         plus info kontrak router yang harus dipakai.
+//      3) estimateGramSwapFee() / sendGramSwap() → build txParams pakai
+//         @ston-fi/sdk (dexFactory, otomatis pilih versi router yang
+//         benar dari hasil simulasi), lalu kirim lewat wallet kita
+//         sendiri — pola sama persis kayak sendGram/sendGramJetton di
+//         atas (buka wallet contract, getSeqno, sendTransfer).
+//
+//    PENTING: REST API STON.fi (api.ston.fi) cuma nge-serve data Mainnet.
+//    Jadi fitur swap ini sengaja dikunci hanya untuk GRAM_NETWORKS
+//    id === 'mainnet' — di Testnet, liquidity STON.fi nyaris gak ada
+//    dan API-nya emang gak nyediain data buat network itu. ──
+// ══════════════════════════════════════════════════════════════════════
+
+export type GramSwapAssetKind = 'ton' | 'jetton';
+
+export interface GramSwapAssetInfo {
+  // 'ton' untuk native TON/GRAM (STON.fi pakai sentinel address 'ton'),
+  // selain itu address kontrak master Jetton-nya.
+  address: string;
+  kind: GramSwapAssetKind;
+  symbol: string;
+  name: string;
+  decimals: number;
+  image?: string;
+}
+
+function mapStonAsset(a: any): GramSwapAssetInfo {
+  const isTon = a?.kind === 'Ton' || a?.contractAddress === 'ton';
+  return {
+    address:  isTon ? 'ton' : String(a?.contractAddress || ''),
+    kind:     isTon ? 'ton' : 'jetton',
+    symbol:   a?.meta?.symbol || a?.meta?.displayName || (isTon ? 'GRAM' : '???'),
+    name:     a?.meta?.displayName || a?.meta?.symbol || (isTon ? 'Gram (Prev TON Blockchain)' : 'Unknown Token'),
+    decimals: typeof a?.meta?.decimals === 'number' ? a.meta.decimals : 9,
+    image:    a?.meta?.imageUrl || a?.meta?.image,
+  };
+}
+
+// Token native GRAM/TON — selalu ada di posisi teratas daftar swap.
+export const GRAM_SWAP_NATIVE_ASSET: GramSwapAssetInfo = {
+  address: 'gram', kind: 'ton', symbol: 'GRAM', name: 'Gram (Prev TON Blockchain)', decimals: 9,
+};
+
+// PENTING: 'ton' di atas cuma sentinel INTERNAL biar UI (modal pilih token,
+// perbandingan asset aktif, dedup by address, dst) gampang bedain native TON
+// dari Jetton biasa. REST API STON.fi (simulateSwap) SAMA SEKALI gak ngerti
+// literal string 'ton' — dia expect address kanonik pTON v1 ini buat
+// merepresentasikan native TON. Sebelumnya `getGramSwapQuote` ngirim
+// `fromAsset.address`/`toAsset.address` APA ADANYA ke `simulateSwap`, jadi
+// begitu salah satu sisi swap-nya TON (termasuk pasangan default yang
+// otomatis kepilih pas modal token pertama kali dibuka), STON.fi selalu
+// nolak request-nya (address gak valid) → "Gagal simulasi swap" MELULU,
+// padahal pair-nya sendiri liquid. Fix: terjemahkan sentinel 'ton' ke
+// address asli ini SEBELUM manggil API lewat toStonApiAddress().
+export const GRAM_SWAP_TON_API_ADDRESS = 'EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c';
+
+function toStonApiAddress(asset: GramSwapAssetInfo): string {
+  return asset.kind === 'ton' ? GRAM_SWAP_TON_API_ADDRESS : asset.address;
+}
+
+export function gramSwapAssertMainnet(net: GramNetworkCfg): void {
+  if (net.id !== 'mainnet') {
+    throw new Error('Swap DEX (STON.fi) cuma tersedia di Gram Mainnet — liquidity di Testnet nyaris gak ada & API STON.fi cuma nge-serve data Mainnet.');
+  }
+}
+
+// Ambil daftar token yang bisa di-swap dari STON.fi. Tanpa `query` → daftar
+// token populer/liquidity tinggi (bagus buat isi awal dropdown). Dengan
+// `query` → cari token spesifik by nama/simbol/address.
+export async function fetchGramSwapAssets(query: string = ''): Promise<GramSwapAssetInfo[]> {
+  try {
+    const api = new StonApiClient();
+    const condition = [AssetTag.LiquidityVeryHigh, AssetTag.LiquidityHigh, AssetTag.LiquidityMedium].join(' | ');
+    const q = query.trim();
+    const list = q
+      ? await api.queryAssets({ condition, searchTerms: [q] } as any)
+      : await api.queryAssets({ condition });
+    const mapped = (Array.isArray(list) ? list : []).map(mapStonAsset).filter(a => a.address);
+    // Pastikan TON native selalu ada & gak dobel — baik di daftar awal (query
+    // kosong) MAUPUN di hasil pencarian kalau query-nya cocok ke TON. Sebelumnya
+    // TON selalu didrop total begitu ada query apapun (`return withoutTon` tanpa
+    // syarat), jadi user gak akan PERNAH nemu TON lewat search box sekalipun
+    // dia ngetik persis "ton" — padahal komentar di atas bilang TON "selalu ada".
+    const withoutTon = mapped.filter(a => a.kind !== 'ton');
+    if (!q) return [GRAM_SWAP_NATIVE_ASSET, ...withoutTon];
+    const qLower = q.toLowerCase();
+    const tonMatches = 'ton'.includes(qLower) || 'toncoin'.includes(qLower) || 'gram'.includes(qLower);
+    return tonMatches ? [GRAM_SWAP_NATIVE_ASSET, ...withoutTon] : withoutTon;
+  } catch (e: any) {
+    throw new Error('Gagal mengambil daftar token swap dari STON.fi. ' + (e?.message || 'Cek koneksi internet.'));
+  }
+}
+
+// Jetton yang lagi dipegang wallet, difilter biar cuma yang emang punya pool
+// di STON.fi (jadi bisa langsung dipakai sebagai "From" tanpa gagal simulasi).
+export async function fetchGramSwapWalletAssets(walletAddress: string): Promise<GramSwapAssetInfo[]> {
+  try {
+    const api = new StonApiClient();
+    const list = await api.queryAssets({ walletAddress, condition: AssetTag.WalletHasBalance } as any);
+    const mapped = (Array.isArray(list) ? list : []).map(mapStonAsset).filter(a => a.address);
+    return mapped.some(a => a.kind === 'ton') ? mapped : [GRAM_SWAP_NATIVE_ASSET, ...mapped];
+  } catch {
+    return [GRAM_SWAP_NATIVE_ASSET];
+  }
+}
+
+export interface GramSwapQuote {
+  offerAddress: string;
+  askAddress: string;
+  offerUnits: string;
+  askUnits: string;
+  minAskUnits: string;
+  // Harga efektif: berapa `toAsset` didapat per 1 `fromAsset`.
+  rate: number;
+  priceImpactPct?: number;
+  router: any; // dilempar apa adanya ke dexFactory() pas build txParams
+}
+
+export async function getGramSwapQuote(
+  fromAsset: GramSwapAssetInfo,
+  toAsset: GramSwapAssetInfo,
+  amount: number,
+  slippagePct: number = 1,
+): Promise<GramSwapQuote> {
+  if (!(amount > 0)) throw new Error('Jumlah yang mau di-swap harus lebih dari 0.');
+  if (fromAsset.address === toAsset.address) throw new Error('Token asal & tujuan swap tidak boleh sama.');
+  if (!(slippagePct > 0)) throw new Error('Slippage tolerance harus lebih dari 0%.');
+
+  const api = new StonApiClient();
+  const offerUnits = BigInt(Math.round(amount * Math.pow(10, fromAsset.decimals))).toString();
+
+  let result: any;
+  try {
+    result = await api.simulateSwap({
+      offerAddress: toStonApiAddress(fromAsset),
+      askAddress: toStonApiAddress(toAsset),
+      offerUnits,
+      slippageTolerance: (slippagePct / 100).toString(),
+    });
+  } catch (e: any) {
+    throw new Error(
+      `Gagal simulasi swap ${fromAsset.symbol} → ${toAsset.symbol} di STON.fi — kemungkinan pair ini belum ` +
+      `punya liquidity pool, atau jumlahnya kurang dari minimum. ${e?.message || ''}`.trim()
+    );
+  }
+  if (!result?.router) {
+    throw new Error(`Tidak ditemukan rute swap ${fromAsset.symbol} → ${toAsset.symbol} di STON.fi.`);
+  }
+
+  const askUnitsNum = Number(result.askUnits ?? result.minAskUnits ?? 0);
+  const offerUnitsNum = Number(result.offerUnits ?? offerUnits);
+  const rate = offerUnitsNum > 0
+    ? (askUnitsNum / Math.pow(10, toAsset.decimals)) / (offerUnitsNum / Math.pow(10, fromAsset.decimals))
+    : 0;
+
+  return {
+    // Sengaja pakai address versi sentinel app (fromAsset.address/toAsset.address),
+    // BUKAN result.offerAddress/askAddress dari API (yang buat TON bakal berupa
+    // GRAM_SWAP_TON_API_ADDRESS asli, bukan 'ton') — biar tetap konsisten sama
+    // skema address yang dipakai di seluruh UI, termasuk guard "quote vs token
+    // yang dipilih sekarang" di gramExecuteSwap (Walletgenerator.tsx).
+    offerAddress: fromAsset.address,
+    askAddress:   toAsset.address,
+    offerUnits:   String(result.offerUnits ?? offerUnits),
+    askUnits:     String(result.askUnits ?? ''),
+    minAskUnits:  String(result.minAskUnits ?? ''),
+    rate,
+    priceImpactPct: result.priceImpact !== undefined && result.priceImpact !== null ? Number(result.priceImpact) * 100 : undefined,
+    router: result.router,
+  };
+}
+
+export function formatGramSwapOutput(quote: GramSwapQuote, toAsset: GramSwapAssetInfo) {
+  const div = Math.pow(10, toAsset.decimals);
+  return {
+    askAmount:    Number(quote.askUnits || 0) / div,
+    minAskAmount: Number(quote.minAskUnits || 0) / div,
+  };
+}
+
+// Build txParams (to/value/body) buat message swap, pakai @ston-fi/sdk —
+// dexFactory() otomatis milih kontrak Router/pTON yang sesuai versi yang
+// dipakai `quote.router` (dikirim balik dari hasil simulasi STON.fi).
+async function buildGramSwapTxParams(
+  net: GramNetworkCfg,
+  quote: GramSwapQuote,
+  fromAsset: GramSwapAssetInfo,
+  toAsset: GramSwapAssetInfo,
+  userWalletAddress: string,
+): Promise<{ to: Address; value: bigint; body: Cell }> {
+  const endpoints = await resolveGramEndpoints(net);
+  const stonClient = new StonSdkClient({ endpoint: endpoints[0] });
+
+  const dexContracts = dexFactory(quote.router);
+  const router = stonClient.open(dexContracts.Router.create(quote.router.address));
+  const proxyTon = dexContracts.pTON && quote.router.ptonMasterAddress
+    ? dexContracts.pTON.create(quote.router.ptonMasterAddress)
+    : null;
+
+  const shared = {
+    userWalletAddress,
+    offerAmount: quote.offerUnits,
+    minAskAmount: quote.minAskUnits,
+    queryId: Date.now(),
+  };
+
+  let txParams: any;
+  if (fromAsset.kind === 'ton') {
+    if (!proxyTon) throw new Error('Router STON.fi ini tidak menyediakan proxy pTON untuk swap dari native TON.');
+    txParams = await router.getSwapTonToJettonTxParams({ ...shared, proxyTon, askJettonAddress: quote.askAddress });
+  } else if (toAsset.kind === 'ton') {
+    if (!proxyTon) throw new Error('Router STON.fi ini tidak menyediakan proxy pTON untuk swap ke native TON.');
+    txParams = await router.getSwapJettonToTonTxParams({ ...shared, proxyTon, offerJettonAddress: quote.offerAddress });
+  } else {
+    txParams = await router.getSwapJettonToJettonTxParams({ ...shared, offerJettonAddress: quote.offerAddress, askJettonAddress: quote.askAddress });
+  }
+  return { to: txParams.to as Address, value: BigInt(txParams.value), body: txParams.body as Cell };
+}
+
+export async function estimateGramSwapFee(
+  net: GramNetworkCfg,
+  privateKeyHex: string,
+  quote: GramSwapQuote,
+  fromAsset: GramSwapAssetInfo,
+  toAsset: GramSwapAssetInfo,
+  version: GramVersion = 'v5r1',
+): Promise<GramFeeEstimate> {
+  gramSwapAssertMainnet(net);
+  const keyPair = keypairFromGramPrivateKey(privateKeyHex);
+  const wallet  = buildGramWallet(keyPair.publicKey, version);
+
+  let willDeploy = false;
+  try {
+    const state = await getGramAccountState(net, wallet.address.toString());
+    willDeploy = state.needsInitOnNextSend;
+  } catch { /* best-effort */ }
+
+  const swapMsg = await buildGramSwapTxParams(net, quote, fromAsset, toAsset, wallet.address.toString());
+
+  const endpoints = await resolveGramEndpoints(net);
+  let lastErr: any;
+  for (const endpoint of endpoints) {
+    try {
+      await gramThrottleFor(endpoint);
+      const client   = new TonClient({ endpoint, apiKey: net.apiKey });
+      const contract = client.open(wallet);
+
+      let seqno = 0;
+      try { seqno = await withGramRetry(() => contract.getSeqno()); }
+      catch { /* wallet belum aktif di chain — seqno awal 0 */ }
+
+      const body = (wallet as any).createTransfer({
+        seqno,
+        secretKey: keyPair.secretKey,
+        sendMode: SendMode.PAY_GAS_SEPARATELY + SendMode.IGNORE_ERRORS,
+        messages: [internal({ to: swapMsg.to, value: swapMsg.value, bounce: true, body: swapMsg.body })],
+      }) as Cell;
+
+      const fees = await withGramRetry(() => client.estimateExternalMessageFee(wallet.address, {
+        body,
+        initCode: willDeploy ? wallet.init.code : null,
+        initData: willDeploy ? wallet.init.data : null,
+        ignoreSignature: true,
+      }));
+
+      return gramFeeFromSourceFees(fees.source_fees, willDeploy);
+    } catch (e) { lastErr = e; markGramEndpointUnhealthy(endpoint); }
+  }
+  throw lastErr || new Error('Semua RPC Gram gagal saat estimasi fee swap.');
+}
+
+// ── Cek saldo gas GRAM (native TON) minimum sebelum swap ──
+// Umum di ekosistem TON/GRAM: swap lewat DEX (STON.fi) SELALU butuh sejumlah
+// TON native buat gas — bahkan kalau yang di-swap itu Jetton ke Jetton lain
+// (bukan TON sama sekali). Alur swap-nya bukan 1 pesan tunggal, tapi rangkaian
+// pesan internal berlapis (wallet → jetton wallet pengirim → jetton wallet
+// router → kontrak Router/pool → notifikasi balik ke jetton wallet penerima,
+// dst), dan tiap hop butuh ongkos gas + forward fee sendiri yang dibayar dari
+// TON di wallet — BUKAN dipotong dari jumlah Jetton yang di-swap. Kalau saldo
+// TON di wallet kurang dari total ongkos ini, tx bisa "nyangkut" di tengah
+// chain of message (Jetton sudah kekirim/kekunci tapi swap gak pernah selesai)
+// alih-alih gagal bersih di awal — jauh lebih nyusahin daripada dicegah dari awal.
+//
+// estimateGramSwapFee (estimateExternalMessageFee) cuma mensimulasikan pesan
+// PERTAMA dari wallet ke Router/pTON, gak menghitung seluruh rangkaian pesan
+// internal yang dipicu STON.fi di baliknya — jadi angkanya SERING under-estimate
+// ongkos riil. Makanya di sini kita gak cuma pakai estimateGramSwapFee apa
+// adanya, tapi jamin ada floor minimum (GRAM_SWAP_MIN_GAS_RESERVE_NANO) di atas
+// estimasi tersebut sebagai buffer, supaya swap gak keburu dicoba padahal
+// hampir pasti bakal gagal/nyangkut di tengah jalan.
+export const GRAM_SWAP_MIN_GAS_RESERVE_NANO = BigInt(150_000_000); // ~0.15 TON
+
+export interface GramSwapGasCheck {
+  hasEnoughGas: boolean;
+  requiredNano: bigint;
+  balanceNano: bigint;
+  shortfallNano: bigint;
+  requiredGram: number;
+  balanceGram: number;
+  shortfallGram: number;
+  willDeploy: boolean;
+}
+
+export async function checkGramSwapGasSufficiency(
+  net: GramNetworkCfg,
+  address: string,
+  fromAsset: GramSwapAssetInfo,
+  amount: number,
+  feeEstimate?: GramFeeEstimate | null,
+): Promise<GramSwapGasCheck> {
+  const state = await getGramAccountState(net, address);
+  const balanceNano = state.balanceNano;
+
+  // Floor gas minimum, dinaikkan lagi kalau estimasi fee riil (kalau tersedia)
+  // ternyata lebih besar dari floor-nya + sedikit safety buffer yang sama
+  // dipakai estimateGramMaxSendable.
+  let requiredGasNano = GRAM_SWAP_MIN_GAS_RESERVE_NANO;
+  if (feeEstimate) {
+    const withBuffer = feeEstimate.totalFeeNano + GRAM_MAX_SAFETY_BUFFER_NANO;
+    if (withBuffer > requiredGasNano) requiredGasNano = withBuffer;
+  }
+  // Wallet belum aktif → tx swap ini sekaligus jadi tx deploy pertama, butuh
+  // reserve tambahan (pola sama seperti sendGram/estimateGramMaxSendable).
+  if (state.needsInitOnNextSend) requiredGasNano += GRAM_DEPLOY_RESERVE_NANO;
+
+  // Kalau yang di-swap adalah TON native sendiri, jumlah yang mau di-swap ikut
+  // motong saldo yang sama dengan gas — jadi totalnya harus dijumlah, bukan
+  // dicek terpisah.
+  const amountNano   = fromAsset.kind === 'ton' ? toNano(amount.toFixed(9)) : 0n;
+  const requiredNano = requiredGasNano + amountNano;
+
+  const hasEnoughGas  = balanceNano >= requiredNano;
+  const shortfallNano = hasEnoughGas ? 0n : requiredNano - balanceNano;
+
+  return {
+    hasEnoughGas,
+    requiredNano,
+    balanceNano,
+    shortfallNano,
+    requiredGram:  Number(fromNano(requiredNano.toString())),
+    balanceGram:   Number(fromNano(balanceNano.toString())),
+    shortfallGram: Number(fromNano(shortfallNano.toString())),
+    willDeploy: state.needsInitOnNextSend,
+  };
+}
+
+export async function sendGramSwap(
+  net: GramNetworkCfg,
+  privateKeyHex: string,
+  quote: GramSwapQuote,
+  fromAsset: GramSwapAssetInfo,
+  toAsset: GramSwapAssetInfo,
+  version: GramVersion = 'v5r1',
+  amount?: number,
+): Promise<string> {
+  gramSwapAssertMainnet(net);
+  const keyPair = keypairFromGramPrivateKey(privateKeyHex);
+  const wallet  = buildGramWallet(keyPair.publicKey, version);
+
+  // Guard terakhir sebelum broadcast: pastikan saldo TON cukup buat gas swap
+  // (+ jumlah swap kalau fromAsset-nya TON sendiri). Dicek di sini juga (bukan
+  // cuma di UI) supaya fungsi ini tetap aman dipanggil langsung tanpa lewat UI.
+  const swapAmountForGasCheck = amount ?? Number(quote.offerUnits) / Math.pow(10, fromAsset.decimals);
+  const gasCheck = await checkGramSwapGasSufficiency(net, wallet.address.toString(), fromAsset, swapAmountForGasCheck);
+  if (!gasCheck.hasEnoughGas) {
+    throw new Error(
+      `Saldo Gram  (Prev TON Blockchain) tidak cukup untuk gas swap. Butuh minimal ~${gasCheck.requiredGram.toLocaleString('en-US',{maximumFractionDigits:6})} GRAM` +
+      (gasCheck.willDeploy ? ' (termasuk biaya deploy wallet, tx pertama)' : '') +
+      `, saldo saat ini ~${gasCheck.balanceGram.toLocaleString('en-US',{maximumFractionDigits:6})} GRAM ` +
+      `(kurang ~${gasCheck.shortfallGram.toLocaleString('en-US',{maximumFractionDigits:6})} GRAM). ` +
+      `Ini umum di jaringan Gram/TON: swap lewat Jetton tetap butuh TON native buat bayar gas tiap hop pesan internal.`
+    );
+  }
+
+  const swapMsg = await buildGramSwapTxParams(net, quote, fromAsset, toAsset, wallet.address.toString());
+
+  const endpoints = await resolveGramEndpoints(net);
+  let lastErr: any;
+  for (const endpoint of endpoints) {
+    try {
+      await gramThrottleFor(endpoint);
+      const client   = new TonClient({ endpoint, apiKey: net.apiKey });
+      const contract = client.open(wallet);
+
+      let seqno = 0;
+      try { seqno = await withGramRetry(() => contract.getSeqno()); }
+      catch { /* wallet belum aktif di chain — seqno awal 0 */ }
+
+      await withGramRetry(() => contract.sendTransfer({
+        seqno,
+        secretKey: keyPair.secretKey,
+        sendMode: SendMode.PAY_GAS_SEPARATELY + SendMode.IGNORE_ERRORS,
+        messages: [internal({ to: swapMsg.to, value: swapMsg.value, bounce: true, body: swapMsg.body })],
+      }));
+
+      const landed = await pollGramSeqno(contract, seqno);
+      if (!landed) return '';
+      return await fetchGramLastTxHash(client, wallet.address);
+    } catch (e) { lastErr = e; markGramEndpointUnhealthy(endpoint); }
+  }
+  throw lastErr || new Error('Semua RPC Gram gagal saat kirim transaksi swap.');
 }
