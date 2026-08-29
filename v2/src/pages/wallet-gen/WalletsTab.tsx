@@ -28,6 +28,7 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     setAddressCount, setBalCheckNetId, setBalResults, setChainView, setCustomMnemonic, setEntropyBits, 
     setExpandedId, setImportMode, setQrAddress, setRevealedIds, setRevealedPKs, setSearch, 
     setWalletName, walletName, wallets, gramVersion, setGramVersion, switchGramVersion,
+    tonImportMode, setTonImportMode, tonMnemonicPassword, setTonMnemonicPassword,
   } = ctx;
 
   return (
@@ -38,7 +39,7 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
             </h2>
             <div style={{ display:'flex', gap:'8px', marginBottom:'14px', justifyContent:'center' }}>
               {[false, true].map(isImport => (
-                <button key={String(isImport)} onClick={() => setImportMode(isImport)} style={{
+                <button key={String(isImport)} onClick={() => { setImportMode(isImport); if (!isImport) { setTonImportMode(false); setTonMnemonicPassword(''); } }} style={{
                   padding:'7px 16px',
                   background:importMode === isImport ? '#01a2ff' : '#111',
                   border:`1px solid ${importMode === isImport ? '#01a2ff' : '#333'}`,
@@ -49,6 +50,18 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                 </button>
               ))}
             </div>
+            {importMode && (
+              <label style={{
+                display:'flex', alignItems:'center', gap:'8px', marginBottom:'12px', padding:'9px 12px',
+                background: tonImportMode ? '#0098EA20' : '#0d0d0d', border:`1px solid ${tonImportMode ? '#0098EA' : '#1e1e1e'}`,
+                cursor:'pointer', fontSize:'12px', color: tonImportMode ? '#0098EA' : '#888',
+              }}>
+                <input type="checkbox" checked={tonImportMode}
+                  onChange={e => setTonImportMode(e.target.checked)}
+                  style={{ width:'14px', height:'14px', cursor:'pointer', flexShrink:0 }}/>
+                Mnemonic ini dari <strong>Telegram Wallet</strong> / Tonkeeper (24 kata, format TON native)
+              </label>
+            )}
             <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'12px' }}>
               <input placeholder="Nama Wallet (opsional)" value={walletName} onChange={e => setWalletName(e.target.value)}/>
               {!importMode && (
@@ -56,21 +69,36 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                   {QLENGTH_OPTIONS.map(o => <option key={o.bits} value={o.bits}>{o.label}</option>)}
                 </select>
               )}
-              <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                <label style={{ fontSize:'12px', color:'#888', whiteSpace:'nowrap' }}>Jumlah Address:</label>
-                <input type="number" min={1} max={20} value={addressCount}
-                  onChange={e => setAddressCount(Math.min(20, Math.max(1, parseInt(e.target.value) || 1)))}
-                  style={{ width:'70px' }}/>
-              </div>
+              {importMode && tonImportMode && (
+                <input type="password" placeholder="Password mnemonic (opsional, kosongkan jika tidak pakai)"
+                  value={tonMnemonicPassword} onChange={e => setTonMnemonicPassword(e.target.value)}/>
+              )}
+              {!(importMode && tonImportMode) && (
+                <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                  <label style={{ fontSize:'12px', color:'#888', whiteSpace:'nowrap' }}>Jumlah Address:</label>
+                  <input type="number" min={1} max={20} value={addressCount}
+                    onChange={e => setAddressCount(Math.min(20, Math.max(1, parseInt(e.target.value) || 1)))}
+                    style={{ width:'70px' }}/>
+                </div>
+              )}
             </div>
             {importMode && (
               <textarea
-                placeholder="Masukkan mnemonic phrase (12/15/18/21/24 kata, dipisah spasi)..."
+                placeholder={tonImportMode
+                  ? 'Masukkan 24 kata mnemonic dari Telegram Wallet / Tonkeeper, dipisah spasi...'
+                  : 'Masukkan mnemonic phrase (12/15/18/21/24 kata, dipisah spasi)...'}
                 value={customMnemonic}
                 onChange={e => setCustomMnemonic(e.target.value)}
                 rows={3}
                 style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', resize:'vertical', marginBottom:'10px' }}
               />
+            )}
+            {importMode && tonImportMode && (
+              <div style={{ fontSize:'11px', color:'#666', marginBottom:'10px', lineHeight:1.5 }}>
+                Wallet TON native (Telegram Wallet / Tonkeeper) pakai algoritma turunan key yang beda dari
+                mnemonic BIP39 chain lain di app ini — hasil import cuma menghasilkan <strong>1 address Gram (TON)</strong>,
+                tidak support chain lain
+              </div>
             )}
             <button onClick={generateWallet}
               disabled={generating || (importMode && !customMnemonic.trim())}
@@ -172,7 +200,7 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
             {filteredWallets.map(w => {
               const isExpanded      = expandedId === w.id;
               const isMnemonicShown = revealedIds.has(w.id);
-              const activeChain: ChainKind = chainView[w.id] || 'evm';
+              const activeChain: ChainKind = chainView[w.id] || (w.isTonNative ? 'gram' : 'evm');
               const activeList  = activeChain === 'sol' ? (w.solAddresses || []) : activeChain === 'tron' ? (w.tronAddresses || []) : activeChain === 'axm' ? (w.axmAddresses || []) : activeChain === 'atom' ? (w.atomAddresses || []) : activeChain === 'gram' ? (w.gramAddress ? [{ index: 0, address: w.gramAddress.address, privateKey: w.gramAddress.privateKey }] : []) : w.addresses;
               const activePath  = activeChain === 'sol' ? "m/44'/501'/x'/0'" : activeChain === 'tron' ? "m/44'/195'/0'/0/x" : activeChain === 'axm' ? "m/44'/118'/x'/0/0" : activeChain === 'atom' ? "m/44'/118'/x'/0/0" : activeChain === 'gram' ? "m/44'/607'/0'" : "m/44'/60'/0'/0/x";
               return (
@@ -181,9 +209,16 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                     onClick={() => setExpandedId(isExpanded ? null : w.id)}>
                     <FaWallet color="#01a2ff" size={14}/>
                     <div style={{ flex:1 }}>
-                      <div style={{ fontWeight:'bold', fontSize:'14px' }}>{w.name}</div>
+                      <div style={{ fontWeight:'bold', fontSize:'14px', display:'flex', alignItems:'center', gap:'8px' }}>
+                        {w.name}
+                        {w.isTonNative && (
+                          <span style={{ fontSize:'9px', fontWeight:'bold', color:'#0098EA', border:'1px solid #0098EA', padding:'1px 6px', letterSpacing:'0.5px' }}>
+                            TELEGRAM WALLET
+                          </span>
+                        )}
+                      </div>
                       <div style={{ fontSize:'10px', color:'#444', marginTop:'2px' }}>
-                        {new Date(w.createdAt).toLocaleString('id-ID')} · {activeList.length} address · {activePath}
+                        {new Date(w.createdAt).toLocaleString('id-ID')} · {activeList.length} address · {w.isTonNative ? 'TON native mnemonic' : activePath}
                       </div>
                     </div>
                     <div style={{ display:'flex', gap:'6px', alignItems:'center' }}>
@@ -238,7 +273,7 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                           <FaNetworkWired style={{ marginRight:'5px' }}/>Ganti Network
                         </div>
                         <div style={{ display:'flex', flexWrap:'wrap', gap:'6px' }}>
-                          {WALLET_CHAIN_OPTIONS.map(opt => {
+                          {(w.isTonNative ? WALLET_CHAIN_OPTIONS.filter(o => o.id === 'gram') : WALLET_CHAIN_OPTIONS).map(opt => {
                             const isActive = activeChain === opt.id;
                             if (opt.soon) {
                               return (
