@@ -1001,26 +1001,26 @@ export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                       <div style={{ marginTop:'10px', display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(120px,1fr))', gap:'10px' }}>
                         <div>
                           <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Gas Fee</div>
-                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(Number(tcGramFeeDetail.gasFeeNano) / 1e9).toFixed(6)} TON</div>
+                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(Number(tcGramFeeDetail.gasFeeNano) / 1e9).toFixed(6)} GRAM</div>
                         </div>
                         <div>
                           <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Storage Fee</div>
-                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(Number(tcGramFeeDetail.storageFeeNano) / 1e9).toFixed(6)} TON</div>
+                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(Number(tcGramFeeDetail.storageFeeNano) / 1e9).toFixed(6)} GRAM</div>
                         </div>
                         <div>
                           <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Forward Fee</div>
-                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(Number(tcGramFeeDetail.fwdFeeNano) / 1e9).toFixed(6)} TON</div>
+                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(Number(tcGramFeeDetail.fwdFeeNano) / 1e9).toFixed(6)} GRAM</div>
                         </div>
                         <div>
                           <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>In-Forward Fee</div>
-                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(Number(tcGramFeeDetail.inFwdFeeNano) / 1e9).toFixed(6)} TON</div>
+                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{(Number(tcGramFeeDetail.inFwdFeeNano) / 1e9).toFixed(6)} GRAM</div>
                         </div>
                       </div>
                       <div style={{ marginTop:'10px', paddingTop:'10px', borderTop:'1px solid #1e1e1e' }}>
                         <span style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Total Fee Jaringan</span>
-                        <div style={{ fontSize:'14px', color: tcGramSelectedNetwork?.color || '#0098EA', fontFamily:'monospace', fontWeight:'bold' }}>≈ {tcGramFeeGram} TON</div>
+                        <div style={{ fontSize:'14px', color: tcGramSelectedNetwork?.color || '#0098EA', fontFamily:'monospace', fontWeight:'bold' }}>≈ {tcGramFeeGram} GRAM</div>
                         <div style={{ fontSize:'11px', color:'#888', marginTop:'6px' }}>
-                          + {(Number(GRAM_JETTON_DEPLOY_VALUE) / 1e9).toFixed(2)} TON dikirim ke kontrak (deploy minter + mint + jetton-wallet admin, bukan fee yang hangus — sisa setelah dipakai jadi saldo/reserve permanen milik kontrak minter, bukan balik ke wallet ini)
+                          + {(Number(GRAM_JETTON_DEPLOY_VALUE) / 1e9).toFixed(2)} GRAM dikirim ke kontrak (deploy minter + mint + jetton-wallet admin, bukan fee yang hangus — sisa setelah dipakai jadi saldo/reserve permanen milik kontrak minter, bukan balik ke wallet ini)
                           {tcGramFeeDetail.willDeploy && ' + wallet admin ini sendiri belum aktif di chain, jadi tx ini juga sekalian deploy StateInit-nya (fee sedikit lebih besar dari perkiraan di atas).'}
                         </div>
                       </div>
@@ -1029,7 +1029,7 @@ export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                   {!tcGramFeeDetail && !tcGramFeeError && (
                     <p style={{ fontSize:'10px', color:'#444', margin:'8px 0 0' }}>
                       {tcGramPrivKey.trim()
-                        ? `Klik "Cek Estimasi" — dry-run ke node TON, tidak broadcast apa pun. Minimal saldo yang dibutuhkan di wallet admin ≈ ${(Number(GRAM_JETTON_DEPLOY_VALUE) / 1e9).toFixed(2)} TON + fee jaringan.`
+                        ? `Klik "Cek Estimasi" — dry-run ke node TON, tidak broadcast apa pun. Minimal saldo yang dibutuhkan di wallet admin ≈ ${(Number(GRAM_JETTON_DEPLOY_VALUE) / 1e9).toFixed(2)} GRAM + fee jaringan.`
                         : 'Isi private key Gram (TON) dulu supaya fee jaringan bisa dihitung.'}
                     </p>
                   )}
