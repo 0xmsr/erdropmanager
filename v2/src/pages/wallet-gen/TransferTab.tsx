@@ -9,7 +9,7 @@ import React from 'react';
 import type { WalletGeneratorCtx, ChainKind } from './types';
 import { CHAIN_OPTIONS } from './constants';
 import { shortAddr } from './helpers';
-import { GRAM_WALLET_VERSIONS } from './network/Gramnet';
+import { GRAM_WALLET_VERSIONS, formatGramSwapOutput } from './network/Gramnet';
 
 /**
  * TransferTab: dipecah dari Walletgenerator.tsx (tab "TransferTab").
@@ -25,11 +25,11 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     FaPlug, FaPlus, FaQrcode, FaRocket, FaSpinner, FaSync, FaTrash, LAMPORTS_PER_SOL, SOLANA_NETWORK, 
     SOLANA_NETWORKS, TOKEN_2022_PROGRAM_ID, TRON_NETWORKS, activeTab, agHistory, atomAddress, 
     atomBalance, atomConnect, atomConnected, atomConnecting, atomDisconnect, atomFeeEstimate, 
-    atomFeeEstimateError, atomLoadingBal, atomNetId, atomPrivKey, atomRefreshBalance, atomSend, 
-    atomSendAmt, atomSendTo, atomSending, atomStatus, atomWalletSel, axmAddress, axmBalance, 
+    atomFeeEstimateError, atomLoadingBal, atomMaxLoading, atomNetId, atomPrivKey, atomRefreshBalance, atomSend, 
+    atomSendAmt, atomSendTo, atomSending, atomSetMaxAmount, atomStatus, atomWalletSel, axmAddress, axmBalance, 
     axmConnect, axmConnected, axmConnecting, axmDisconnect, axmFeeEstimate, axmFeeEstimateError, 
-    axmFeeEstimating, axmLoadingBal, axmNetId, axmPrivKey, axmRefreshBalance, axmSend, axmSendAmt, 
-    axmSendTo, axmSending, axmStatus, axmWalletSel, 
+    axmFeeEstimating, axmLoadingBal, axmMaxLoading, axmNetId, axmPrivKey, axmRefreshBalance, axmSend, axmSendAmt, 
+    axmSendTo, axmSending, axmSetMaxAmount, axmStatus, axmWalletSel, 
     gramAddress, gramBalance, gramConnect, gramConnected, gramConnecting, gramDisconnect, 
     gramLoadingBal, gramNetId, gramPrivKey, gramRefreshBalance, gramSend, gramSendAmt, gramSendTo, 
     gramSending, gramStatus, gramWalletSel, handleGramWalletSel, setGramPrivKey, setGramSendAmt, 
@@ -39,7 +39,14 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     gramJettonAmt, setGramJettonAmt, gramJettonComment, setGramJettonComment, gramJettonSending, gramJettonStatus, 
     gramJettonMeta, gramJettonMetaLoading, gramJettonMetaError, gramJettonFeeEstimate, gramJettonFeeEstimating, 
     gramJettonFeeEstimateError, gramJettonDetected, gramJettonDetectedLoading, gramLoadDetectedJettons, 
-    gramSelectJetton, gramSendJetton, 
+    gramSelectJetton, gramSendJetton, gramJettonPickerOpen, setGramJettonPickerOpen, 
+    gramSwapAssets, gramSwapAssetsLoading, gramSwapAssetsError, gramLoadSwapAssets, 
+    gramSwapFrom, gramSwapTo, gramSwapAmt, setGramSwapAmt, gramSwapSlippage, setGramSwapSlippage, 
+    gramSwapQuote, gramSwapQuoting, gramSwapQuoteError, gramSwapFeeEstimate, gramSwapFeeEstimating, 
+    gramSwapFeeEstimateError, gramSwapGasCheck, gramSwapInsufficientBalance, gramSwapAvailableBalance, 
+    gramSwapSending, gramSwapStatus, setGramSwapPickerOpen, 
+    gramSwapFlip, gramExecuteSwap, gramSwapMaxLoading, gramSwapSetMaxAmount, 
+    FaSlidersH, FaArrowRight, FaWallet, 
     copiedKey, copyText, ethers, handleAtomWalletSel, 
     handleAxmWalletSel, handleSolWalletSel, handleTronWalletSel, handleTxWalletSel, highlightFaucet, 
     isValidTronAddress, knownTxTokens, networks, openTronFaucet, renderAssetSelector, 
@@ -58,9 +65,9 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     solCloseFilter, solCloseLoading, solCloseSearch, solCloseSelected, solCloseSelectedAccounts, 
     solCloseToggleSelect, solCloseToggleSelectAll, solCloseTokenAccount, solClosingId, solConnect, 
     solConnected, solConnecting, solDisconnect, solFaucetLoading, solFetchCloseAccounts, solIsToken, 
-    solIsValidAddr, solLoadingBal, solMode, solMultiAddRow, solMultiApplyEqual, solMultiEqualAmt, 
+    solIsValidAddr, solLoadingBal, solMaxLoading, solMode, solMultiAddRow, solMultiApplyEqual, solMultiEqualAmt, 
     solMultiRemoveRow, solMultiRows, solMultiRunning, solMultiSend, solMultiUpdateRow, solNetId, 
-    solPrivKey, solRefreshBalance, solRequestAirdrop, solSend, solSendAmt, solSendTo, solSending, 
+    solPrivKey, solRefreshBalance, solRequestAirdrop, solSend, solSendAmt, solSendTo, solSending, solSetMaxAmount, 
     solStatus, solSweepAddFromBIP39, solSweepAddManualPK, solSweepAmtMode, solSweepDelayMs, 
     solSweepDestAddr, solSweepFetchBalances, solSweepFetchingBal, solSweepFixedAmt, solSweepLeaveBuf, 
     solSweepManualPK, solSweepRemoveSource, solSweepRun, solSweepRunning, solSweepSources, 
@@ -69,11 +76,11 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     sweepManualPK, sweepRemoveSource, sweepRun, sweepRunning, sweepSources, switchAtomNetwork, 
     switchAxmNetwork, switchSolNetwork, switchTronNetwork, trc20Tokens, tronAddress, tronAsset, 
     tronAssetBal, tronAssetBalLoading, tronBalance, tronConnect, tronConnected, tronConnecting, 
-    tronDisconnect, tronFeeEstimate, tronFeeEstimateError, tronFeeEstimating, tronLoadingBal, tronMode, 
+    tronDisconnect, tronFeeEstimate, tronFeeEstimateError, tronFeeEstimating, tronLoadingBal, tronMaxLoading, tronMode, 
     tronMultiAddRow, tronMultiApplyEqual, tronMultiEqualAmt, tronMultiRemoveRow, tronMultiRows, 
     tronMultiRunning, tronMultiSend, tronMultiUpdateRow, tronNetId, tronNetwork, tronPrivKey, 
     tronRefreshBalance, tronRefreshResources, tronResources, tronResourcesLoading, tronSend, 
-    tronSendAmt, tronSendTo, tronSending, tronStatus, tronSweepAddFromBIP39, tronSweepAddManualPK, 
+    tronSendAmt, tronSendTo, tronSending, tronSetMaxAmount, tronStatus, tronSweepAddFromBIP39, tronSweepAddManualPK, 
     tronSweepAmtMode, tronSweepDestAddr, tronSweepFetchBalances, tronSweepFetchingBal, 
     tronSweepFixedAmt, tronSweepLeaveBuf, tronSweepManualPK, tronSweepRemoveSource, tronSweepRun, 
     tronSweepRunning, tronSweepSources, tronWalletSel, txAddress, txAsset, txBalance, txChain, 
@@ -82,6 +89,37 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     txMultiSend, txMultiUpdateRow, txNetworkId, txPrivKey, txRefreshBalance, txSend, txSendAmt, 
     txSendTo, txSending, txSetMaxAmount, txStatus, txStatusColor, txWalletSel, wallets
   } = ctx;
+
+  // Animasi flip arah swap (murni UI, gak perlu nyangkut di ctx parent).
+  const [gramSwapFlipSpin, setGramSwapFlipSpin] = React.useState(false);
+  const handleGramSwapFlip = () => {
+    setGramSwapFlipSpin(true);
+    gramSwapFlip();
+    setTimeout(() => setGramSwapFlipSpin(false), 300);
+  };
+
+  // Saldo token "Dari" yang lagi dipilih di swap — dari sumber yang udah ada
+  // (gramBalance buat TON native, gramJettonDetected buat Jetton), tanpa
+  // request API tambahan.
+  const gramSwapFromHolding = gramSwapFrom && gramSwapFrom.kind !== 'ton'
+    ? gramJettonDetected.find(t => t.address === gramSwapFrom.address)
+    : null;
+  const gramSwapFromBalanceLabel = !gramSwapFrom
+    ? null
+    : gramSwapFrom.kind === 'ton'
+      ? (gramBalance === '—' || gramBalance === 'Error' ? null : gramBalance)
+      : (gramSwapFromHolding ? `${gramSwapFromHolding.balanceFormatted} ${gramSwapFrom.symbol}` : '0 ' + gramSwapFrom.symbol);
+
+  // Label tombol Swap yang berubah sesuai state — biar user tahu persis apa
+  // yang perlu dilakukan berikutnya, bukan cuma disabled tanpa penjelasan.
+  const gramSwapButtonLabel = (() => {
+    if (gramSwapSending) return 'Swapping...';
+    if (!gramSwapFrom || !gramSwapTo) return 'Pilih Token';
+    if (!gramSwapAmt) return 'Masukkan Jumlah';
+    if (gramSwapQuoting && !gramSwapQuote) return 'Menghitung Quote...';
+    if (!gramSwapQuote) return 'Quote Tidak Tersedia';
+    return `Swap ${gramSwapFrom.symbol} → ${gramSwapTo.symbol}`;
+  })();
 
   return (
         <>
@@ -733,9 +771,15 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                             style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
                         </div>
                         <div>
-                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>
-                            Jumlah {solAsset === 'native' ? '(SOL)' : '(token)'}
-                          </label>
+                          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'5px' }}>
+                            <label style={{ fontSize:'11px', color:'#555' }}>
+                              Jumlah {solAsset === 'native' ? '(SOL)' : '(token)'}
+                            </label>
+                            <button onClick={solSetMaxAmount} disabled={solMaxLoading || !solConnected}
+                              style={{ background:'none', border:'1px solid #333', color:solMaxLoading?'#555':SOLANA_NETWORK.color, padding:'2px 8px', cursor:(solMaxLoading||!solConnected)?'not-allowed':'pointer', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.5px', opacity:!solConnected?0.4:1 }}>
+                              {solMaxLoading ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : 'MAX'}
+                            </button>
+                          </div>
                           <input type="number" placeholder="0.01" step="0.0001" min="0" value={solSendAmt}
                             onChange={e => setSolSendAmt(e.target.value)}
                             style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
@@ -1464,9 +1508,15 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                       <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
                       <input placeholder="T..." value={tronSendTo} onChange={e => setTronSendTo(e.target.value)}
                         style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
-                        Jumlah ({tronAsset === 'native' ? 'TRX' : (trc20Tokens.find(t=>t.address===tronAsset)?.symbol || 'Token')})
-                      </label>
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'4px' }}>
+                        <label style={{ fontSize:'11px', color:'#555' }}>
+                          Jumlah ({tronAsset === 'native' ? 'TRX' : (trc20Tokens.find(t=>t.address===tronAsset)?.symbol || 'Token')})
+                        </label>
+                        <button onClick={tronSetMaxAmount} disabled={tronMaxLoading || !tronConnected}
+                          style={{ background:'none', border:'1px solid #333', color:tronMaxLoading?'#555':tronNetwork.color, padding:'2px 8px', cursor:(tronMaxLoading||!tronConnected)?'not-allowed':'pointer', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.5px', opacity:!tronConnected?0.4:1 }}>
+                          {tronMaxLoading ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : 'MAX'}
+                        </button>
+                      </div>
                       <input type="number" placeholder="0.0" value={tronSendAmt} onChange={e => setTronSendAmt(e.target.value)}
                         style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'16px' }}/>
 
@@ -1747,7 +1797,13 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                       <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
                       <input placeholder="axm1..." value={axmSendTo} onChange={e => setAxmSendTo(e.target.value)}
                         style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Jumlah (AXM)</label>
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'4px' }}>
+                        <label style={{ fontSize:'11px', color:'#555' }}>Jumlah (AXM)</label>
+                        <button onClick={axmSetMaxAmount} disabled={axmMaxLoading || !axmConnected}
+                          style={{ background:'none', border:'1px solid #333', color:axmMaxLoading?'#555':AXIOME_NETWORK.color, padding:'2px 8px', cursor:(axmMaxLoading||!axmConnected)?'not-allowed':'pointer', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.5px', opacity:!axmConnected?0.4:1 }}>
+                          {axmMaxLoading ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : 'MAX'}
+                        </button>
+                      </div>
                       <input type="number" placeholder="0.0" value={axmSendAmt} onChange={e => setAxmSendAmt(e.target.value)}
                         style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'16px' }}/>
 
@@ -1898,7 +1954,6 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                     </div>
                   </div>
 
-                  {/* ── Toggle: kirim TON native vs Jetton (token TON) ── */}
                   <div style={{ display:'flex', gap:'6px' }}>
                     <button onClick={() => setGramSendMode('native')} style={{
                       flex:1, padding:'8px', fontSize:'12px', fontWeight:'bold', cursor:'pointer',
@@ -1912,16 +1967,22 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                       color: gramSendMode === 'jetton' ? '#fff' : '#888',
                       border: `1px solid ${gramSendMode === 'jetton' ? GRAM_NETWORK.color : '#333'}`,
                     }}><FaCoins style={{ marginRight:'6px' }}/>Jetton</button>
+                    <button onClick={() => setGramSendMode('swap')} style={{
+                      flex:1, padding:'8px', fontSize:'12px', fontWeight:'bold', cursor:'pointer',
+                      background: gramSendMode === 'swap' ? GRAM_NETWORK.color : 'none',
+                      color: gramSendMode === 'swap' ? '#fff' : '#888',
+                      border: `1px solid ${gramSendMode === 'swap' ? GRAM_NETWORK.color : '#333'}`,
+                    }}><FaExchangeAlt style={{ marginRight:'6px' }}/>Swap</button>
                   </div>
 
                   {gramSendMode === 'native' && (
                   <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
-                    <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaPaperPlane style={{ marginRight:'6px' }}/>Kirim TON</h3>
+                    <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaPaperPlane style={{ marginRight:'6px' }}/>Kirim GRAM</h3>
                       <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
                       <input placeholder="UQ... / EQ..." value={gramSendTo} onChange={e => setGramSendTo(e.target.value)}
                         style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
                       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'4px' }}>
-                        <label style={{ fontSize:'11px', color:'#555' }}>Jumlah (TON)</label>
+                        <label style={{ fontSize:'11px', color:'#555' }}>Jumlah (GRAM)</label>
                         <button onClick={gramSetMaxAmount} disabled={gramMaxLoading || !gramConnected}
                           style={{ background:'none', border:'1px solid #333', color:gramMaxLoading?'#555':GRAM_NETWORK.color, padding:'2px 8px', cursor:(gramMaxLoading||!gramConnected)?'not-allowed':'pointer', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.5px', opacity:!gramConnected?0.4:1 }}>
                           {gramMaxLoading ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : 'MAX'}
@@ -1941,7 +2002,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px', marginBottom:'16px', fontSize:'11px', color:'#666', display:'flex', gap:'8px', alignItems:'flex-start' }}>
                           <FaInfoCircle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
                           <span>
-                            Estimasi fee: <span style={{ fontFamily:'monospace', color:'#888' }}>~{gramFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} TON</span>
+                            Estimasi fee: <span style={{ fontFamily:'monospace', color:'#888' }}>~{gramFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} GRAM</span>
                             {gramFeeEstimate.willDeploy && ' (termasuk deploy wallet — tx pertama dari address ini)'}
                             {gramFeeEstimating && <span style={{ marginLeft:'6px', animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
                           </span>
@@ -1961,7 +2022,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         style={{ width:'100%', padding:'12px', background:gramSending?'#2a1a1a':GRAM_NETWORK.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!gramSendTo.trim()||!gramSendAmt)?0.5:1 }}>
                         {gramSending
                           ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
-                          : <><FaPaperPlane/> Kirim TON</>}
+                          : <><FaPaperPlane/> Kirim GRAM</>}
                       </button>
                       {gramStatus.type !== 'idle' && (
                         <div style={{
@@ -1986,37 +2047,48 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                     <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
                       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
                         <h3 style={{ fontSize:'13px', margin:0 }}><FaCoins style={{ marginRight:'6px' }}/>Kirim Jetton</h3>
-                        <button onClick={gramLoadDetectedJettons} disabled={gramJettonDetectedLoading}
-                          style={{ background:'none', border:'1px solid #333', color:'#888', padding:'5px 10px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
-                          <FaSync size={10} style={{ animation:gramJettonDetectedLoading?'spin 1s linear infinite':undefined }}/> Muat Jetton Saya
-                        </button>
                       </div>
 
-                      {gramJettonDetected.length > 0 && (
-                        <div style={{ marginBottom:'12px' }}>
-                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Jetton yang Dipegang</label>
-                          <select value={gramJettonDetected.some(t => t.address === gramJettonMaster) ? gramJettonMaster : ''}
-                            onChange={e => gramSelectJetton(e.target.value)}
-                            style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
-                            <option value="">-- Pilih dari daftar, atau tempel address manual di bawah --</option>
-                            {gramJettonDetected.map(t => (
-                              <option key={t.address} value={t.address}>
-                                {t.symbol} · {t.balanceFormatted} · {t.name}
-                              </option>
-                            ))}
-                          </select>
+                      {/* ── Token picker ala Bitget Wallet: tap buat buka bottom-sheet
+                          berisi search + daftar Jetton yang dipegang, bukan dropdown <select>. ── */}
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Token</label>
+                      <button onClick={() => { setGramJettonPickerOpen(true); if (gramJettonDetected.length === 0) gramLoadDetectedJettons(); }}
+                        style={{
+                          width:'100%', display:'flex', alignItems:'center', gap:'10px', background:'#070707',
+                          border:'1px solid #262626', borderRadius:'10px', padding:'10px 12px', cursor:'pointer',
+                          marginBottom:'12px', textAlign:'left', boxSizing:'border-box',
+                        }}>
+                        {gramJettonMeta?.image
+                          ? <img src={gramJettonMeta.image} alt="" width={28} height={28} style={{ borderRadius:'50%', flexShrink:0 }} onError={e => { (e.target as HTMLImageElement).style.visibility = 'hidden'; }}/>
+                          : <div style={{ width:28, height:28, borderRadius:'50%', background:'#1a1a1a', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                              <FaCoins size={12} color="#0088CC"/>
+                            </div>}
+                        <div style={{ flex:1, minWidth:0 }}>
+                          {gramJettonMeta ? (
+                            <>
+                              <div style={{ fontSize:'13px', fontWeight:'bold', color:'#eee' }}>{gramJettonMeta.symbol}</div>
+                              <div style={{ fontSize:'11px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{gramJettonMeta.name}</div>
+                            </>
+                          ) : (
+                            <div style={{ fontSize:'13px', color:'#666' }}>
+                              {gramJettonDetectedLoading ? 'Memuat token...' : 'Pilih Token Jetton...'}
+                            </div>
+                          )}
                         </div>
-                      )}
-                      {!gramJettonDetectedLoading && gramJettonDetected.length === 0 && (
-                        <p style={{ fontSize:'10px', color:'#444', margin:'0 0 12px' }}>
-                          Tidak ada Jetton terdeteksi otomatis di address ini (atau belum dimuat) — bisa tetap kirim dengan tempel address kontraknya manual di bawah.
-                        </p>
-                      )}
+                        {gramJettonDetectedLoading
+                          ? <FaSpinner size={12} color="#555" style={{ animation:'spin 1s linear infinite', flexShrink:0 }}/>
+                          : <FaChevronDown size={12} color="#555" style={{ flexShrink:0 }}/>}
+                      </button>
 
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Kontrak Jetton</label>
-                      <input placeholder="EQ... / UQ... (jetton master)" value={gramJettonMaster}
-                        onChange={e => setGramJettonMaster(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'8px' }}/>
+                      <details style={{ marginBottom:'8px' }}>
+                        <summary style={{ fontSize:'10px', color:'#555', cursor:'pointer', userSelect:'none' }}>
+                          Atau tempel address kontrak Jetton manual
+                        </summary>
+                        <label style={{ fontSize:'11px', color:'#555', display:'block', margin:'10px 0 4px' }}>Address Kontrak Jetton</label>
+                        <input placeholder="EQ... / UQ... (jetton master)" value={gramJettonMaster}
+                          onChange={e => setGramJettonMaster(e.target.value)}
+                          style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'8px' }}/>
+                      </details>
 
                       {gramJettonMetaLoading && (
                         <div style={{ fontSize:'11px', color:'#666', marginBottom:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
@@ -2061,7 +2133,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px', marginBottom:'16px', fontSize:'11px', color:'#666', display:'flex', gap:'8px', alignItems:'flex-start' }}>
                           <FaInfoCircle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
                           <span>
-                            Estimasi fee: <span style={{ fontFamily:'monospace', color:'#888' }}>~{gramJettonFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} TON</span>
+                            Estimasi fee: <span style={{ fontFamily:'monospace', color:'#888' }}>~{gramJettonFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} GRAM</span>
                             {gramJettonFeeEstimate.willDeploy && ' (termasuk deploy wallet — tx pertama dari address ini)'}
                             {gramJettonFeeEstimating && <span style={{ marginLeft:'6px', animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
                           </span>
@@ -2098,6 +2170,252 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                             </a>
                           )}
                         </div>
+                      )}
+                    </div>
+                  )}
+
+                  {gramSendMode === 'swap' && (
+                    <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
+                      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
+                        <h3 style={{ fontSize:'13px', margin:0 }}><FaExchangeAlt style={{ marginRight:'6px' }}/>Swap Token (STON.fi)</h3>
+                        {gramNetId === 'mainnet' && (
+                          <span style={{ fontSize:'10px', color:'#444', display:'flex', alignItems:'center', gap:'4px' }}>
+                            <FaSlidersH size={9}/> Slippage {gramSwapSlippage || '0'}%
+                          </span>
+                        )}
+                      </div>
+
+                      {gramNetId !== 'mainnet' ? (
+                        <div style={{ background:'#1a1608', border:'1px solid #4a3f10', color:'#ffaa00', padding:'12px', fontSize:'12px', display:'flex', gap:'8px', alignItems:'flex-start' }}>
+                          <FaExclamationTriangle size={13} style={{ marginTop:'1px', flexShrink:0 }}/>
+                          <span>Swap DEX (STON.fi) cuma tersedia di <b>Gram Mainnet</b> — liquidity di Testnet nyaris gak ada. Ganti network di atas dulu.</span>
+                        </div>
+                      ) : (
+                        <>
+                          {/* ── Kartu "Dari" + "Ke" digabung, tombol flip numpuk di batas tengah ── */}
+                          <div style={{ position:'relative' }}>
+                            {/* ── Token asal ── */}
+                            <div style={{ background:'#070707', border:'1px solid #262626', borderRadius:'14px 14px 4px 4px', padding:'12px 14px 16px' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px' }}>
+                                <span style={{ fontSize:'11px', color:'#555' }}>Dari</span>
+                                {gramSwapFromBalanceLabel && (
+                                  <span style={{ fontSize:'10px', color:'#555', display:'flex', alignItems:'center', gap:'4px' }}>
+                                    <FaWallet size={9}/> {gramSwapFromBalanceLabel}
+                                    <button onClick={gramSwapSetMaxAmount} disabled={gramSwapMaxLoading}
+                                      style={{ background:'none', border:`1px solid ${GRAM_NETWORK.color}40`, color:GRAM_NETWORK.color, fontSize:'9px', fontWeight:'bold', padding:'2px 6px', cursor:'pointer', borderRadius:'4px', marginLeft:'2px' }}>
+                                      {gramSwapMaxLoading ? '...' : 'MAKS'}
+                                    </button>
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+                                <button onClick={() => { setGramSwapPickerOpen('from'); if (gramSwapAssets.length === 0) gramLoadSwapAssets(); }}
+                                  style={{
+                                    display:'flex', alignItems:'center', gap:'8px', background:'#131313',
+                                    border:'1px solid #292929', borderRadius:'999px', padding:'6px 12px 6px 6px', cursor:'pointer',
+                                    flexShrink:0, maxWidth:'42%',
+                                  }}>
+                                  {gramSwapFrom?.image
+                                    ? <img src={gramSwapFrom.image} alt="" width={24} height={24} style={{ borderRadius:'50%', flexShrink:0 }} onError={e => { (e.target as HTMLImageElement).style.visibility = 'hidden'; }}/>
+                                    : <div style={{ width:24, height:24, borderRadius:'50%', background:'#1a1a1a', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                                        <FaCoins size={10} color="#0088CC"/>
+                                      </div>}
+                                  {gramSwapFrom ? (
+                                    <span style={{ fontSize:'13px', fontWeight:'bold', color:'#eee', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{gramSwapFrom.symbol}</span>
+                                  ) : (
+                                    <span style={{ fontSize:'12px', color:'#666' }}>{gramSwapAssetsLoading ? 'Memuat...' : 'Pilih token'}</span>
+                                  )}
+                                  <FaChevronDown size={10} color="#555" style={{ flexShrink:0 }}/>
+                                </button>
+                                <input type="number" placeholder="0.0" value={gramSwapAmt} onChange={e => setGramSwapAmt(e.target.value)}
+                                  style={{ flex:1, minWidth:0, textAlign:'right', background:'none', border:'none', outline:'none', fontFamily:'monospace', fontSize:'20px', fontWeight:'bold', color:'#eee', padding:0 }}/>
+                              </div>
+                            </div>
+
+                            {/* ── Tombol tukar arah — numpuk di batas antara dua kartu ── */}
+                            <div style={{ textAlign:'center', height:0, position:'relative', zIndex:2 }}>
+                              <button onClick={handleGramSwapFlip} title="Tukar arah"
+                                style={{
+                                  background:'#161616', border:'2px solid #0d0d0d', borderRadius:'50%', width:'32px', height:'32px',
+                                  color:GRAM_NETWORK.color, cursor:'pointer', display:'inline-flex', alignItems:'center', justifyContent:'center',
+                                  transform: `translateY(-16px) rotate(${gramSwapFlipSpin ? 180 : 0}deg)`, transition:'transform 0.3s ease',
+                                }}>
+                                <FaExchangeAlt size={13} style={{ transform:'rotate(90deg)' }}/>
+                              </button>
+                            </div>
+
+                            {/* ── Token tujuan ── */}
+                            <div style={{ background:'#070707', border:'1px solid #262626', borderTop:'1px solid #1a1a1a', borderRadius:'4px 4px 14px 14px', padding:'16px 14px 12px', marginTop:'-4px' }}>
+                              <div style={{ fontSize:'11px', color:'#555', marginBottom:'8px' }}>Ke</div>
+                              <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+                                <button onClick={() => { setGramSwapPickerOpen('to'); if (gramSwapAssets.length === 0) gramLoadSwapAssets(); }}
+                                  style={{
+                                    display:'flex', alignItems:'center', gap:'8px', background:'#131313',
+                                    border:'1px solid #292929', borderRadius:'999px', padding:'6px 12px 6px 6px', cursor:'pointer',
+                                    flexShrink:0, maxWidth:'42%',
+                                  }}>
+                                  {gramSwapTo?.image
+                                    ? <img src={gramSwapTo.image} alt="" width={24} height={24} style={{ borderRadius:'50%', flexShrink:0 }} onError={e => { (e.target as HTMLImageElement).style.visibility = 'hidden'; }}/>
+                                    : <div style={{ width:24, height:24, borderRadius:'50%', background:'#1a1a1a', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                                        <FaCoins size={10} color="#0088CC"/>
+                                      </div>}
+                                  {gramSwapTo ? (
+                                    <span style={{ fontSize:'13px', fontWeight:'bold', color:'#eee', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{gramSwapTo.symbol}</span>
+                                  ) : (
+                                    <span style={{ fontSize:'12px', color:'#666' }}>{gramSwapAssetsLoading ? 'Memuat...' : 'Pilih token'}</span>
+                                  )}
+                                  <FaChevronDown size={10} color="#555" style={{ flexShrink:0 }}/>
+                                </button>
+                                <div style={{ flex:1, minWidth:0, textAlign:'right', fontFamily:'monospace', fontSize:'20px', fontWeight:'bold', color: gramSwapQuote && gramSwapTo ? '#eee' : '#3a3a3a', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                  {gramSwapQuote && gramSwapTo
+                                    ? formatGramSwapOutput(gramSwapQuote, gramSwapTo).askAmount.toLocaleString('en-US', { maximumFractionDigits: 6 })
+                                    : (gramSwapQuoting ? <FaSpinner size={16} style={{ animation:'spin 1s linear infinite' }}/> : '0.0')}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          {gramSwapAssetsError && (
+                            <div style={{ background:'#2a0d0d', border:'1px solid #5a1e1e', color:'#ff8888', padding:'8px 10px', margin:'12px 0 0', fontSize:'11px' }}>
+                              {gramSwapAssetsError}
+                            </div>
+                          )}
+
+                          {/* ── Slippage Tolerance ── */}
+                          <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'14px' }}>
+                            <span style={{ fontSize:'11px', color:'#555', flexShrink:0, display:'flex', alignItems:'center', gap:'5px' }}><FaSlidersH size={10}/> Slippage</span>
+                            <div style={{ display:'flex', gap:'6px', flex:1 }}>
+                              {['0.5','1','3'].map(p => (
+                                <button key={p} onClick={() => setGramSwapSlippage(p)} style={{
+                                  padding:'6px 12px', fontSize:'11px', fontWeight:'bold', cursor:'pointer', borderRadius:'6px',
+                                  background: gramSwapSlippage === p ? GRAM_NETWORK.color : 'none',
+                                  color: gramSwapSlippage === p ? '#fff' : '#888',
+                                  border: `1px solid ${gramSwapSlippage === p ? GRAM_NETWORK.color : '#333'}`,
+                                }}>{p}%</button>
+                              ))}
+                              <input type="number" placeholder="Custom" value={gramSwapSlippage} onChange={e => setGramSwapSlippage(e.target.value)}
+                                style={{ width:'70px', flexShrink:0, boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px', borderRadius:'6px' }}/>
+                            </div>
+                          </div>
+
+                          {/* ── Ringkasan quote ── */}
+                          {gramSwapQuoteError && (
+                            <div style={{ background:'#2a0d0d', border:'1px solid #5a1e1e', color:'#ff8888', padding:'8px 10px', marginTop:'12px', fontSize:'11px' }}>
+                              {gramSwapQuoteError}
+                            </div>
+                          )}
+                          {gramSwapQuote && gramSwapTo && gramSwapFrom && (
+                            (() => {
+                              const out = formatGramSwapOutput(gramSwapQuote, gramSwapTo);
+                              const highImpact = (gramSwapQuote.priceImpactPct ?? 0) > 5;
+                              return (
+                                <div style={{ background:'#070707', border:'1px solid #1e1e1e', borderRadius:'10px', padding:'12px 14px', marginTop:'12px', fontSize:'12px', color:'#ccc' }}>
+                                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px', paddingBottom:'8px', borderBottom:'1px solid #1a1a1a' }}>
+                                    <span style={{ color:'#666', display:'flex', alignItems:'center', gap:'5px' }}><FaExchangeAlt size={9}/> Rate</span>
+                                    <span style={{ fontFamily:'monospace' }}>
+                                      1 {gramSwapFrom.symbol} <FaArrowRight size={8} style={{ margin:'0 4px', color:'#444' }}/> {gramSwapQuote.rate.toLocaleString('en-US', { maximumFractionDigits: 6 })} {gramSwapTo.symbol}
+                                    </span>
+                                  </div>
+                                  <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'6px' }}>
+                                    <span style={{ color:'#666' }}>Minimum diterima</span>
+                                    <span style={{ fontFamily:'monospace' }}>~{out.minAskAmount.toLocaleString('en-US', { maximumFractionDigits: 6 })} {gramSwapTo.symbol}</span>
+                                  </div>
+                                  {gramSwapQuote.priceImpactPct !== undefined && (
+                                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'6px' }}>
+                                      <span style={{ color:'#666' }}>Price impact</span>
+                                      <span style={{ fontFamily:'monospace', color: highImpact ? '#ff8888' : '#888', display:'flex', alignItems:'center', gap:'4px' }}>
+                                        {highImpact && <FaExclamationTriangle size={9}/>} {gramSwapQuote.priceImpactPct.toFixed(2)}%
+                                      </span>
+                                    </div>
+                                  )}
+                                  <div style={{ display:'flex', justifyContent:'space-between' }}>
+                                    <span style={{ color:'#666', display:'flex', alignItems:'center', gap:'5px' }}><FaGasPump size={9}/> Fee network</span>
+                                    <span style={{ fontFamily:'monospace' }}>
+                                      {gramSwapFeeEstimateError
+                                        ? <span style={{ color:'#ffaa00' }}>gagal dihitung</span>
+                                        : gramSwapFeeEstimate
+                                          ? `~${gramSwapFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} GRAM`
+                                          : (gramSwapFeeEstimating ? 'menghitung...' : '—')}
+                                    </span>
+                                  </div>
+                                  {highImpact && (
+                                    <div style={{ marginTop:'8px', paddingTop:'8px', borderTop:'1px solid #1a1a1a', fontSize:'10px', color:'#ff8888', display:'flex', gap:'6px', alignItems:'flex-start' }}>
+                                      <FaExclamationTriangle size={10} style={{ marginTop:'1px', flexShrink:0 }}/>
+                                      <span>Price impact tinggi — liquidity pair ini tipis, pertimbangkan swap jumlah lebih kecil.</span>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })()
+                          )}
+
+                          {/* ── Peringatan saldo token "Dari" tidak cukup ──
+                              Cek langsung terhadap saldo real (TON native atau Jetton) yang
+                              beneran dipegang wallet — lihat gramSwapInsufficientBalance di
+                              WalletGenerator. Muncul begitu jumlah yang diketik user melebihi
+                              saldo, sebelum tombol Swap sempat diklik. */}
+                          {gramSwapInsufficientBalance && gramSwapFrom && (
+                            <div style={{ background:'#2a0d0d', border:'1px solid #5a1e1e', color:'#ff8888', padding:'10px 12px', marginTop:'10px', fontSize:'11px', borderRadius:'8px', display:'flex', gap:'8px', alignItems:'flex-start' }}>
+                              <FaExclamationTriangle size={11} style={{ marginTop:'2px', flexShrink:0 }}/>
+                              <span>
+                                Saldo {gramSwapFrom.symbol} tidak cukup. Kamu mau swap {gramSwapAmt} {gramSwapFrom.symbol},
+                                tapi saldo yang dipegang cuma ~{(gramSwapAvailableBalance ?? 0).toLocaleString('en-US',{maximumFractionDigits:6})} {gramSwapFrom.symbol}.
+                              </span>
+                            </div>
+                          )}
+
+                          {/* ── Peringatan saldo gas TON minimum sebelum swap ──
+                              Umum di jaringan Gram/TON: swap Jetton tetap butuh TON native
+                              buat gas tiap hop pesan internal — kalau kurang, tx bisa nyangkut
+                              di tengah jalan alih-alih gagal bersih. Lihat checkGramSwapGasSufficiency. */}
+                          {gramSwapGasCheck && !gramSwapGasCheck.hasEnoughGas && (
+                            <div style={{ background:'#2a0d0d', border:'1px solid #5a1e1e', color:'#ff8888', padding:'10px 12px', marginTop:'10px', fontSize:'11px', borderRadius:'8px', display:'flex', gap:'8px', alignItems:'flex-start' }}>
+                              <FaGasPump size={11} style={{ marginTop:'2px', flexShrink:0 }}/>
+                              <span>
+                                Saldo GRAM tidak cukup untuk gas swap. Butuh minimal ~{gramSwapGasCheck.requiredGram.toLocaleString('en-US',{maximumFractionDigits:6})} GRAM
+                                {gramSwapGasCheck.willDeploy ? ' (termasuk deploy wallet)' : ''}, saldo saat ini ~{gramSwapGasCheck.balanceGram.toLocaleString('en-US',{maximumFractionDigits:6})} GRAM
+                                (kurang ~{gramSwapGasCheck.shortfallGram.toLocaleString('en-US',{maximumFractionDigits:6})} GRAM). Swap Jetton tetap butuh GRAM native buat gas.
+                              </span>
+                            </div>
+                          )}
+
+                          <button onClick={gramExecuteSwap}
+                            disabled={gramSwapSending || !gramSwapFrom || !gramSwapTo || !gramSwapAmt || !gramSwapQuote || gramSwapInsufficientBalance || (gramSwapGasCheck ? !gramSwapGasCheck.hasEnoughGas : false)}
+                            style={{ width:'100%', padding:'13px', marginTop:'14px', borderRadius:'10px', background:gramSwapSending?'#2a1a1a':GRAM_NETWORK.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!gramSwapFrom||!gramSwapTo||!gramSwapAmt||!gramSwapQuote||gramSwapInsufficientBalance||(gramSwapGasCheck&&!gramSwapGasCheck.hasEnoughGas))?0.5:1, transition:'opacity 0.15s ease' }}>
+                            {gramSwapSending
+                              ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Swapping...</>
+                              : gramSwapInsufficientBalance
+                                ? <>Saldo {gramSwapFrom?.symbol || ''} Tidak Cukup</>
+                                : <><FaExchangeAlt/> {gramSwapButtonLabel}</>}
+                          </button>
+                          {gramSwapStatus.type !== 'idle' && (
+                            <div style={{
+                              marginTop:'14px', padding:'12px', fontSize:'12px', borderRadius:'8px',
+                              background: gramSwapStatus.type==='error' ? '#2a0d0d' : gramSwapStatus.type==='success' ? '#0d2a0d' : '#1a1a0d',
+                              border: `1px solid ${gramSwapStatus.type==='error' ? '#5a1e1e' : gramSwapStatus.type==='success' ? '#1e5a1e' : '#5a5a1e'}`,
+                              color: gramSwapStatus.type==='error' ? '#ff8888' : gramSwapStatus.type==='success' ? '#88ff88' : '#ffff88',
+                              display:'flex', alignItems:'flex-start', gap:'8px',
+                            }}>
+                              {gramSwapStatus.type==='success'
+                                ? <FaCheckCircle size={13} style={{ marginTop:'1px', flexShrink:0 }}/>
+                                : gramSwapStatus.type==='error'
+                                  ? <FaExclamationTriangle size={13} style={{ marginTop:'1px', flexShrink:0 }}/>
+                                  : <FaSpinner size={13} style={{ marginTop:'1px', flexShrink:0, animation:'spin 1s linear infinite' }}/>}
+                              <div>
+                                {gramSwapStatus.msg}
+                                {gramSwapStatus.hash && (
+                                  <a href={`${GRAM_NETWORK.explorerUrl}/tx/${gramSwapStatus.hash}`} target="_blank" rel="noreferrer"
+                                    style={{ display:'block', marginTop:'6px', color:'#0088CC', wordBreak:'break-all' }}>
+                                    <FaLink size={9}/> {gramSwapStatus.hash}
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          <div style={{ marginTop:'12px', fontSize:'10px', color:'#444', textAlign:'center' }}>
+                            Powered by STON.fi DEX
+                          </div>
+                        </>
                       )}
                     </div>
                   )}
@@ -2208,7 +2526,13 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                       <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
                       <input placeholder="cosmos1..." value={atomSendTo} onChange={e => setAtomSendTo(e.target.value)}
                         style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
-                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Jumlah (ATOM)</label>
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'4px' }}>
+                        <label style={{ fontSize:'11px', color:'#555' }}>Jumlah (ATOM)</label>
+                        <button onClick={atomSetMaxAmount} disabled={atomMaxLoading || !atomConnected}
+                          style={{ background:'none', border:'1px solid #333', color:atomMaxLoading?'#555':COSMOS_NETWORK.color, padding:'2px 8px', cursor:(atomMaxLoading||!atomConnected)?'not-allowed':'pointer', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.5px', opacity:!atomConnected?0.4:1 }}>
+                          {atomMaxLoading ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : 'MAX'}
+                        </button>
+                      </div>
                       <input type="number" placeholder="0.0" value={atomSendAmt} onChange={e => setAtomSendAmt(e.target.value)}
                         style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'16px' }}/>
 
