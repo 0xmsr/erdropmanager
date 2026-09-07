@@ -538,9 +538,21 @@ export function GarapTab({ ctx }: { ctx: WalletGeneratorCtx }) {
             ) : (
               <div style={{ maxHeight:'420px', overflowY:'auto' }}>
                 {agHistory.slice(0, 100).map((h, idx) => {
-                  const histNet = h.description.includes('·')
-                    ? networks.find(n => h.description.toLowerCase().includes(n.id.toLowerCase()) || h.description.toLowerCase().includes(n.name.toLowerCase()))
-                    : null;
+                  // ── Cari network buat link Explorer ──
+                  // Prioritas: h.networkId (ID eksak, disimpan langsung dari
+                  // network yang aktif waktu TX dikirim — akurat).
+                  // Fallback: tebak dari substring teks `description` (cara
+                  // lama) — cuma dipakai buat entri LAMA yang tersimpan di
+                  // localStorage SEBELUM field networkId ada. Cara lama ini
+                  // gampang salah (bisa nyangkut ke network yang SALAH kalau
+                  // namanya beririsan, mis. "Sepolia" cocok di 4 network EVM
+                  // sekaligus), jadi begitu ada networkId, itu yang dipakai
+                  // dan fallback ini dilewati sepenuhnya.
+                  const histNet = h.networkId
+                    ? networks.find(n => n.id === h.networkId) ?? null
+                    : (h.description.includes('·')
+                        ? networks.find(n => h.description.toLowerCase().includes(n.id.toLowerCase()) || h.description.toLowerCase().includes(n.name.toLowerCase()))
+                        : null);
                   const timeStr = h.timestamp
                     ? new Date(h.timestamp).toLocaleString('id-ID', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })
                     : '—';
