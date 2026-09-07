@@ -9,7 +9,11 @@ export function NetworksTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     FaCheckCircle, FaCopy, FaEdit, FaExchangeAlt, FaLink, FaPlug, FaPlus, FaSearch, FaTrash, activeTab, 
     addToMetaMask, copiedKey, copyText, filteredNetworks, netEditId, netForm, netSearch, networks, 
     saveNetwork, search, setActiveTab, setConfirmData, setNetEditId, setNetForm, setNetSearch, 
-    setNetworks, setShowNetForm, setTxNetworkId, showAlert, showNetForm
+    setNetworks, setShowNetForm, setTxNetworkId, showAlert, showNetForm,
+    FaTimes, FaCloudDownloadAlt, FaSpinner,
+    showChainlistImport, setShowChainlistImport, chainlistSearch, setChainlistSearch,
+    chainlistLoading, chainlistError, filteredChainlistChains, openChainlistImport,
+    refreshChainlistImport, selectChainlistChain,
   } = ctx;
 
   return (
@@ -20,11 +24,92 @@ export function NetworksTab({ ctx }: { ctx: WalletGeneratorCtx }) {
               <input type="search" placeholder="Cari network / symbol..." value={netSearch} onChange={e => setNetSearch(e.target.value)}/>
             </div>
             <span style={{ fontSize:'12px', color:'#555', whiteSpace:'nowrap' }}>{filteredNetworks.length} network</span>
-            <button onClick={() => { setShowNetForm(p => !p); setNetEditId(null); setNetForm({ name:'', chainId:0, symbol:'', rpcUrls:[], rpcRaw:'', explorerUrl:'', color:'#01a2ff' }); }}
+            <button onClick={openChainlistImport}
+              style={{ background:'#111', color:'#01a2ff', border:'1px solid #01a2ff', padding:'8px 16px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px' }}>
+              <FaCloudDownloadAlt/> Impor dari Chainlist
+            </button>
+            <button onClick={() => { setShowNetForm(p => !p); setShowChainlistImport(false); setNetEditId(null); setNetForm({ name:'', chainId:0, symbol:'', rpcUrls:[], rpcRaw:'', explorerUrl:'', color:'#01a2ff' }); }}
               style={{ background:'#01a2ff', color:'#000', border:'none', padding:'8px 16px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px' }}>
               <FaPlus/> Tambah Network
             </button>
           </div>
+
+          {showChainlistImport && (
+            <div className="form-container" style={{ marginBottom:'20px' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', gap:'8px', flexWrap:'wrap' }}>
+                <h3 style={{ margin:0, fontSize:'13px', textTransform:'uppercase', letterSpacing:'1px', color:'#01a2ff', display:'flex', alignItems:'center', gap:'8px' }}>
+                  <FaCloudDownloadAlt/> Impor Network dari Chainlist
+                </h3>
+                <button onClick={() => setShowChainlistImport(false)} title="Tutup"
+                  style={{ background:'none', border:'1px solid #333', color:'#888', padding:'6px 8px', cursor:'pointer' }}>
+                  <FaTimes size={12}/>
+                </button>
+              </div>
+
+              <div className="search-input-wrapper" style={{ marginBottom:'12px' }}>
+                <FaSearch className="search-icon"/>
+                <input
+                  type="search"
+                  placeholder="Cari chain (nama, symbol, atau Chain ID)..."
+                  value={chainlistSearch}
+                  onChange={e => setChainlistSearch(e.target.value)}
+                  autoFocus
+                />
+              </div>
+
+              {chainlistLoading && (
+                <div style={{ textAlign:'center', padding:'24px', color:'#555', fontSize:'12px', display:'flex', flexDirection:'column', alignItems:'center', gap:'8px' }}>
+                  <FaSpinner style={{ animation:'spin 1s linear infinite' }} size={16}/>
+                  Mengambil daftar chain dari Chainlist...
+                </div>
+              )}
+
+              {!chainlistLoading && chainlistError && (
+                <div style={{ padding:'14px', border:'1px solid #f4433644', borderLeft:'3px solid #f44336', color:'#ff8a80', fontSize:'12px', display:'flex', flexDirection:'column', gap:'10px' }}>
+                  <span>{chainlistError}</span>
+                  <button onClick={refreshChainlistImport} style={{ alignSelf:'flex-start', background:'none', border:'1px solid #f44336', color:'#f44336', padding:'6px 12px', cursor:'pointer', fontSize:'11px' }}>
+                    Coba Lagi
+                  </button>
+                </div>
+              )}
+
+              {!chainlistLoading && !chainlistError && (
+                <>
+                  <div style={{ fontSize:'11px', color:'#444', marginBottom:'10px' }}>
+                    {chainlistSearch.trim() ? `${filteredChainlistChains.length} hasil (maks. 60 ditampilkan)` : 'Ketik untuk mencari, atau pilih dari daftar di bawah'}
+                  </div>
+                  <div style={{ maxHeight:'380px', overflowY:'auto', display:'flex', flexDirection:'column', gap:'6px' }}>
+                    {filteredChainlistChains.length === 0 ? (
+                      <div style={{ textAlign:'center', padding:'24px', color:'#333', fontSize:'12px' }}>Tidak ditemukan.</div>
+                    ) : (
+                      filteredChainlistChains.map(c => {
+                        const exists = networks.some(n => n.chainId === c.chainId);
+                        return (
+                          <div key={c.chainId} style={{
+                            display:'flex', alignItems:'center', justifyContent:'space-between', gap:'10px',
+                            padding:'10px 12px', background:'#0d0d0d', border:'1px solid #1e1e1e',
+                          }}>
+                            <div style={{ minWidth:0 }}>
+                              <div style={{ fontSize:'12px', fontWeight:'bold', color:'#ddd', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                {c.name} {exists && <span style={{ color:'#4caf50', fontSize:'10px', fontWeight:'normal' }}>· sudah ada</span>}
+                              </div>
+                              <div style={{ fontSize:'10px', color:'#555', marginTop:'2px' }}>
+                                Chain ID {c.chainId} · {c.nativeCurrency.symbol} · {c.rpc.length} RPC
+                              </div>
+                            </div>
+                            <button onClick={() => selectChainlistChain(c)}
+                              style={{ flexShrink:0, background:'none', border:'1px solid #01a2ff', color:'#01a2ff', padding:'6px 12px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }}>
+                              Pilih
+                            </button>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
 
           {showNetForm && (
             <div className="form-container" style={{ marginBottom:'20px' }}>
