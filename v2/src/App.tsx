@@ -30,6 +30,7 @@ function App() {
         <Route path="/ai" element={<AIAssistant />} />
         <Route path="/changelog" element={<Changelog />} />
         <Route path="/explorer" element={<Explorer />} />
+        <Route path="/explorer/:type/:value" element={<Explorer />} />
         <Route path="*" element={<NotFound />} />
       </Routes>
     </BrowserRouter>
