@@ -21,6 +21,23 @@ interface Version {
 
 const CHANGELOG: Version[] = [
   {
+    version: '2.3.0',
+    date: '00 Sep 2026',
+    title: 'Update v2.3',
+    changes: [
+      { type: 'feature', text: 'Menambahkan fitur memo di Gram network ~WalletGen' },
+      { type: 'feature', text: 'Menambahkan Faucet baru /faucet' },
+      { type: 'feature', text: 'Menambahkan Gram Explorer' },
+      { type: 'feature', text: ' Support Sui dan Aptos Network Mulai 08 September 2026 Walletgen' },
+      { type: 'feature', text: 'Menambahkan Fitur Impor RPC dari Chainlist ~WalletGen' },
+      { type: 'feature', text: 'Menambahkan fitur estimasi kurs usd / idr di bagian gas fee ~WalletGen' },
+      { type: 'improvement', text: 'Memperbarui "Cek Semua Balance" menjadi dropdown supaya tampilan keliatan rapih dan bersih ~WalletGen' },
+      { type: 'improvement', text: 'Memperbarui UI Send & Receive [EVM Network] ~WalletGen' },
+      { type: 'improvement', text: 'Memperbarui UI Portofolio Gram Network ~WalletGen' },
+      { type: 'fix', text: 'Memperbaiki kesalahan fitur pada BNB Smart Chain ~WalletGen' },
+    ],
+  }, 
+  {
     version: '2.2.5',
     date: '29 Agu 2026',
     title: 'Memberbaiki sedikit error pada jaringan Solana & Gram Network (Prev TON Blockchain)',
