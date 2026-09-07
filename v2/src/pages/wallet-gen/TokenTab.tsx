@@ -1,20 +1,10 @@
 // @ts-nocheck
-// Semua state & handler di file ini datang dari ctx (Record<string, any>) yang
-// diteruskan dari Walletgenerator.tsx, jadi TypeScript tidak bisa menurunkan
-// tipe parameter callback (.map/.filter/dst) di sini secara otomatis.
-// Type-safety sesungguhnya tetap ada penuh di state/handler aslinya
-// (Walletgenerator.tsx) dan di ./types.ts — file ini murni JSX passthrough.
 
 import React from 'react';
 import type { WalletGeneratorCtx } from './types';
 import { GRAM_WALLET_VERSIONS } from './network/Gramnet';
+import { getEvmTokenStandardLabel } from './helpers';
 
-/**
- * TokenTab: dipecah dari Walletgenerator.tsx (tab "TokenTab").
- * Semua state, handler, dan helper dari komponen induk diteruskan lewat prop `ctx`
- * (lihat WalletGeneratorCtx di ../types.ts) supaya logic tetap terpusat di
- * Walletgenerator.tsx tanpa perlu re-wiring ratusan handler satu per satu.
- */
 export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
   const {
     FaCheckCircle, FaCode, FaCoins, FaCopy, FaFileCode, FaGasPump, FaGlobe, FaHashtag, FaInfoCircle, 
@@ -30,7 +20,8 @@ export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     setTcTronDecimals, setTcTronName, setTcTronNetId, setTcTronPrivKey, setTcTronSupply, 
     setTcTronSymbol, setTcTronWalletSel, splTokens, sunToTrx, tcChain, tcCompileError, tcCompiled, 
     tcCompiling, tcCustomCtorArgs, tcCustomSolidity, tcDecimals, tcDeployStatus, tcDeploying, 
-    tcEvmMode, tcGasError, tcGasFeeNative, tcGasLimitEst, tcGasLoading, tcGasPriceGwei, tcName, 
+    tcEvmMode, tcGasError, tcGasFeeNative, tcGasLimitEst, tcGasLoading, tcGasPriceGwei, 
+    tcGasLimit, setTcGasLimit, tcGasSimFailed, setTcGasSimFailed, tcName, 
     tcNetworkId, tcPrivKey, tcSelectedNetwork, tcSolAddMeta, tcSolCreating, tcSolDecimals, 
     tcSolDescription, tcSolFeeDetail, tcSolFeeError, tcSolFeeLoading, tcSolFeeSol, tcSolImageUploading, 
     tcSolImageUrl, tcSolMetaPreview, tcSolName, tcSolNetId, tcSolPinataJwt, tcSolPrivKey, 
@@ -124,7 +115,7 @@ export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
 
               <div className="form-container" style={{ maxWidth:'520px', margin:'0 auto 24px' }}>
                 <h2 style={{ textAlign:'center', marginBottom:'16px', fontSize:'15px' }}>
-                  <FaRocket style={{ marginRight:'8px' }}/>{tcEvmMode === 'custom' ? 'Deploy Kontrak Kustom' : 'Deploy Token ERC-20'}
+                  <FaRocket style={{ marginRight:'8px' }}/>{tcEvmMode === 'custom' ? 'Deploy Kontrak Kustom' : `Deploy Token ${getEvmTokenStandardLabel(tcSelectedNetwork?.chainId)}`}
                 </h2>
 
                 {wallets.length > 0 && (
@@ -266,6 +257,56 @@ export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                       Klik "Cek Estimasi Gas" untuk lihat perkiraan biaya deploy sebelum submit — gas price diambil live dari RPC {tcSelectedNetwork?.name}, gas limit dari <code>estimateGas</code> transaksi deploy sesungguhnya (sudah dengan buffer 15%).
                     </p>
                   )}
+
+                  <div style={{ marginTop:'14px', paddingTop:'12px', borderTop:'1px solid #1e1e1e' }}>
+                    <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px', display:'flex', alignItems:'center', gap:'5px' }}>
+                      <FaGasPump size={9}/> Gas Limit (Override Manual)
+                      <span style={{ color:'#333', fontStyle:'italic', textTransform:'none', letterSpacing:0 }}>(kosong = auto-estimate saat deploy)</span>
+                    </div>
+                    <div style={{ display:'flex', gap:'6px', alignItems:'center', flexWrap:'wrap' }}>
+                      <input
+                        type="number"
+                        placeholder="auto"
+                        value={tcGasLimit}
+                        onChange={e => { setTcGasLimit(e.target.value); setTcGasSimFailed(false); }}
+                        min="21000"
+                        style={{ flex:'1 1 140px', fontFamily:'monospace', fontSize:'12px',
+                          borderColor: tcGasSimFailed ? '#ffaa00' : undefined }}
+                      />
+                      {tcGasLimitEst && (
+                        <button type="button" onClick={() => { setTcGasLimit(tcGasLimitEst); setTcGasSimFailed(false); }}
+                          style={{ fontSize:'10px', padding:'5px 9px', background:'#111', border:'1px solid #F1C40F55', color:'#F1C40F', cursor:'pointer', whiteSpace:'nowrap' }}>
+                          Pakai hasil estimasi ({parseInt(tcGasLimitEst).toLocaleString('en-US')})
+                        </button>
+                      )}
+                      {(['1000000','1500000','2500000','3500000'] as const).map(v => (
+                        <button key={v} type="button"
+                          onClick={() => { setTcGasLimit(v); setTcGasSimFailed(false); }}
+                          style={{ fontSize:'10px', padding:'4px 7px', background:'#111', border:'1px solid #2a2a2a',
+                            color: tcGasLimit === v ? '#01a2ff' : '#555', cursor:'pointer',
+                            borderColor: tcGasLimit === v ? '#01a2ff' : '#2a2a2a' }}>
+                          {parseInt(v)/1000000}M
+                        </button>
+                      ))}
+                      {tcGasLimit && (
+                        <button type="button" onClick={() => { setTcGasLimit(''); setTcGasSimFailed(false); }}
+                          style={{ background:'none', border:'none', color:'#444', cursor:'pointer', fontSize:'12px' }}>✕</button>
+                      )}
+                    </div>
+                    {tcGasSimFailed && (
+                      <div style={{
+                        background:'rgba(255,170,0,0.07)', border:'1px solid #ffaa0055',
+                        borderLeft:'3px solid #ffaa00', padding:'8px 10px', marginTop:'8px', fontSize:'10px', color:'#ffcc88',
+                      }}>
+                        Deploy sebelumnya gagal karena kehabisan gas — coba naikkan gas limit manual di atas (atau pakai salah satu preset) lalu deploy ulang.
+                      </div>
+                    )}
+                    <p style={{ fontSize:'10px', color:'#444', margin:'8px 0 0' }}>
+                      Kalau diisi, angka ini yang dipakai langsung sebagai gas limit transaksi deploy (menggantikan
+                      auto-estimate bawaan ethers). Berguna kalau <code>estimateGas</code> di RPC kadang salah nebak
+                      (terutama kontrak kustom) atau kamu sengaja mau kasih buffer ekstra biar tidak "out of gas".
+                    </p>
+                  </div>
                 </div>
 
                 {tcDeployStatus.type !== 'idle' && (
