@@ -5,6 +5,16 @@ import { FaSearch, FaTint, FaExternalLinkAlt, FaLink } from 'react-icons/fa';
 
 const FAUCET_DATA: FaucetItem[] = [
   {
+      id: 'gram',
+      name: 'Gram Testnet (Prev Toncoin)',
+      description: 'Dapatkan GRAM di jaringan Gram Testnet',
+      color: 'rgb(67, 153, 240)',
+      links: [
+          { url: 'https://faucet.chainstack.com/ton-testnet-faucet', text: 'Chainstack' },
+          { url: 'https://t.me/testgiver_ton_bot', text: 'Testgiver TON Bot' },
+      ]
+  },
+  {
     id: 'dachain',
     name: 'DAC Chain Testnet',
     description: 'Dapatkan Faucet Native Token [DACC] di jaringan Dac Chain Testnet',
@@ -225,7 +235,7 @@ export const Faucet: React.FC = () => {
                         onChange={(e) => { if(e.target.value) window.open(e.target.value, '_blank') }}
                         value=""
                       >
-                        <option value="" disabled>SELECT SOURCE</option>
+                        <option value="" disabled>Select Source</option>
                         {f.links.map((l, idx) => (
                             <option key={idx} value={l.url}>
                                 {l.text}
