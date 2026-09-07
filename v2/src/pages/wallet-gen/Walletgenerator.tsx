@@ -57,6 +57,14 @@ import {
   estimateAtomFee, ATOM_GAS_PRICE_TIERS, type AtomNetworkCfg, type AtomFeeEstimate, type AtomGasMode,
 } from './network/Cosmosnet';
 import {
+  deriveSuiAddress, SUI_NETWORKS, getSuiBalanceWithFallback, isValidSuiAddress,
+  sendSui, suiFriendlyError, SUI_GAS_BUFFER, type SuiNetworkCfg,
+} from './network/Suinet';
+import {
+  deriveAptosAddress, APTOS_NETWORKS, getAptosBalanceWithFallback, isValidAptosAddress,
+  sendAptos, aptFriendlyError, APTOS_GAS_BUFFER, type AptosNetworkCfg,
+} from './network/Aptosnet';
+import {
   deriveGramAddress, GRAM_NETWORKS, GRAM_WALLET_VERSIONS, getGramBalanceWithFallback,
   isValidGramAddress, gramAddressFromPrivateKey, sendGram, gramFriendlyError,
   estimateGramFee, estimateGramMaxSendable, type GramNetworkCfg, type GramFeeEstimate,
@@ -78,7 +86,7 @@ import {
   FaSpinner, FaChartBar,
   FaMagic, FaLayerGroup, FaInfoCircle, FaTerminal, FaFileCode, FaList,
   FaCheck, FaRegCopy, FaCoins, FaRocket, FaHashtag, FaFaucet, FaUpload,
-  FaCompass, FaSlidersH, FaArrowRight,
+  FaCompass, FaSlidersH, FaArrowRight, FaTimes, FaCloudDownloadAlt,
 } from 'react-icons/fa';
 
 // Wallet-Gen Dipecah jadi beberapa file mulai 20 agustus 2026 ~0xmsr
@@ -96,7 +104,7 @@ import type { DeployedErc20Token, CreatedSplToken, CompiledContract } from './Sm
 
 import type {
   BIP39Wallet, RPCNetwork, AirdropTask, TxQueueItem, AutoContractCall, ChainKind, DetectedToken,
-  GramVersion, WalletGeneratorCtx, CreatedGramToken,
+  GramVersion, WalletGeneratorCtx, CreatedGramToken, ChainlistChain, EvmWalletTx, EvmTokenDetail,
 } from './types';
 import {
   AUTO_ACTION_TEMPLATES, AUTO_SELECTOR_MAP, TX_QUEUE_KEY, TX_HISTORY_KEY, SEPOLIA_RPCS,
@@ -106,7 +114,9 @@ import {
 } from './constants';
 import {
   encodeAutoAbi, parseAbiFunc, shortAddr, weiToEthStr, ethToHex, generateMnemonic, deriveAddress,
-  pinataUploadFile, pinataUploadJson, getProvider, fetchEvmTokenPortfolio, toIpfsUri,
+  pinataUploadFile, pinataUploadJson, getProvider, fetchEvmTokenPortfolioWithFallback, toIpfsUri,
+  fetchChainlistChains, chainlistChainToNetForm, fetchEvmAddressTxHistory, fetchEvmTokenDetail,
+  fetchFiatPrice, formatGasFiat, getEvmTokenStandardLabel,
 } from './helpers';
 import { WalletsTab } from './WalletsTab';
 import { TransferTab } from './TransferTab';
@@ -159,7 +169,26 @@ const GramJettonPickerModal: React.FC<{
   activeMaster: string;
   onSelect: (address: string) => void;
   onRefresh: () => void;
-}> = ({ onClose, search, setSearch, jettons, loading, activeMaster, onSelect, onRefresh }) => {
+  assetLabel?: string;
+  error?: string | null;
+  // ── "Tambah via contract address" digabung LANGSUNG ke picker ini ──
+  // Sebelumnya buat kasus ERC-20, form tambah-manual ini kepisah di form
+  // Kirim (di luar modal) — jadi kalau token yang dicari gak ke-detect
+  // otomatis, user harus nutup picker dulu buat ketemu kolom "tambah via
+  // contract address"-nya, padahal pesan error di picker udah nunjuk ke situ.
+  // Sekarang kalau onAddCustom dikasih, picker ini nampilin kolom tambah
+  // manual sebagai footer permanen di bawah daftar — satu tempat buat pilih
+  // ATAU tambah token, gak perlu bolak-balik.
+  onAddCustom?: (address: string) => void | Promise<void>;
+  customAddrValue?: string;
+  setCustomAddrValue?: (v: string) => void;
+  addingCustom?: boolean;
+  customAddrPlaceholder?: string;
+}> = ({
+  onClose, search, setSearch, jettons, loading, activeMaster, onSelect, onRefresh, assetLabel = 'Jetton', error = null,
+  onAddCustom, customAddrValue = '', setCustomAddrValue, addingCustom = false,
+  customAddrPlaceholder = 'Atau tambah via contract address (0x...)',
+}) => {
   const q = search.trim().toLowerCase();
   const filtered = q
     ? jettons.filter(t =>
@@ -218,10 +247,16 @@ const GramJettonPickerModal: React.FC<{
               <div>Memuat token...</div>
             </div>
           )}
-          {!loading && filtered.length === 0 && (
+          {!loading && error && jettons.length === 0 && (
+            <div style={{ textAlign:'center', color:'#ff8a80', padding:'30px 8px', fontSize:'12px', lineHeight:1.6 }}>
+              {error}
+              {onAddCustom && <div style={{ color:'#444', marginTop:'6px' }}>Tempel address kontraknya manual di kolom bawah.</div>}
+            </div>
+          )}
+          {!loading && !error && filtered.length === 0 && (
             <div style={{ textAlign:'center', color:'#444', padding:'30px 8px', fontSize:'12px', lineHeight:1.6 }}>
               {jettons.length === 0
-                ? 'Tidak ada Jetton terdeteksi otomatis di address ini. Tempel address kontraknya manual di kolom bawah.'
+                ? `Tidak ada ${assetLabel} terdeteksi otomatis di address ini.${onAddCustom ? ' Tempel address kontraknya manual di kolom bawah.' : ''}`
                 : 'Tidak ada token yang cocok dengan pencarian.'}
             </div>
           )}
@@ -251,6 +286,22 @@ const GramJettonPickerModal: React.FC<{
             );
           })}
         </div>
+
+        {onAddCustom && (
+          <div style={{ padding:'10px 14px 16px', borderTop:'1px solid #1e1e1e', flexShrink:0 }}>
+            <div style={{ fontSize:'10px', color:'#555', marginBottom:'6px' }}>Gak ketemu? Tambah manual:</div>
+            <div style={{ display:'flex', gap:'6px' }}>
+              <input type="text" placeholder={customAddrPlaceholder} value={customAddrValue}
+                onChange={e => setCustomAddrValue?.(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter' && customAddrValue.trim() && !addingCustom) onAddCustom(customAddrValue); }}
+                style={{ flex:1, boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px', padding:'9px 10px', background:'#1a1a1a', border:'1px solid #2a2a2a', color:'#eee' }}/>
+              <button onClick={() => onAddCustom(customAddrValue)} disabled={addingCustom || !customAddrValue.trim()}
+                style={{ background:'none', border:'1px solid #333', color:'#01a2ff', padding:'0 14px', cursor:'pointer', fontSize:'11px', whiteSpace:'nowrap', opacity:(!customAddrValue.trim())?0.5:1 }}>
+                {addingCustom ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : <><FaPlus size={10}/> Tambah</>}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -479,6 +530,20 @@ export const WalletGenerator: React.FC = () => {
           next = { ...next, atomAddresses: [] };
         }
 
+        if (!next.suiAddresses || next.suiAddresses.length === 0) {
+          try {
+            const suiAddresses = next.addresses.map(a => ({ index: a.index, ...deriveSuiAddress(next.mnemonic, a.index) }));
+            next = { ...next, suiAddresses };
+          } catch { next = { ...next, suiAddresses: next.suiAddresses || [] }; }
+        }
+
+        if (!next.aptAddresses || next.aptAddresses.length === 0) {
+          try {
+            const aptAddresses = next.addresses.map(a => ({ index: a.index, ...deriveAptosAddress(next.mnemonic, a.index) }));
+            next = { ...next, aptAddresses };
+          } catch { next = { ...next, aptAddresses: next.aptAddresses || [] }; }
+        }
+
         if (next.gramAddress === undefined || (!gramNativeDerivFixed && next.gramAddress)) {
           next = { ...next, gramAddress: undefined };
         }
@@ -562,10 +627,36 @@ export const WalletGenerator: React.FC = () => {
   const [txTokensLoading,setTxTokensLoading]= useState(false);
   const [txAddTokenAddr, setTxAddTokenAddr] = useState('');
   const [txAddingToken,  setTxAddingToken]  = useState(false);
+
+  // ── EVM "Native / Token" mode toggle (ala Gram Native/Jetton, tanpa Swap) ──
+  // txSendAssetMode cuma ngatur UI (toggle + picker) yang mana yang tampil;
+  // sumber kebenaran buat kirim tetap txAsset ('native' atau address token),
+  // sama persis dipakai di Single/Multi/Sweep yang sudah ada.
+  const [txSendAssetMode,        setTxSendAssetMode]        = useState<'native'|'token'>('native');
+  const [txDetectedTokens,       setTxDetectedTokens]       = useState<DetectedToken[]>([]);
+  const [txDetectedTokensLoading,setTxDetectedTokensLoading]= useState(false);
+  const [txDetectedTokensError,  setTxDetectedTokensError]  = useState<string|null>(null);
+  const [txTokenPickerOpen,      setTxTokenPickerOpen]      = useState(false);
+  const [txTokenPickerSearch,    setTxTokenPickerSearch]    = useState('');
   const [customErc20Tokens, setCustomErc20Tokens] = useState<{chainId:number;address:string;symbol:string;decimals:number;name:string}[]>(() => {
     try { return JSON.parse(localStorage.getItem('customErc20Tokens') || '[]'); } catch { return []; }
   });
   useEffect(() => { localStorage.setItem('customErc20Tokens', JSON.stringify(customErc20Tokens)); }, [customErc20Tokens]);
+
+  // ── Riwayat Transaksi Wallet & Detail Token di tab Kirim/Terima (EVM) —
+  // datanya diambil dari fetchEvmAddressTxHistory / fetchEvmTokenDetail di
+  // helpers.ts. Kedua fungsi itu utamakan Blockscout kalau network-nya ada
+  // di BLOCKSCOUT_HOSTS (sama & konsisten dengan Explorer.tsx), tapi KALAU
+  // GAK ADA, otomatis fallback: riwayat TX lewat Routescan (etherscan-
+  // compatible, tanpa API key, cakupan 70+ chain via chainId mentah), detail
+  // token lewat baca langsung ke kontrak via RPC — jadi gak ada lagi network
+  // yang mentok gara-gara belum ada instance Blockscout publiknya. ──
+  const [txWalletHistory,        setTxWalletHistory]        = useState<EvmWalletTx[]>([]);
+  const [txWalletHistoryLoading, setTxWalletHistoryLoading] = useState(false);
+  const [txWalletHistoryError,   setTxWalletHistoryError]   = useState<string|null>(null);
+  const [txTokenDetail,          setTxTokenDetail]          = useState<EvmTokenDetail|null>(null);
+  const [txTokenDetailLoading,   setTxTokenDetailLoading]   = useState(false);
+  const [txTokenDetailError,     setTxTokenDetailError]     = useState<string|null>(null);
 
   const [txGasMode,     setTxGasMode]     = useState<'slow'|'standard'|'fast'|'manual'>('standard');
   const [txGasPrices,   setTxGasPrices]   = useState<{slow:number;standard:number;fast:number}|null>(null);
@@ -589,6 +680,15 @@ export const WalletGenerator: React.FC = () => {
   const [sweepFetchingBal, setSweepFetchingBal] = useState(false);
   const [gasAdvanced,   setGasAdvanced]   = useState(false);
   const [sweepAdvanced, setSweepAdvanced] = useState(false);
+
+  // ── Nilai fiat (USD/IDR) buat estimasi gas fee — dipakai di semua box
+  // "Estimasi Fee" (EVM/Tron/Axiome/Cosmos/Gram) biar gas fee kecil kayak
+  // 0.0001 ETH kebaca nilainya beneran (mis. "≈ $0.32"), bukan cuma angka
+  // native yang nggak kebayang. Harga di-refresh tiap ganti chain/network aktif
+  // di tab Kirim — lihat useEffect di bawah renderGasFeeBox. ──
+  const [gasFiatCcy,   setGasFiatCcy]   = useState<'usd'|'idr'>('idr');
+  const [gasFiatPrice, setGasFiatPrice] = useState<{ usd: number|null; idr: number|null } | null>(null);
+  const [gasFiatLoading, setGasFiatLoading] = useState(false);
 
   const txProviderRef   = useRef<ethers.providers.JsonRpcProvider | null>(null);
   const txWalletRef     = useRef<ethers.Wallet | null>(null);
@@ -621,6 +721,15 @@ export const WalletGenerator: React.FC = () => {
   const [solAsset,          setSolAsset]          = useState<string>('native');
   const [solTokens,         setSolTokens]         = useState<{mint:string; decimals:number; uiAmount:number}[]>([]);
   const [solTokensLoading,  setSolTokensLoading]  = useState(false);
+
+  // ── Cek live apakah address tujuan SUDAH punya token account (ATA) untuk
+  // mint SPL yang lagi dipilih. Kalau belum, kirim otomatis bikinin dulu
+  // (lihat solSend/solMultiSend/solSweepRun) — TAPI itu nambah biaya rent
+  // ± 0.00203928 SOL yang gak keliatan dari "Jumlah" doang. State ini yang
+  // dipakai buat nampilin peringatan + nambah estimasi fee di UI sebelum kirim. ──
+  const [solDestAtaExists,  setSolDestAtaExists]  = useState<boolean | null>(null);
+  const [solDestAtaChecking, setSolDestAtaChecking] = useState(false);
+  const SOL_TOKEN_ACCOUNT_RENT_LAMPORTS = 2_039_280; // rent-exempt akun SPL Token standar (165 byte) — sama dengan yang dipakai fitur "Tutup Akun"
 
 
   const [solCloseAccounts,   setSolCloseAccounts]   = useState<{
@@ -743,6 +852,46 @@ export const WalletGenerator: React.FC = () => {
   const [axmCw20Input, setAxmCw20Input] = useState('');
 
 
+  // ══════════════════════════════════════════════════════════════════════
+  // ── Sui (SUI): Send & Receive — pola sama seperti Axiome/Cosmos di atas,
+  //    tapi lewat @mysten/sui (Ed25519Keypair + Transaction builder). ──
+  // ══════════════════════════════════════════════════════════════════════
+  const [suiNetId,       setSuiNetId]       = useState('mainnet');
+  const SUI_NETWORK = SUI_NETWORKS.find(n => n.id === suiNetId) ?? SUI_NETWORKS[0];
+  const [suiPrivKey,    setSuiPrivKey]    = useState('');
+  const [suiConnected,  setSuiConnected]  = useState(false);
+  const [suiConnecting, setSuiConnecting] = useState(false);
+  const [suiAddress,    setSuiAddress]    = useState('');
+  const [suiBalance,    setSuiBalance]    = useState('—');
+  const [suiLoadingBal, setSuiLoadingBal] = useState(false);
+  const [suiSendTo,     setSuiSendTo]     = useState('');
+  const [suiSendAmt,    setSuiSendAmt]    = useState('');
+  const [suiSending,    setSuiSending]    = useState(false);
+  const [suiMaxLoading, setSuiMaxLoading] = useState(false);
+  const [suiWalletSel,  setSuiWalletSel]  = useState('');
+  const [suiStatus,     setSuiStatus]     = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ── Aptos (APT): Send & Receive — pola sama seperti Sui di atas, tapi
+  //    lewat @aptos-labs/ts-sdk (Account + transferCoinTransaction). ──
+  // ══════════════════════════════════════════════════════════════════════
+  const [aptNetId,       setAptNetId]       = useState('mainnet');
+  const APTOS_NETWORK = APTOS_NETWORKS.find(n => n.id === aptNetId) ?? APTOS_NETWORKS[0];
+  const [aptPrivKey,    setAptPrivKey]    = useState('');
+  const [aptConnected,  setAptConnected]  = useState(false);
+  const [aptConnecting, setAptConnecting] = useState(false);
+  const [aptAddress,    setAptAddress]    = useState('');
+  const [aptBalance,    setAptBalance]    = useState('—');
+  const [aptLoadingBal, setAptLoadingBal] = useState(false);
+  const [aptSendTo,     setAptSendTo]     = useState('');
+  const [aptSendAmt,    setAptSendAmt]    = useState('');
+  const [aptSending,    setAptSending]    = useState(false);
+  const [aptMaxLoading, setAptMaxLoading] = useState(false);
+  const [aptWalletSel,  setAptWalletSel]  = useState('');
+  const [aptStatus,     setAptStatus]     = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
+
+
+
   const [atomNetId,       setAtomNetId]       = useState('cosmoshub-mainnet');
   const COSMOS_NETWORK = COSMOS_NETWORKS.find(n => n.id === atomNetId) ?? COSMOS_NETWORKS[0];
   const [atomPrivKey,    setAtomPrivKey]    = useState('');
@@ -791,6 +940,12 @@ export const WalletGenerator: React.FC = () => {
   const [gramLoadingBal, setGramLoadingBal] = useState(false);
   const [gramSendTo,     setGramSendTo]     = useState('');
   const [gramSendAmt,    setGramSendAmt]    = useState('');
+  // Memo/comment opsional buat GRAM (TON) — dipakai bareng di dua tempat:
+  // (1) form "Kirim GRAM" native, dikirim sebagai comment on-chain
+  //     (lihat tonComment() di sendGram/estimateGramFee, network/Gramnet.ts), dan
+  // (2) kartu "Terima", di-embed ke QR/link ton://transfer buat kasih tau
+  //     pengirim memo apa yang harus dicantumkan. Satu field, dipakai dua arah.
+  const [gramMemo, setGramMemo] = useState('');
   const [gramSending,    setGramSending]    = useState(false);
   const [gramWalletSel,  setGramWalletSel]  = useState('');
   const [gramStatus,     setGramStatus]     = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
@@ -941,6 +1096,13 @@ export const WalletGenerator: React.FC = () => {
   const [showNetForm,  setShowNetForm]  = useState(false);
   const [netSearch,    setNetSearch]    = useState('');
 
+  // ── Impor Network dari Chainlist ──
+  const [showChainlistImport, setShowChainlistImport] = useState(false);
+  const [chainlistSearch,     setChainlistSearch]     = useState('');
+  const [chainlistChains,     setChainlistChains]     = useState<ChainlistChain[]>([]);
+  const [chainlistLoading,    setChainlistLoading]    = useState(false);
+  const [chainlistError,      setChainlistError]      = useState('');
+
   const atEmptyForm: Omit<AirdropTask,'id'|'createdAt'|'doneAt'> = {
     projectName:'', network:'', taskType:'swap', description:'', txHash:'',
     walletAddress:'', status:'todo', priority:'medium', deadline:'', notes:'',
@@ -1075,6 +1237,7 @@ export const WalletGenerator: React.FC = () => {
     setTosAgreed(true);
   };
   const [balCheckNetId,   setBalCheckNetId]   = useState<string>('ethereum');
+  const [balCheckChain,   setBalCheckChain]   = useState<ChainKind>('evm');
   const [balResults,      setBalResults]      = useState<Record<string, { balance: string; loading: boolean; error: boolean }>>({});
   const [balChecking,     setBalChecking]     = useState(false);
   const [qrAddress,       setQrAddress]       = useState<string | null>(null);
@@ -1137,6 +1300,11 @@ export const WalletGenerator: React.FC = () => {
   const [tcGasFeeNative, setTcGasFeeNative] = useState('');
   const [tcGasLoading,   setTcGasLoading]   = useState(false);
   const [tcGasError,     setTcGasError]     = useState('');
+  // Override gas limit manual (kosong = auto: ethers pakai hasil estimateGas
+  // sendiri saat deploy). Dipakai kalau node/RPC salah nebak estimateGas
+  // (kontrak kustom kompleks) atau user sengaja mau kasih buffer lebih besar.
+  const [tcGasLimit,     setTcGasLimit]     = useState('');
+  const [tcGasSimFailed, setTcGasSimFailed] = useState(false);
 
 
   const [tcSolStandard, setTcSolStandard] = useState<'classic'|'token2022'>('classic');
@@ -1470,6 +1638,7 @@ export const WalletGenerator: React.FC = () => {
               status: 'success',
               txHash: tx.hash,
               timestamp: Date.now(),
+              networkId: taskNet.id,
             });
             if (taskNet.explorerUrl) batchAddLog(`  ${taskNet.explorerUrl}/tx/${tx.hash}`, 'info');
             break;
@@ -1748,6 +1917,7 @@ export const WalletGenerator: React.FC = () => {
         status: 'success',
         txHash: tx.hash,
         timestamp: Date.now(),
+        networkId: net?.id,
       });
 
       const explorerUrl = net.explorerUrl ? `${net.explorerUrl}/tx/${tx.hash}` : '';
@@ -1902,7 +2072,7 @@ export const WalletGenerator: React.FC = () => {
         } else {
           const hash = await agSendTx(item);
           setAgQueue(prev => prev.map((q, idx) => idx === i ? { ...q, status:'success', txHash:hash, timestamp:Date.now() } : q));
-          setAgHistory(prev => [{ ...item, status:'success', txHash:hash, timestamp:Date.now() }, ...prev.slice(0,299)]);
+          setAgHistory(prev => [{ ...item, status:'success', txHash:hash, timestamp:Date.now(), networkId: networks.find(n => n.chainId === agWallet.chainId)?.id }, ...prev.slice(0,299)]);
           agAddLog(`   [done] Hash: ${hash.slice(0,18)}...`);
         }
       } catch (e: any) {
@@ -2095,8 +2265,82 @@ export const WalletGenerator: React.FC = () => {
     setBalChecking(false);
   };
 
+  const checkAllSuiBalances = async () => {
+    const allSui = wallets.flatMap(w => (w.suiAddresses || []).map(a => ({ walletName: w.name, ...a })));
+    if (allSui.length === 0) { showAlert('Belum ada address Sui untuk dicek.', 'error'); return; }
+    setBalChecking(true);
+    const init: Record<string, { balance: string; loading: boolean; error: boolean }> = {};
+    allSui.forEach(a => { init[a.address] = { balance: '...', loading: true, error: false }; });
+    setBalResults(prev => ({ ...prev, ...init }));
+    const net = SUI_NETWORKS[0];
+    const CONCURRENCY = 5;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < allSui.length) {
+        const a = allSui[cursor++];
+        try {
+          const sui = await getSuiBalanceWithFallback(net, a.address);
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: sui.toFixed(6) + ' SUI', loading: false, error: false } }));
+        } catch {
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: 'Error', loading: false, error: true } }));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, allSui.length) }, worker));
+    setBalChecking(false);
+  };
+
+  const checkAllAptBalances = async () => {
+    const allApt = wallets.flatMap(w => (w.aptAddresses || []).map(a => ({ walletName: w.name, ...a })));
+    if (allApt.length === 0) { showAlert('Belum ada address Aptos untuk dicek.', 'error'); return; }
+    setBalChecking(true);
+    const init: Record<string, { balance: string; loading: boolean; error: boolean }> = {};
+    allApt.forEach(a => { init[a.address] = { balance: '...', loading: true, error: false }; });
+    setBalResults(prev => ({ ...prev, ...init }));
+    const net = APTOS_NETWORKS[0];
+    const CONCURRENCY = 5;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < allApt.length) {
+        const a = allApt[cursor++];
+        try {
+          const apt = await getAptosBalanceWithFallback(net, a.address);
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: apt.toFixed(6) + ' APT', loading: false, error: false } }));
+        } catch {
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: 'Error', loading: false, error: true } }));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, allApt.length) }, worker));
+    setBalChecking(false);
+  };
+
   const checkAllGramBalances = async () => {
-    const allGram = wallets.filter(w => w.gramAddress).map(w => ({ walletName: w.name, index: 0, address: w.gramAddress!.address }));
+    // PENTING: sebelumnya fungsi ini SELALU pakai w.gramAddress.address apa
+    // adanya — yaitu address sesuai versi (v4/v5r1) yang KEBETULAN tersimpan
+    // di wallet itu saat ini, bukan versi yang dipilih user lewat dropdown
+    // "Versi Wallet Contract" di sebelah tombol "Cek Semua GRAM". Efeknya:
+    // user pilih v5r1 di dropdown, tapi kalau wallet-nya kebetulan masih
+    // tersimpan sebagai v4 (belum pernah di-"Ganti versi"), yang muncul ya
+    // tetap saldo address v4 — kelihatan kayak "pilih v5 kok keluar saldo v4".
+    // Fix: kalau versi yang dipilih beda dari versi tersimpan wallet, turunkan
+    // dulu address versi tersebut secara lokal (murni komputasi, tanpa network
+    // call) HANYA untuk keperluan cek saldo ini — tidak mengubah gramAddress
+    // yang tersimpan di wallet (itu tetap lewat tombol "Ganti ke..." manual).
+    // Wallet TON-native (isTonNative) dilewati dari re-derive ini karena
+    // re-derive versi lain butuh password mnemonic asli yang sengaja tidak
+    // disimpan — untuk wallet ini, address yang tersimpan apa adanya yang dipakai.
+    const allGram: { walletName: string; index: number; address: string }[] = [];
+    for (const w of wallets) {
+      if (!w.gramAddress) continue;
+      let address = w.gramAddress.address;
+      if (!w.isTonNative && w.gramAddress.version !== gramVersion) {
+        try {
+          address = (await deriveGramAddress(w.mnemonic, 0, gramVersion)).address;
+        } catch { /* gagal derive — fallback ke address versi tersimpan apa adanya */ }
+      }
+      allGram.push({ walletName: w.name, index: 0, address });
+    }
     if (allGram.length === 0) { showAlert('Belum ada address Gram (TON) untuk dicek.', 'error'); return; }
     const net = GRAM_NETWORKS[0];
     setBalChecking(true);
@@ -2126,22 +2370,45 @@ export const WalletGenerator: React.FC = () => {
     setPortfolioError('');
     setPortfolioTokens([]);
     try {
-      const tokens = target.chain === 'sol'
-        ? await fetchSolTokenPortfolio(target.address)
-        : target.chain === 'tron'
-        ? await fetchTronTokenPortfolio(target.address, TRON_NETWORKS.find(n => n.id === netId) ?? TRON_NETWORKS[0])
-        : target.chain === 'axm'
-        ? await fetchAxmPortfolio(target.address, AXIOME_NETWORKS.find(n => n.id === netId) ?? AXIOME_NETWORKS[0], axmCw20Input.split(',').map(s => s.trim()).filter(Boolean))
-        : target.chain === 'atom'
-        ? await fetchAtomPortfolio(target.address, COSMOS_NETWORKS.find(n => n.id === netId) ?? COSMOS_NETWORKS[0])
-        : await fetchEvmTokenPortfolio(target.address, netId);
+      let tokens;
+      if (target.chain === 'sol') {
+        tokens = await fetchSolTokenPortfolio(target.address);
+      } else if (target.chain === 'tron') {
+        tokens = await fetchTronTokenPortfolio(target.address, TRON_NETWORKS.find(n => n.id === netId) ?? TRON_NETWORKS[0]);
+      } else if (target.chain === 'axm') {
+        tokens = await fetchAxmPortfolio(target.address, AXIOME_NETWORKS.find(n => n.id === netId) ?? AXIOME_NETWORKS[0], axmCw20Input.split(',').map(s => s.trim()).filter(Boolean));
+      } else if (target.chain === 'atom') {
+        tokens = await fetchAtomPortfolio(target.address, COSMOS_NETWORKS.find(n => n.id === netId) ?? COSMOS_NETWORKS[0]);
+      } else if (target.chain === 'gram') {
+        // Sebelum ini 'gram' gak ditangani sama sekali di sini, jadi kena
+        // fallthrough ke cabang EVM di bawah — address Gram (TON) dipaksa
+        // diproses seolah-olah address EVM (lookup ke `networks`/RPC EVM),
+        // yang jelas selalu gagal. Fix: tarik saldo Jetton lewat
+        // fetchGramTokenPortfolio (TonCenter API v3), sama seperti yang
+        // sudah dipakai buat portofolio wallet Gram yang lagi connect di
+        // tab Kirim/Terima.
+        tokens = await fetchGramTokenPortfolio(target.address, GRAM_NETWORKS.find(n => n.id === netId) ?? GRAM_NETWORKS[0]);
+      } else {
+        // EVM: deteksi otomatis via Blockscout, dengan fallback scan RPC +
+        // Routescan (tanpa API key) kalau network aktif belum ada instance
+        // Blockscout publik (lihat BLOCKSCOUT_HOSTS) — mencakup BNB,
+        // Avalanche, Fantom, Cronos, Moonbeam, dst. Sebelum ini tombol
+        // "Portofolio Token" cuma manggil Blockscout tanpa fallback sama
+        // sekali; token picker di tab Transfer sudah punya fallback ini
+        // sejak lama.
+        const net = networks.find(n => n.id === netId) ?? DEFAULT_NETWORKS.find(n => n.id === netId);
+        if (!net) throw new Error('Network tidak ditemukan.');
+        const result = await fetchEvmTokenPortfolioWithFallback(target.address, net);
+        if (result.tokens.length === 0 && result.error) throw new Error(result.error);
+        tokens = result.tokens;
+      }
       tokens.sort((a, b) => (b.usdValue ?? -1) - (a.usdValue ?? -1));
       setPortfolioTokens(tokens);
     } catch (e: any) {
       setPortfolioError(e?.message || 'Gagal mengambil data token.');
     }
     setPortfolioLoading(false);
-  }, [axmCw20Input]);
+  }, [axmCw20Input, networks]);
 
   const openPortfolio = (chain: ChainKind, address: string, walletName: string) => {
     const target = { chain, address, walletName };
@@ -2167,9 +2434,9 @@ export const WalletGenerator: React.FC = () => {
     <div style={{ position:'fixed', inset:0, background:'#000000cc', display:'flex', alignItems:'center', justifyContent:'center', zIndex:1000, padding:'20px' }}
       onClick={onClose}>
       <div onClick={e => e.stopPropagation()}
-        style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${target.chain==='sol'?'#9945FF':target.chain==='tron'?'#EF0027':target.chain==='axm'?'#75bbe9':target.chain==='atom'?'#2E3148':'#01a2ff'}`, width:'100%', maxWidth:'560px', maxHeight:'82vh', display:'flex', flexDirection:'column' }}>
+        style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${target.chain==='sol'?'#9945FF':target.chain==='tron'?'#EF0027':target.chain==='axm'?'#75bbe9':target.chain==='atom'?'#2E3148':target.chain==='gram'?'#0088CC':'#01a2ff'}`, width:'100%', maxWidth:'560px', maxHeight:'82vh', display:'flex', flexDirection:'column' }}>
         <div style={{ padding:'16px 18px', borderBottom:'1px solid #1a1a1a', display:'flex', alignItems:'center', gap:'10px' }}>
-          <FaCoins color={target.chain==='sol'?'#9945FF':target.chain==='tron'?'#EF0027':target.chain==='axm'?'#75bbe9':target.chain==='atom'?'#2E3148':'#01a2ff'} />
+          <FaCoins color={target.chain==='sol'?'#9945FF':target.chain==='tron'?'#EF0027':target.chain==='axm'?'#75bbe9':target.chain==='atom'?'#2E3148':target.chain==='gram'?'#0088CC':'#01a2ff'} />
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ fontWeight:'bold', fontSize:'14px' }}>Portofolio Token</div>
             <div style={{ fontSize:'11px', color:'#555', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
@@ -2243,11 +2510,24 @@ export const WalletGenerator: React.FC = () => {
           </div>
         )}
 
+        {target.chain === 'gram' && (
+          <div style={{ padding:'12px 18px', borderBottom:'1px solid #161616', display:'flex', alignItems:'center', gap:'8px' }}>
+            <FaGlobe size={11} color="#555"/>
+            <div style={{ flex:1, fontSize:'11px', color:'#666', fontFamily:'monospace' }}>
+              Gram (TON) Mainnet · Jetton via TonCenter API
+            </div>
+            <button onClick={refreshPortfolio} disabled={portfolioLoading}
+              style={{ background:'none', border:'1px solid #333', color:'#888', padding:'6px 10px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px' }}>
+              <FaSync size={10} style={{ animation: portfolioLoading ? 'spin 1s linear infinite' : undefined }}/> Refresh
+            </button>
+          </div>
+        )}
+
         <div style={{ padding:'14px 18px', overflowY:'auto', flex:1 }}>
           {portfolioLoading && (
             <div style={{ textAlign:'center', color:'#555', padding:'30px 0', fontSize:'12px' }}>
               <FaSpinner style={{ animation:'spin 1s linear infinite', marginBottom:'8px' }} size={18}/>
-              <div>Memindai token{target.chain==='evm' ? ' via Blockscout' : target.chain==='tron' ? ' via Tronscan' : target.chain==='axm' ? ' via Axiome RPC' : target.chain==='atom' ? ' via Cosmos Hub RPC/REST' : ' via Solana RPC + Jupiter'}...</div>
+              <div>Memindai token{target.chain==='evm' ? ' via Blockscout' : target.chain==='tron' ? ' via Tronscan' : target.chain==='axm' ? ' via Axiome RPC' : target.chain==='atom' ? ' via Cosmos Hub RPC/REST' : target.chain==='gram' ? ' via TonCenter' : ' via Solana RPC + Jupiter'}...</div>
             </div>
           )}
 
@@ -2398,6 +2678,8 @@ export const WalletGenerator: React.FC = () => {
       pushRows('TRON', w.tronAddresses || []);
       pushRows('AXM', w.axmAddresses || []);
       pushRows('ATOM', w.atomAddresses || []);
+      pushRows('SUI', w.suiAddresses || []);
+      pushRows('APT', w.aptAddresses || []);
       pushRows('GRAM', w.gramAddress ? [{ index: 0, address: w.gramAddress.address, privateKey: w.gramAddress.privateKey }] : []);
     });
     const csv = rows.map(r => r.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -2447,7 +2729,7 @@ export const WalletGenerator: React.FC = () => {
         const derivedGram = await deriveGramFromTonMnemonic(words, gramVersion, tonMnemonicPassword);
         const newWallet: BIP39Wallet = {
           id: Date.now().toString(), name: walletName.trim() || `Wallet TON #${wallets.length + 1}`,
-          mnemonic: words.join(' '), addresses: [], solAddresses: [], tronAddresses: [], axmAddresses: [], atomAddresses: [],
+          mnemonic: words.join(' '), addresses: [], solAddresses: [], tronAddresses: [], axmAddresses: [], atomAddresses: [], suiAddresses: [], aptAddresses: [],
           gramAddress: derivedGram, isTonNative: true, createdAt: Date.now(), tags: [], note: '',
         };
         setWallets(prev => [newWallet, ...prev]);
@@ -2482,6 +2764,8 @@ export const WalletGenerator: React.FC = () => {
       const tronAddresses: BIP39Wallet['addresses'] = [];
       const axmAddresses: BIP39Wallet['addresses'] = [];
       const atomAddresses: BIP39Wallet['addresses'] = [];
+      const suiAddresses: BIP39Wallet['addresses'] = [];
+      const aptAddresses: BIP39Wallet['addresses'] = [];
       for (let i = 0; i < addressCount; i++) {
         const { address, privateKey } = deriveAddress(mnemonic, i);
         addresses.push({ index: i, address, privateKey });
@@ -2493,12 +2777,16 @@ export const WalletGenerator: React.FC = () => {
         axmAddresses.push({ index: i, address: axm.address, privateKey: axm.privateKey });
         const atom = await deriveCosmosAddress(mnemonic, i);
         atomAddresses.push({ index: i, address: atom.address, privateKey: atom.privateKey });
+        const sui = deriveSuiAddress(mnemonic, i);
+        suiAddresses.push({ index: i, address: sui.address, privateKey: sui.privateKey });
+        const apt = deriveAptosAddress(mnemonic, i);
+        aptAddresses.push({ index: i, address: apt.address, privateKey: apt.privateKey });
       }
       // Gram (TON): cuma 1 keypair per wallet (bukan per-index) — lihat catatan di Gramnet.ts.
       const derivedGram = await deriveGramAddress(mnemonic, 0, gramVersion);
       const newWallet: BIP39Wallet = {
         id: Date.now().toString(), name: walletName.trim() || `Wallet #${wallets.length + 1}`,
-        mnemonic, addresses, solAddresses, tronAddresses, axmAddresses, atomAddresses, gramAddress: derivedGram, createdAt: Date.now(), tags: [], note: '',
+        mnemonic, addresses, solAddresses, tronAddresses, axmAddresses, atomAddresses, suiAddresses, aptAddresses, gramAddress: derivedGram, createdAt: Date.now(), tags: [], note: '',
       };
       setWallets(prev => [newWallet, ...prev]);
       setExpandedId(newWallet.id);
@@ -2527,6 +2815,10 @@ export const WalletGenerator: React.FC = () => {
       const existingAxm = new Set(newAxmAddrs.map(a => a.index));
       const newAtomAddrs = [...(w.atomAddresses || [])];
       const existingAtom = new Set(newAtomAddrs.map(a => a.index));
+      const newSuiAddrs = [...(w.suiAddresses || [])];
+      const existingSui = new Set(newSuiAddrs.map(a => a.index));
+      const newAptAddrs = [...(w.aptAddresses || [])];
+      const existingApt = new Set(newAptAddrs.map(a => a.index));
       for (let i = 0; i <= nextIndex; i++) {
         if (!existing.has(i)) {
           const { address, privateKey } = deriveAddress(w.mnemonic, i);
@@ -2548,15 +2840,25 @@ export const WalletGenerator: React.FC = () => {
           const atom = await deriveCosmosAddress(w.mnemonic, i);
           newAtomAddrs.push({ index: i, address: atom.address, privateKey: atom.privateKey });
         }
+        if (!existingSui.has(i)) {
+          const sui = deriveSuiAddress(w.mnemonic, i);
+          newSuiAddrs.push({ index: i, address: sui.address, privateKey: sui.privateKey });
+        }
+        if (!existingApt.has(i)) {
+          const apt = deriveAptosAddress(w.mnemonic, i);
+          newAptAddrs.push({ index: i, address: apt.address, privateKey: apt.privateKey });
+        }
       }
       newAddrs.sort((a, b) => a.index - b.index);
       newSolAddrs.sort((a, b) => a.index - b.index);
       newTronAddrs.sort((a, b) => a.index - b.index);
       newAxmAddrs.sort((a, b) => a.index - b.index);
       newAtomAddrs.sort((a, b) => a.index - b.index);
+      newSuiAddrs.sort((a, b) => a.index - b.index);
+      newAptAddrs.sort((a, b) => a.index - b.index);
       // TON tidak ikut "turunkan address" di sini — algoritma native TON cuma menghasilkan
       // 1 keypair per mnemonic (persis seperti Tonkeeper), bukan banyak address per index.
-      setWallets(prev => prev.map(x => x.id === walletId ? { ...x, addresses: newAddrs, solAddresses: newSolAddrs, tronAddresses: newTronAddrs, axmAddresses: newAxmAddrs, atomAddresses: newAtomAddrs } : x));
+      setWallets(prev => prev.map(x => x.id === walletId ? { ...x, addresses: newAddrs, solAddresses: newSolAddrs, tronAddresses: newTronAddrs, axmAddresses: newAxmAddrs, atomAddresses: newAtomAddrs, suiAddresses: newSuiAddrs, aptAddresses: newAptAddrs } : x));
       showAlert('Address berhasil diturunkan!', 'success');
     } catch (e: any) { showAlert('Gagal: ' + e.message, 'error'); }
     setGenerating(false);
@@ -2644,6 +2946,7 @@ export const WalletGenerator: React.FC = () => {
     const merged = [...fromCustom, ...fromDeployed];
     const seen = new Set<string>();
     return merged.filter(t => {
+      if (!ethers.utils.isAddress(t.address)) return false; // buang entri address rusak/kosong yang mungkin kesimpan sebelumnya
       const key = t.address.toLowerCase();
       if (seen.has(key)) return false;
       seen.add(key);
@@ -2705,6 +3008,15 @@ export const WalletGenerator: React.FC = () => {
     setTxAsset('native');
     setTxTokens([]);
     setTxAddTokenAddr('');
+    setTxSendAssetMode('native');
+    setTxDetectedTokens([]);
+    setTxDetectedTokensError(null);
+    setTxTokenPickerOpen(false);
+    setTxTokenPickerSearch('');
+    setTxWalletHistory([]);
+    setTxWalletHistoryError(null);
+    setTxTokenDetail(null);
+    setTxTokenDetailError(null);
   };
 
   const txRefreshBalance = async (
@@ -2753,7 +3065,7 @@ export const WalletGenerator: React.FC = () => {
     const chainId = selectedNetwork.chainId;
     if (knownTxTokens.some(t => t.address.toLowerCase() === addr.toLowerCase())) {
       showAlert('Token ini sudah ada di daftar.', 'info');
-      setTxAsset(addr); setTxAddTokenAddr('');
+      setTxAsset(addr); setTxAddTokenAddr(''); setTxTokenPickerOpen(false);
       return;
     }
     setTxAddingToken(true);
@@ -2764,10 +3076,11 @@ export const WalletGenerator: React.FC = () => {
       setCustomErc20Tokens(prev => [...prev, { chainId, address: addr, symbol, decimals, name }]);
       setTxAsset(addr);
       setTxAddTokenAddr('');
+      setTxTokenPickerOpen(false); // digabung ke picker — sukses tambah = langsung kepilih & modal ketutup, sama kayak pilih dari daftar
       showAlert(`Token ${symbol} berhasil ditambahkan!`, 'success');
       if (txConnected) await txFetchTokenBalances();
     } catch (e: any) {
-      showAlert('Gagal membaca info token — pastikan address kontrak ERC-20 valid di network ini.', 'error');
+      showAlert(`Gagal membaca info token — pastikan address kontrak ${getEvmTokenStandardLabel(selectedNetwork?.chainId)} valid di network ini.`, 'error');
     }
     setTxAddingToken(false);
   };
@@ -2777,6 +3090,134 @@ export const WalletGenerator: React.FC = () => {
     if (txAsset.toLowerCase() === address.toLowerCase()) setTxAsset('native');
     setTxTokens(prev => prev.filter(t => t.address.toLowerCase() !== address.toLowerCase()));
   };
+
+  // ── ERC-20: deteksi otomatis token yang dipegang address aktif, dipakai
+  //    buat isi picker "Pilih Token" mode Token — pola sama kayak
+  //    gramLoadDetectedJettons, cuma sumber datanya
+  //    fetchEvmTokenPortfolioWithFallback (Blockscout + fallback RPC scan,
+  //    lihat helpers.ts). Di chain yang belum didukung Blockscout, tangkap
+  //    error-nya & tampilkan ke user lewat picker, jangan ditelan diam-diam
+  //    jadi "0 token" yang menyesatkan. ──
+  const txLoadDetectedTokens = async () => {
+    if (!txConnected || !txAddress || !selectedNetwork) return;
+    setTxDetectedTokensLoading(true);
+    setTxDetectedTokensError(null);
+    // Fallback (scan RPC langsung) itu MAHAL — sampai 10 panggilan eth_getLogs
+    // ke RPC publik. Dulu ini dijalankan tiap kali Blockscout balikin array
+    // kosong, TERMASUK kalau itu memang benar wallet-nya kosong (kasus paling
+    // sering di app ini karena banyak wallet baru hasil generate) — jadi
+    // picker "Pilih Token" nyaris selalu kena scan berat itu dan terasa lama.
+    // fetchEvmTokenPortfolioWithFallback cuma memicu fallback kalau
+    // Blockscout-nya BENERAN gagal (network belum ada instance Blockscout
+    // publik, timeout, dll). Kalau Blockscout sukses tapi memang kosong, itu
+    // dipercaya sebagai hasil valid & langsung ditampilkan cepat; kalau user
+    // curiga ada token baru diterima yang belum ke-index, tombol "Refresh"
+    // di picker tetap bisa dipakai untuk cek ulang.
+    // Pakai provider yang sudah connect (txProviderRef.current) kalau ada,
+    // biar gak bikin koneksi RPC baru buat fallback-nya.
+    const { tokens, error } = await fetchEvmTokenPortfolioWithFallback(
+      txAddress, selectedNetwork, txProviderRef.current ?? undefined,
+    );
+    // Blockscout kadang balikin entri tanpa contract address yang valid (field
+    // kosong/null di respons API) — kalau ini lolos ke txAsset, ethers akan
+    // coba resolve "" sebagai ENS name pas dipakai (mis. tombol MAX) dan meledak.
+    // fetchEvmTokenPortfolioWithFallback sudah menyaring ini, jadi aman
+    // langsung dipakai.
+    setTxDetectedTokens(tokens);
+    // Error cuma ditampilkan kalau BENERAN gak ketemu token dari kedua sumber —
+    // kalau RPC fallback berhasil nemuin token, jangan tampilkan error Blockscout
+    // yang tadi sempat gagal.
+    setTxDetectedTokensError(error);
+    setTxDetectedTokensLoading(false);
+  };
+
+  // Pilih token dari picker: kalau belum ada di knownTxTokens, masukin dulu
+  // (metadata udah ada dari hasil deteksi, gak perlu query on-chain lagi).
+  const txSelectDetectedToken = (address: string) => {
+    if (!ethers.utils.isAddress(address)) return; // jaga-jaga: address rusak gak boleh lolos jadi txAsset
+    const t = txDetectedTokens.find(x => x.address.toLowerCase() === address.toLowerCase());
+    if (!t || !selectedNetwork) return;
+    if (!knownTxTokens.some(k => k.address.toLowerCase() === address.toLowerCase())) {
+      setCustomErc20Tokens(prev => [...prev, { chainId: selectedNetwork.chainId, address: t.address, symbol: t.symbol, decimals: t.decimals, name: t.name }]);
+    }
+    setTxSendAssetMode('token');
+    setTxAsset(t.address);
+    setTxTokenPickerOpen(false);
+    setTxTokenPickerSearch('');
+  };
+
+  // ── Riwayat Transaksi Wallet — daftar TX terakhir dari address yang lagi
+  //    connect di tab Kirim/Terima, sumbernya Blockscout (sama seperti
+  //    Explorer.tsx) supaya baris di sini konsisten dengan detail lengkap
+  //    yang muncul begitu diklik "Lihat di Explorer". ──
+  const txLoadWalletHistory = async () => {
+    if (!txAddress || !selectedNetwork) return;
+    setTxWalletHistoryLoading(true);
+    setTxWalletHistoryError(null);
+    try {
+      const txs = await fetchEvmAddressTxHistory(txAddress, selectedNetwork.id, selectedNetwork.chainId);
+      setTxWalletHistory(txs);
+    } catch (e: any) {
+      setTxWalletHistory([]);
+      setTxWalletHistoryError(e?.message || 'Gagal mengambil riwayat transaksi.');
+    }
+    setTxWalletHistoryLoading(false);
+  };
+
+  // Auto-refresh riwayat begitu wallet connect / ganti network / abis kirim TX baru.
+  useEffect(() => {
+    if (!txConnected || !txAddress || !selectedNetwork) { setTxWalletHistory([]); setTxWalletHistoryError(null); return; }
+    txLoadWalletHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txConnected, txAddress, selectedNetwork?.id, txStatus.hash]);
+
+  // ── Detail Token — info on-chain token yang lagi dipilih di mode Kirim =
+  //    Token (nama, supply, holders, harga), sumbernya sama persis dengan
+  //    Token Page di Explorer.tsx (fetchTokenInfoBlockscout). ──
+  const txLoadTokenDetail = async (addr: string, netId: string, network?: typeof selectedNetwork) => {
+    setTxTokenDetailLoading(true);
+    setTxTokenDetailError(null);
+    try {
+      const info = await fetchEvmTokenDetail(addr, netId, network);
+      setTxTokenDetail(info);
+      if (!info) setTxTokenDetailError(`Kontrak ini gak terbaca sebagai token ${getEvmTokenStandardLabel(network?.chainId)} (belum terindeks Blockscout, dan RPC gak nemu name/symbol-nya).`);
+    } catch (e: any) {
+      setTxTokenDetail(null);
+      setTxTokenDetailError(e?.message || 'Gagal mengambil detail token.');
+    }
+    setTxTokenDetailLoading(false);
+  };
+
+  // Auto-load detail token begitu txAsset ganti ke sebuah token address.
+  useEffect(() => {
+    if (txIsToken && selectedTxToken && selectedNetwork) {
+      txLoadTokenDetail(selectedTxToken.address, selectedNetwork.id, selectedNetwork);
+    } else {
+      setTxTokenDetail(null);
+      setTxTokenDetailError(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txIsToken, selectedTxToken?.address, selectedNetwork?.id]);
+
+  // Reset daftar token yang terdeteksi setiap kali network aktif berubah —
+  // tanpa ini, txDetectedTokens tetap keisi hasil deteksi dari network SEBELUMNYA
+  // kalau user ganti network tanpa disconnect dulu. Karena effect auto-load di
+  // bawah (dan tombol buka picker) sama-sama cuma jalan waktu list-nya kosong,
+  // token dari chain lama itu nyangkut terus dan "deteksi otomatis" jadi seolah
+  // tidak jalan lagi setelah pindah network.
+  useEffect(() => {
+    setTxDetectedTokens([]);
+    setTxDetectedTokensError(null);
+  }, [selectedNetwork?.id]);
+
+  // Auto-load daftar token yang dipegang begitu masuk mode "Token" pertama kali
+  // (atau setelah di-reset karena network baru saja ganti, lihat effect di atas).
+  useEffect(() => {
+    if (txSendAssetMode === 'token' && txConnected && txDetectedTokens.length === 0 && !txDetectedTokensLoading) {
+      txLoadDetectedTokens();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txSendAssetMode, txConnected, selectedNetwork?.id]);
 
   const txFetchGasPrice = async () => {
     const provider = txProviderRef.current;
@@ -2803,6 +3244,41 @@ export const WalletGenerator: React.FC = () => {
     try { return ethers.utils.parseUnits(gwei.toFixed(9), 'gwei'); } catch { return undefined; }
   };
 
+  // ── Gas limit "aman" sebelum broadcast — FIX bug: sebelumnya native-transfer
+  // selalu pukul rata gasLimit 21000 (asumsi tujuan pasti EOA). Begitu address
+  // tujuannya kontrak yang butuh gas lebih (mis. ada logic di receive()/fallback()),
+  // 21000 itu abis duluan → tx tetap ke-mine tapi status gagal (out-of-gas), dan
+  // BNB yang udah kepotong buat gas ga balik lagi (persis kasus CALL_EXCEPTION /
+  // status:0 dengan gasUsed == gasLimit == 21000 di BSC).
+  //
+  // Kalau user isi gas limit manual, itu tetap dihormati apa adanya (dianggap
+  // sengaja override). Kalau auto, kita estimateGas dulu ke RPC + kasih buffer
+  // (default 25%) buat jaga-jaga node beda pendapat pas broadcast — dan yang
+  // PALING PENTING: kalau estimateGas-nya sendiri revert, itu sinyal kuat tx bakal
+  // gagal juga kalau dipaksa kirim, jadi kita lempar error DI SINI (sebelum kirim),
+  // bukan biarin user kehilangan fee gas dari tx yang gagal on-chain.
+  const txEstimateSafeGasLimit = async (
+    provider: ethers.providers.Provider,
+    req: { from: string; to: string; value?: ethers.BigNumberish; data?: string },
+    opts?: { manualGasLimit?: number; minGasLimit?: number; bufferPct?: number },
+  ): Promise<ethers.BigNumber> => {
+    const min = ethers.BigNumber.from(opts?.minGasLimit ?? 21000);
+    if (opts?.manualGasLimit && opts.manualGasLimit > 0) {
+      return ethers.BigNumber.from(opts.manualGasLimit);
+    }
+    try {
+      const est = await provider.estimateGas({
+        from: req.from, to: req.to, value: req.value ?? 0, data: req.data ?? '0x',
+      });
+      const bufferPct = opts?.bufferPct ?? 25;
+      const buffered = est.mul(100 + bufferPct).div(100);
+      return buffered.gt(min) ? buffered : min;
+    } catch (e: any) {
+      const reason = e?.reason || e?.error?.message || e?.data?.message || e?.message || 'kemungkinan revert di address tujuan.';
+      throw new Error(`Simulasi transaksi gagal, kemungkinan besar bakal gagal juga kalau dikirim (${reason}). Tidak jadi dikirim biar gas tidak kepotong sia-sia.`);
+    }
+  };
+
   // ── Isi otomatis "Jumlah" dengan saldo maksimum yang bisa dikirim ──
   // Token: seluruh saldo token (gas dibayar terpisah pakai native coin).
   // Native: saldo dikurangi estimasi biaya gas (gasPrice × gasLimit) biar tidak insufficient funds.
@@ -2823,7 +3299,13 @@ export const WalletGenerator: React.FC = () => {
       } else {
         const bal = await provider.getBalance(address);
         const gasPrice = txGetGasPrice() ?? await provider.getGasPrice();
-        const gasLimit = ethers.BigNumber.from(parseInt(txGasLimit) || 21000);
+        let gasLimit: ethers.BigNumber;
+        try {
+          gasLimit = await txEstimateSafeGasLimit(provider, { from: address, to: txSendTo || address, value: 0 },
+            { manualGasLimit: parseInt(txGasLimit) || 0 });
+        } catch {
+          gasLimit = ethers.BigNumber.from(parseInt(txGasLimit) || 21000);
+        }
         const gasCost = gasPrice.mul(gasLimit);
         const max = bal.sub(gasCost);
         if (max.lte(0)) {
@@ -2850,7 +3332,7 @@ export const WalletGenerator: React.FC = () => {
     if (isToken && !token) { showAlert('Token tidak ditemukan di daftar.', 'error'); return; }
 
     const okSend = await requestTxConfirm({
-      title: isToken ? 'Kirim Token ERC-20' : 'Kirim Transaksi',
+      title: isToken ? `Kirim Token ${getEvmTokenStandardLabel(selectedNetwork?.chainId)}` : 'Kirim Transaksi',
       network: selectedNetwork?.name,
       to: txSendTo,
       value: isToken ? `${txSendAmt} ${token!.symbol} (kontrak ${shortAddr(token!.address)})` : `${txSendAmt} ${selectedNetwork?.symbol ?? 'ETH'}`,
@@ -2866,15 +3348,18 @@ export const WalletGenerator: React.FC = () => {
       if (isToken && token) {
         const c = new ethers.Contract(token.address, ERC20_ABI, wallet);
         const amountBN = ethers.utils.parseUnits(txSendAmt, token.decimals);
-        const overrides: ethers.PayableOverrides = { gasLimit: parseInt(txGasLimit) || 80000 };
+        const iface = new ethers.utils.Interface(ERC20_ABI);
+        const data = iface.encodeFunctionData('transfer', [txSendTo, amountBN]);
+        const gasLimit = await txEstimateSafeGasLimit(wallet.provider!, { from: wallet.address, to: token.address, data },
+          { manualGasLimit: parseInt(txGasLimit) || 0, minGasLimit: 60000 });
+        const overrides: ethers.PayableOverrides = { gasLimit };
         if (gp) overrides.gasPrice = gp;
         tx = await c.transfer(txSendTo, amountBN, overrides);
       } else {
-        const txReq: ethers.providers.TransactionRequest = {
-          to: txSendTo,
-          value: ethers.utils.parseEther(txSendAmt),
-          gasLimit: parseInt(txGasLimit) || 21000,
-        };
+        const value = ethers.utils.parseEther(txSendAmt);
+        const gasLimit = await txEstimateSafeGasLimit(wallet.provider!, { from: wallet.address, to: txSendTo, value },
+          { manualGasLimit: parseInt(txGasLimit) || 0 });
+        const txReq: ethers.providers.TransactionRequest = { to: txSendTo, value, gasLimit };
         if (gp) txReq.gasPrice = gp;
         tx = await wallet.sendTransaction(txReq);
       }
@@ -2889,6 +3374,7 @@ export const WalletGenerator: React.FC = () => {
           : `Kirim ${txSendAmt} ${selectedNetwork?.symbol ?? 'ETH'} ke ${shortAddr(txSendTo)} di ${selectedNetwork?.name ?? ''}`,
         to: txSendTo, value: txSendAmt, data: '0x',
         status: 'success', txHash: tx.hash, timestamp: Date.now(),
+        networkId: selectedNetwork?.id,
       });
       setTxSendTo(''); setTxSendAmt('');
       await txRefreshBalance();
@@ -3451,6 +3937,230 @@ export const WalletGenerator: React.FC = () => {
   }, [axmConnected, axmAddress, axmSendTo, axmSendAmt, axmNetId]);
 
   // ══════════════════════════════════════════════════════════════════════
+  // ── Sui (SUI): Send & Receive — connect via private key (32-byte ed25519
+  //    seed hex), cek saldo, kirim SUI native. Pola sama seperti Axiome di
+  //    atas, tapi lewat Suinet.ts (@mysten/sui). ──
+  // ══════════════════════════════════════════════════════════════════════
+  const suiRefreshBalance = async (netOverride?: SuiNetworkCfg, addr?: string) => {
+    const net     = netOverride ?? SUI_NETWORK;
+    const address = addr ?? suiAddress;
+    if (!address) return;
+    setSuiLoadingBal(true);
+    try {
+      const bal = await getSuiBalanceWithFallback(net, address);
+      setSuiBalance(bal.toLocaleString('en-US', { maximumFractionDigits: 6 }) + ' SUI');
+    } catch { setSuiBalance('Error'); }
+    setSuiLoadingBal(false);
+  };
+
+  const suiConnect = async () => {
+    const pk = suiPrivKey.trim();
+    if (!pk) { showAlert('Masukkan private key Sui dulu (hex).', 'error'); return; }
+    setSuiConnecting(true);
+    setSuiStatus({ type: 'idle', msg: '' });
+    try {
+      const seedHex = pk.startsWith('0x') ? pk : '0x' + pk;
+      const cleanHex = seedHex.replace(/^0x/i, '');
+      if (!/^[0-9a-fA-F]{64}$/.test(cleanHex)) throw new Error('Private key harus 32-byte hex (64 karakter).');
+      const nacl = await import('tweetnacl');
+      const seedBytes = new Uint8Array(cleanHex.match(/.{2}/g)!.map(b => parseInt(b, 16)));
+      const keypair = nacl.default.sign.keyPair.fromSeed(seedBytes);
+      const { suiAddressFromPublicKey } = await import('./network/Suinet');
+      const addr = suiAddressFromPublicKey(keypair.publicKey);
+      setSuiAddress(addr);
+      setSuiConnected(true);
+      await suiRefreshBalance(SUI_NETWORK, addr);
+    } catch (e: any) { showAlert('Gagal connect: private key Sui tidak valid. (' + e.message + ')', 'error'); }
+    setSuiConnecting(false);
+  };
+
+  const suiDisconnect = () => {
+    setSuiConnected(false);
+    setSuiAddress('');
+    setSuiBalance('—');
+    setSuiPrivKey('');
+    setSuiWalletSel('');
+    setSuiStatus({ type: 'idle', msg: '' });
+  };
+
+  const switchSuiNetwork = async (newId: string) => {
+    setSuiNetId(newId);
+    if (!suiConnected || !suiAddress) return;
+    const newNet = SUI_NETWORKS.find(n => n.id === newId) ?? SUI_NETWORKS[0];
+    await suiRefreshBalance(newNet, suiAddress);
+  };
+
+  const handleSuiWalletSel = (val: string) => {
+    setSuiWalletSel(val);
+    if (!val) return;
+    const [wi, ai] = val.split(',').map(Number);
+    const w    = wallets[wi];
+    const addr = w?.suiAddresses?.find(a => a.index === ai);
+    if (addr) setSuiPrivKey(addr.privateKey);
+  };
+
+  const suiSend = async () => {
+    if (!suiConnected || !suiAddress) { showAlert('Wallet Sui tidak terhubung.', 'error'); return; }
+    if (!isValidSuiAddress(suiSendTo.trim())) { showAlert('Address Sui tujuan tidak valid.', 'error'); return; }
+    const amt = parseFloat(suiSendAmt);
+    if (isNaN(amt) || amt <= 0) { showAlert('Jumlah tidak valid.', 'error'); return; }
+
+    const okSend = await requestTxConfirm({
+      title: 'Kirim Transaksi',
+      network: SUI_NETWORK.name,
+      to: suiSendTo,
+      value: `${suiSendAmt} SUI`,
+    });
+    if (!okSend) return;
+
+    setSuiSending(true);
+    setSuiStatus({ type: 'pending', msg: `Mengirim transaksi ke ${SUI_NETWORK.name}...` });
+    try {
+      const txHash = await sendSui(SUI_NETWORK, suiPrivKey, suiSendTo.trim(), amt);
+      setSuiStatus({ type: 'success', msg: 'Transaksi terkirim (broadcast sukses)', hash: txHash });
+      saveTxHistory({
+        taskName: 'Transfer', description: `Kirim ${suiSendAmt} SUI ke ${shortAddr(suiSendTo)} di ${SUI_NETWORK.name}`,
+        to: suiSendTo, value: suiSendAmt, data: '',
+        status: 'success', txHash, timestamp: Date.now(),
+      });
+      setSuiSendTo(''); setSuiSendAmt('');
+      await suiRefreshBalance();
+    } catch (e: any) { setSuiStatus({ type: 'error', msg: suiFriendlyError(e) }); }
+    setSuiSending(false);
+  };
+
+  // Isi otomatis "Jumlah" dengan saldo SUI maksimum yang bisa dikirim — saldo
+  // dikurangi buffer gas konservatif (SUI_GAS_BUFFER), karena gas budget SUI
+  // asli dihitung otomatis oleh SDK saat transaksi benar-benar dikirim.
+  const suiSetMaxAmount = async () => {
+    if (!suiConnected || !suiAddress) { showAlert('Connect wallet dulu.', 'error'); return; }
+    setSuiMaxLoading(true);
+    try {
+      const balance = await getSuiBalanceWithFallback(SUI_NETWORK, suiAddress);
+      const max = balance - SUI_GAS_BUFFER;
+      if (max <= 0) {
+        showAlert('Saldo tidak cukup untuk menutup biaya gas.', 'error');
+      } else {
+        setSuiSendAmt(max.toFixed(6).replace(/0+$/, '').replace(/\.$/, ''));
+      }
+    } catch (e: any) {
+      showAlert('Gagal menghitung jumlah maksimum: ' + suiFriendlyError(e), 'error');
+    }
+    setSuiMaxLoading(false);
+  };
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ── Aptos (APT): Send & Receive — pola identik dengan Sui di atas, tapi
+  //    lewat Aptosnet.ts (@aptos-labs/ts-sdk). ──
+  // ══════════════════════════════════════════════════════════════════════
+  const aptRefreshBalance = async (netOverride?: AptosNetworkCfg, addr?: string) => {
+    const net     = netOverride ?? APTOS_NETWORK;
+    const address = addr ?? aptAddress;
+    if (!address) return;
+    setAptLoadingBal(true);
+    try {
+      const bal = await getAptosBalanceWithFallback(net, address);
+      setAptBalance(bal.toLocaleString('en-US', { maximumFractionDigits: 6 }) + ' APT');
+    } catch { setAptBalance('Error'); }
+    setAptLoadingBal(false);
+  };
+
+  const aptConnect = async () => {
+    const pk = aptPrivKey.trim();
+    if (!pk) { showAlert('Masukkan private key Aptos dulu (hex).', 'error'); return; }
+    setAptConnecting(true);
+    setAptStatus({ type: 'idle', msg: '' });
+    try {
+      const cleanHex = pk.replace(/^0x/i, '');
+      if (!/^[0-9a-fA-F]{64}$/.test(cleanHex)) throw new Error('Private key harus 32-byte hex (64 karakter).');
+      const nacl = await import('tweetnacl');
+      const seedBytes = new Uint8Array(cleanHex.match(/.{2}/g)!.map(b => parseInt(b, 16)));
+      const keypair = nacl.default.sign.keyPair.fromSeed(seedBytes);
+      const { aptosAddressFromPublicKey } = await import('./network/Aptosnet');
+      const addr = aptosAddressFromPublicKey(keypair.publicKey);
+      setAptAddress(addr);
+      setAptConnected(true);
+      await aptRefreshBalance(APTOS_NETWORK, addr);
+    } catch (e: any) { showAlert('Gagal connect: private key Aptos tidak valid. (' + e.message + ')', 'error'); }
+    setAptConnecting(false);
+  };
+
+  const aptDisconnect = () => {
+    setAptConnected(false);
+    setAptAddress('');
+    setAptBalance('—');
+    setAptPrivKey('');
+    setAptWalletSel('');
+    setAptStatus({ type: 'idle', msg: '' });
+  };
+
+  const switchAptNetwork = async (newId: string) => {
+    setAptNetId(newId);
+    if (!aptConnected || !aptAddress) return;
+    const newNet = APTOS_NETWORKS.find(n => n.id === newId) ?? APTOS_NETWORKS[0];
+    await aptRefreshBalance(newNet, aptAddress);
+  };
+
+  const handleAptWalletSel = (val: string) => {
+    setAptWalletSel(val);
+    if (!val) return;
+    const [wi, ai] = val.split(',').map(Number);
+    const w    = wallets[wi];
+    const addr = w?.aptAddresses?.find(a => a.index === ai);
+    if (addr) setAptPrivKey(addr.privateKey);
+  };
+
+  const aptSend = async () => {
+    if (!aptConnected || !aptAddress) { showAlert('Wallet Aptos tidak terhubung.', 'error'); return; }
+    if (!isValidAptosAddress(aptSendTo.trim())) { showAlert('Address Aptos tujuan tidak valid.', 'error'); return; }
+    const amt = parseFloat(aptSendAmt);
+    if (isNaN(amt) || amt <= 0) { showAlert('Jumlah tidak valid.', 'error'); return; }
+
+    const okSend = await requestTxConfirm({
+      title: 'Kirim Transaksi',
+      network: APTOS_NETWORK.name,
+      to: aptSendTo,
+      value: `${aptSendAmt} APT`,
+    });
+    if (!okSend) return;
+
+    setAptSending(true);
+    setAptStatus({ type: 'pending', msg: `Mengirim transaksi ke ${APTOS_NETWORK.name}...` });
+    try {
+      const txHash = await sendAptos(APTOS_NETWORK, aptPrivKey, aptSendTo.trim(), amt);
+      setAptStatus({ type: 'success', msg: 'Transaksi terkirim & terkonfirmasi', hash: txHash });
+      saveTxHistory({
+        taskName: 'Transfer', description: `Kirim ${aptSendAmt} APT ke ${shortAddr(aptSendTo)} di ${APTOS_NETWORK.name}`,
+        to: aptSendTo, value: aptSendAmt, data: '',
+        status: 'success', txHash, timestamp: Date.now(),
+      });
+      setAptSendTo(''); setAptSendAmt('');
+      await aptRefreshBalance();
+    } catch (e: any) { setAptStatus({ type: 'error', msg: aptFriendlyError(e) }); }
+    setAptSending(false);
+  };
+
+  // Isi otomatis "Jumlah" dengan saldo APT maksimum yang bisa dikirim — saldo
+  // dikurangi buffer gas konservatif (APTOS_GAS_BUFFER), karena gas fee APT
+  // asli dihitung otomatis oleh SDK saat transaksi benar-benar dikirim.
+  const aptSetMaxAmount = async () => {
+    if (!aptConnected || !aptAddress) { showAlert('Connect wallet dulu.', 'error'); return; }
+    setAptMaxLoading(true);
+    try {
+      const balance = await getAptosBalanceWithFallback(APTOS_NETWORK, aptAddress);
+      const max = balance - APTOS_GAS_BUFFER;
+      if (max <= 0) {
+        showAlert('Saldo tidak cukup untuk menutup biaya gas.', 'error');
+      } else {
+        setAptSendAmt(max.toFixed(6).replace(/0+$/, '').replace(/\.$/, ''));
+      }
+    } catch (e: any) {
+      showAlert('Gagal menghitung jumlah maksimum: ' + aptFriendlyError(e), 'error');
+    }
+    setAptMaxLoading(false);
+  };
+
+  // ══════════════════════════════════════════════════════════════════════
   // ── Cosmos Hub (ATOM): Send & Receive — pola identik dengan Axiome di atas,
   //    tapi lewat Cosmosnet.ts (SigningStargateClient ke Cosmos Hub, coinType
   //    118 resmi, REST publik CORS-friendly). ──
@@ -3683,6 +4393,33 @@ export const WalletGenerator: React.FC = () => {
     }
   };
 
+  // Connect langsung ke wallet Gram (TON) tersimpan TANPA lewat form manual
+  // "Private Key + Versi Wallet Contract" — dipakai tombol "Kirim" di hasil
+  // "Cek Semua Saldo" tab Wallets. Sebelum ini, klik "Kirim" cuma manggil
+  // handleGramWalletSel (isi field doang), jadi user tetap mendarat di layar
+  // Connect manual dan harus lihat/pilih dropdown versi (v4/W5) sendiri —
+  // padahal versinya udah pasti diketahui dari data wallet tersimpan.
+  // Fungsi ini pakai address YANG SUDAH ADA di w.gramAddress.address
+  // langsung (bukan re-derive dari private key + gramConnectVersion), jadi
+  // gak ada risiko address salah kalau dropdown versi kebetulan gak sinkron.
+  const gramConnectWithWallet = async (walletIndex: number) => {
+    const w = wallets[walletIndex];
+    if (!w?.gramAddress) { showAlert('Wallet Gram (TON) tidak ditemukan.', 'error'); return; }
+    setGramWalletSel(String(walletIndex));
+    setGramPrivKey(w.gramAddress.privateKey);
+    setGramConnectVersion(w.gramAddress.version ?? 'v5r1');
+    setGramConnecting(true);
+    setGramStatus({ type: 'idle', msg: '' });
+    try {
+      setGramAddress(w.gramAddress.address);
+      setGramConnected(true);
+      await gramRefreshBalance(GRAM_NETWORK, w.gramAddress.address);
+    } catch (e: any) {
+      showAlert('Gagal connect: ' + (e?.message || 'terjadi kesalahan.'), 'error');
+    }
+    setGramConnecting(false);
+  };
+
   const gramSend = async () => {
     if (!gramConnected || !gramAddress) { showAlert('Wallet Gram (TON) tidak terhubung.', 'error'); return; }
     if (!isValidGramAddress(gramSendTo.trim())) { showAlert('Address Gram (TON) tujuan tidak valid.', 'error'); return; }
@@ -3693,29 +4430,34 @@ export const WalletGenerator: React.FC = () => {
       ? `Estimasi fee: ~${gramFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} GRAM${gramFeeEstimate.willDeploy ? ' (termasuk deploy wallet)' : ''}.`
       : undefined;
 
+    const memo = gramMemo.trim();
     const okSend = await requestTxConfirm({
       title: 'Kirim Transaksi',
       network: GRAM_NETWORK.name,
       to: gramSendTo,
       value: `${gramSendAmt} GRAM`,
-      extra: feeLabel,
+      extra: [feeLabel, memo ? `Memo: "${memo}"` : null].filter(Boolean).join(' '),
     });
     if (!okSend) return;
 
     setGramSending(true);
     setGramStatus({ type: 'pending', msg: `Mengirim transaksi ke ${GRAM_NETWORK.name}...` });
     try {
-      const txHash = await sendGram(GRAM_NETWORK, gramPrivKey, gramSendTo.trim(), amt, '', gramConnectVersion);
+      const txHash = await sendGram(GRAM_NETWORK, gramPrivKey, gramSendTo.trim(), amt, memo, gramConnectVersion);
       setGramStatus({
         type: 'success',
         msg: txHash ? 'Transaksi terkirim & terkonfirmasi' : 'Transaksi terkirim (belum dapat hash — cek explorer manual kalau perlu)',
         hash: txHash || undefined,
       });
       saveTxHistory({
-        taskName: 'Transfer', description: `Kirim ${gramSendAmt} GRAM ke ${shortAddr(gramSendTo)} di ${GRAM_NETWORK.name}`,
-        to: gramSendTo, value: gramSendAmt, data: '',
+        taskName: 'Transfer',
+        description: `Kirim ${gramSendAmt} GRAM ke ${shortAddr(gramSendTo)} di ${GRAM_NETWORK.name}${memo ? ` (memo: "${memo}")` : ''}`,
+        to: gramSendTo, value: gramSendAmt, data: memo,
         status: 'success', txHash: txHash || '', timestamp: Date.now(),
       });
+      // Catatan: field memo TIDAK direset di sini (beda dari gramSendTo/gramSendAmt),
+      // karena field ini dipakai bareng buat kartu "Terima" (QR/link ton://transfer).
+      // Reset paksa di sini bakal ikut menghapus memo yang lagi dipasang di QR terima.
       setGramSendTo(''); setGramSendAmt('');
       await gramRefreshBalance();
     } catch (e: any) { setGramStatus({ type: 'error', msg: gramFriendlyError(e) }); }
@@ -3751,7 +4493,7 @@ export const WalletGenerator: React.FC = () => {
       setGramFeeEstimating(true);
       setGramFeeEstimateError(null);
       try {
-        const est = await estimateGramFee(GRAM_NETWORK, gramPrivKey, to, amt, '', gramConnectVersion);
+        const est = await estimateGramFee(GRAM_NETWORK, gramPrivKey, to, amt, gramMemo.trim(), gramConnectVersion);
         if (!cancelled) { setGramFeeEstimate(est); setGramFeeEstimateError(null); }
       } catch (e: any) {
         if (!cancelled) { setGramFeeEstimate(null); setGramFeeEstimateError(e?.message || 'Gagal menghitung estimasi fee.'); }
@@ -3760,7 +4502,7 @@ export const WalletGenerator: React.FC = () => {
     }, 600);
     return () => { cancelled = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gramConnected, gramAddress, gramSendTo, gramSendAmt, gramNetId, gramConnectVersion]);
+  }, [gramConnected, gramAddress, gramSendTo, gramSendAmt, gramMemo, gramNetId, gramConnectVersion]);
 
   // ══════════════════════════════════════════════════════════════════════
   // ── Gram (TON): Jetton (kirim token, bukan native GRAM) — fitur wallet
@@ -4578,6 +5320,32 @@ export const WalletGenerator: React.FC = () => {
   const selectedSolToken = solAsset !== 'native' ? solTokens.find(t => t.mint === solAsset) : undefined;
   const solIsToken = solAsset !== 'native' && !!selectedSolToken;
 
+  // Debounce: cek ATA tujuan cuma pas mode Kirim (single) + asset token +
+  // address tujuan valid, biar gak nembak RPC tiap ketikan.
+  useEffect(() => {
+    if (solMode !== 'single' || !solIsToken || !selectedSolToken || !solIsValidAddr(solSendTo)) {
+      setSolDestAtaExists(null);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      const connection = solConnRef.current;
+      if (!connection) return;
+      setSolDestAtaChecking(true);
+      try {
+        const mintPk   = new PublicKey(selectedSolToken.mint);
+        const toPubkey = new PublicKey(solSendTo.trim());
+        const toAta    = await getAssociatedTokenAddress(mintPk, toPubkey);
+        const info     = await connection.getAccountInfo(toAta);
+        if (!cancelled) setSolDestAtaExists(!!info);
+      } catch {
+        if (!cancelled) setSolDestAtaExists(null);
+      }
+      if (!cancelled) setSolDestAtaChecking(false);
+    }, 500);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [solMode, solIsToken, selectedSolToken?.mint, solSendTo, solConnected]);
+
   // ── Isi otomatis "Jumlah" dengan saldo maksimum yang bisa dikirim ──
   // Token SPL: seluruh saldo token (fee network tetap dibayar terpisah pakai SOL).
   // SOL native: tarik saldo, kompilasi transaksi transfer dummy buat dapat estimasi
@@ -4933,15 +5701,18 @@ export const WalletGenerator: React.FC = () => {
         let tx: ethers.providers.TransactionResponse;
         if (tokenContract && selectedTxToken) {
           const amountBN = ethers.utils.parseUnits(row.amount, selectedTxToken.decimals);
-          const overrides: ethers.PayableOverrides = { gasLimit: parseInt(txGasLimit) || 80000 };
+          const iface = new ethers.utils.Interface(ERC20_ABI);
+          const data = iface.encodeFunctionData('transfer', [row.to, amountBN]);
+          const gasLimit = await txEstimateSafeGasLimit(wallet.provider!, { from: wallet.address, to: selectedTxToken.address, data },
+            { manualGasLimit: parseInt(txGasLimit) || 0, minGasLimit: 60000 });
+          const overrides: ethers.PayableOverrides = { gasLimit };
           if (gp) overrides.gasPrice = gp;
           tx = await tokenContract.transfer(row.to, amountBN, overrides);
         } else {
-          const txReq: ethers.providers.TransactionRequest = {
-            to: row.to,
-            value: ethers.utils.parseEther(row.amount),
-            gasLimit: parseInt(txGasLimit) || 21000,
-          };
+          const value = ethers.utils.parseEther(row.amount);
+          const gasLimit = await txEstimateSafeGasLimit(wallet.provider!, { from: wallet.address, to: row.to, value },
+            { manualGasLimit: parseInt(txGasLimit) || 0 });
+          const txReq: ethers.providers.TransactionRequest = { to: row.to, value, gasLimit };
           if (gp) txReq.gasPrice = gp;
           tx = await wallet.sendTransaction(txReq);
         }
@@ -4951,6 +5722,7 @@ export const WalletGenerator: React.FC = () => {
           taskName: 'Multi-Send', description: `${row.amount} ${assetSymbol} → ${shortAddr(row.to)}`,
           to: row.to, value: row.amount, data: '0x',
           status: 'success', txHash: tx.hash, timestamp: Date.now(),
+          networkId: selectedNetwork?.id,
         });
       } catch (e: any) {
         setTxMultiRows(prev => prev.map(r => r.id === row.id ? { ...r, status: 'failed', error: e.message?.slice(0,120) } : r));
@@ -5105,7 +5877,17 @@ export const WalletGenerator: React.FC = () => {
             continue;
           }
 
-          const gasLimit = ethers.BigNumber.from(parseInt(txGasLimit) || 80000);
+          const iface = new ethers.utils.Interface(ERC20_ABI);
+          const transferData = iface.encodeFunctionData('transfer', [sweepDestAddr, sendAmt]);
+          let gasLimit: ethers.BigNumber;
+          try {
+            gasLimit = await txEstimateSafeGasLimit(provider, { from: wallet.address, to: selectedTxToken!.address, data: transferData },
+              { manualGasLimit: parseInt(txGasLimit) || 0, minGasLimit: 60000 });
+          } catch (gasErr: any) {
+            setSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'failed', error: gasErr.message?.slice(0,160) } : s));
+            if (sweepDelayMs > 0) await new Promise(r => setTimeout(r, sweepDelayMs));
+            continue;
+          }
           const gasCost  = effectiveGasPrice.mul(gasLimit);
           const nativeBal = await provider.getBalance(wallet.address);
           if (nativeBal.lt(gasCost)) {
@@ -5127,6 +5909,7 @@ export const WalletGenerator: React.FC = () => {
             description: `${sendFormatted} ${selectedTxToken!.symbol} dari ${shortAddr(src.address)} → ${shortAddr(sweepDestAddr)}`,
             to: sweepDestAddr, value: sendFormatted, data: '0x',
             status: 'success', txHash: tx.hash, timestamp: Date.now(),
+            networkId: selectedNetwork?.id,
           });
         } else {
           // ── Sweep native coin ──
@@ -5138,7 +5921,15 @@ export const WalletGenerator: React.FC = () => {
             continue;
           }
 
-          const gasLimit = ethers.BigNumber.from(21000);
+          let gasLimit: ethers.BigNumber;
+          try {
+            gasLimit = await txEstimateSafeGasLimit(provider, { from: wallet.address, to: sweepDestAddr, value: 1 },
+              { manualGasLimit: parseInt(txGasLimit) || 0 });
+          } catch (gasErr: any) {
+            setSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'failed', error: gasErr.message?.slice(0,160) } : s));
+            if (sweepDelayMs > 0) await new Promise(r => setTimeout(r, sweepDelayMs));
+            continue;
+          }
           const gasCost = effectiveGasPrice.mul(gasLimit);
 
           let sendAmt: ethers.BigNumber;
@@ -5147,10 +5938,6 @@ export const WalletGenerator: React.FC = () => {
               ? ethers.utils.parseEther(sweepLeaveGas)
               : ethers.BigNumber.from(0);
             sendAmt = bal.sub(gasCost).sub(leaveWei);
-            if (sendAmt.lte(0)) {
-              const minGasCost = ethers.BigNumber.from(21000);
-              sendAmt = bal.sub(minGasCost).sub(leaveWei);
-            }
           } else {
             sendAmt = ethers.utils.parseEther(sweepFixedAmt || '0');
           }
@@ -5184,6 +5971,7 @@ export const WalletGenerator: React.FC = () => {
             description: `${amtFormatted} ${net.symbol} dari ${shortAddr(src.address)} → ${shortAddr(sweepDestAddr)}`,
             to: sweepDestAddr, value: amtFormatted, data: '0x',
             status: 'success', txHash: tx.hash, timestamp: Date.now(),
+            networkId: net?.id,
           });
         }
       } catch (e: any) {
@@ -5220,6 +6008,62 @@ export const WalletGenerator: React.FC = () => {
     setNetForm({ name:'', chainId:0, symbol:'', rpcUrls:[], rpcRaw:'', explorerUrl:'', color:'#01a2ff' });
     setNetEditId(null); setShowNetForm(false);
   };
+
+  // Buka panel impor Chainlist. Data cuma di-fetch sekali (di-cache di
+  // helpers.ts) — kalau sudah pernah dimuat, buka langsung tanpa fetch ulang.
+  const openChainlistImport = async () => {
+    setShowChainlistImport(true);
+    setShowNetForm(false);
+    if (chainlistChains.length > 0 || chainlistLoading) return;
+    setChainlistLoading(true);
+    setChainlistError('');
+    try {
+      const chains = await fetchChainlistChains();
+      setChainlistChains(chains);
+    } catch (e: any) {
+      setChainlistError(e?.message || 'Gagal mengambil data dari Chainlist.');
+    } finally {
+      setChainlistLoading(false);
+    }
+  };
+
+  const refreshChainlistImport = async () => {
+    setChainlistLoading(true);
+    setChainlistError('');
+    try {
+      const chains = await fetchChainlistChains(true);
+      setChainlistChains(chains);
+    } catch (e: any) {
+      setChainlistError(e?.message || 'Gagal mengambil data dari Chainlist.');
+    } finally {
+      setChainlistLoading(false);
+    }
+  };
+
+  // User pilih 1 chain dari hasil pencarian Chainlist → isi otomatis form
+  // Tambah Network (Nama, Chain ID, Symbol, RPC URLs, Explorer), lalu buka
+  // form itu supaya user masih bisa cek/edit sebelum benar-benar disimpan.
+  const selectChainlistChain = (c: ChainlistChain) => {
+    const alreadyExists = networks.some(n => n.chainId === c.chainId);
+    setNetForm(chainlistChainToNetForm(c));
+    setNetEditId(null);
+    setShowChainlistImport(false);
+    setShowNetForm(true);
+    if (alreadyExists) {
+      showAlert(`Chain ID ${c.chainId} sudah ada di daftar network kamu. Cek dulu sebelum menambah duplikat.`, 'info');
+    }
+  };
+
+  const filteredChainlistChains = useMemo(() => {
+    const q = chainlistSearch.trim().toLowerCase();
+    const base = !q ? chainlistChains : chainlistChains.filter(c =>
+      c.name.toLowerCase().includes(q) ||
+      c.shortName.toLowerCase().includes(q) ||
+      c.nativeCurrency.symbol.toLowerCase().includes(q) ||
+      String(c.chainId).includes(q)
+    );
+    return base.slice(0, 60);
+  }, [chainlistChains, chainlistSearch]);
 
   const addToMetaMask = async (n: RPCNetwork) => {
     const w = (window as any).ethereum;
@@ -5857,13 +6701,21 @@ export const WalletGenerator: React.FC = () => {
       });
       if (!ok) return;
 
+      // Gas limit manual (opsional) — kosong = ethers pakai estimateGas otomatis saat deploy.
+      const manualGasLimit = parseInt(tcGasLimit, 10);
+      const deployOverrides: ethers.PayableOverrides =
+        (tcGasLimit.trim() && !isNaN(manualGasLimit) && manualGasLimit > 0)
+          ? { gasLimit: ethers.BigNumber.from(manualGasLimit) } : {};
+
+      setTcGasSimFailed(false);
       setTcDeploying(true);
-      setTcDeployStatus({ type: 'pending', msg: `Deploying "${tcCompiled.contractName}" ke ${tcSelectedNetwork.name}...` });
+      setTcDeployStatus({ type: 'pending', msg: `Deploying "${tcCompiled.contractName}" ke ${tcSelectedNetwork.name}...`
+        + (deployOverrides.gasLimit ? ` (gas limit manual: ${manualGasLimit.toLocaleString()})` : '') });
       try {
         const provider = await getProvider(tcSelectedNetwork);
         const wallet   = new ethers.Wallet(pk, provider);
         const factory  = new ethers.ContractFactory(tcCompiled.abi, tcCompiled.bytecode, wallet);
-        const contract = await factory.deploy(...ctorArgs);
+        const contract = await factory.deploy(...ctorArgs, deployOverrides);
         setTcDeployStatus({ type: 'pending', msg: `TX terkirim: ${contract.deployTransaction.hash.slice(0,12)}... menunggu konfirmasi...` });
         await contract.deployed();
 
@@ -5896,6 +6748,7 @@ export const WalletGenerator: React.FC = () => {
         setTcCustomSolidity(''); setTcCompiled(null); setTcCustomCtorArgs('[]');
       } catch (e: any) {
         const msg = e?.reason || e?.message || 'Gagal deploy token.';
+        if (/out of gas|gas required exceeds|intrinsic gas too low/i.test(String(msg))) setTcGasSimFailed(true);
         setTcDeployStatus({ type: 'error', msg: String(msg).slice(0, 200) });
         showAlert('Gagal deploy: ' + String(msg).slice(0, 160), 'error');
       }
@@ -5915,20 +6768,28 @@ export const WalletGenerator: React.FC = () => {
       if (supplyBN.lte(0)) throw new Error('invalid');
     } catch { showAlert('Total supply tidak valid (masukkan angka bulat).', 'error'); return; }
 
+    // Gas limit manual (opsional) — kosong = ethers pakai estimateGas otomatis saat deploy.
+    const manualGasLimit = parseInt(tcGasLimit, 10);
+    const hasManualGas = !!(tcGasLimit.trim() && !isNaN(manualGasLimit) && manualGasLimit > 0);
+    const deployOverrides: ethers.PayableOverrides = hasManualGas ? { gasLimit: ethers.BigNumber.from(manualGasLimit) } : {};
+
     const ok = await requestTxConfirm({
-      title: `Deploy Token ERC-20: ${tcName} (${tcSymbol.toUpperCase()})`,
+      title: `Deploy Token ${getEvmTokenStandardLabel(tcSelectedNetwork.chainId)}: ${tcName} (${tcSymbol.toUpperCase()})`,
       network: tcSelectedNetwork.name,
-      extra: `Decimals: ${decimals} · Total Supply: ${tcSupply} ${tcSymbol.toUpperCase()} — akan di-mint seluruhnya ke address deployer saat deploy.`,
+      extra: `Decimals: ${decimals} · Total Supply: ${tcSupply} ${tcSymbol.toUpperCase()} — akan di-mint seluruhnya ke address deployer saat deploy.` +
+        (hasManualGas ? ` Gas limit manual: ${manualGasLimit.toLocaleString()} (menggantikan auto-estimate).` : ''),
     });
     if (!ok) return;
 
+    setTcGasSimFailed(false);
     setTcDeploying(true);
-    setTcDeployStatus({ type: 'pending', msg: `Deploying ke ${tcSelectedNetwork.name}...` });
+    setTcDeployStatus({ type: 'pending', msg: `Deploying ke ${tcSelectedNetwork.name}...`
+      + (hasManualGas ? ` (gas limit manual: ${manualGasLimit.toLocaleString()})` : '') });
     try {
       const provider = await getProvider(tcSelectedNetwork);
       const wallet   = new ethers.Wallet(pk, provider);
       const factory  = new ethers.ContractFactory(ERC20_ABI, ERC20_BYTECODE, wallet);
-      const contract = await factory.deploy(tcName.trim(), tcSymbol.trim().toUpperCase(), decimals, supplyBN);
+      const contract = await factory.deploy(tcName.trim(), tcSymbol.trim().toUpperCase(), decimals, supplyBN, deployOverrides);
       setTcDeployStatus({ type: 'pending', msg: `TX terkirim: ${contract.deployTransaction.hash.slice(0,12)}... menunggu konfirmasi...` });
       await contract.deployed();
 
@@ -5948,10 +6809,11 @@ export const WalletGenerator: React.FC = () => {
       };
       setErc20Tokens(prev => [newToken, ...prev]);
       setTcDeployStatus({ type: 'success', msg: `Token berhasil dideploy di ${contract.address}` });
-      showAlert(`Token ERC-20 "${tcName}" berhasil dideploy!`, 'success');
+      showAlert(`Token ${getEvmTokenStandardLabel(tcSelectedNetwork.chainId)} "${tcName}" berhasil dideploy!`, 'success');
       setTcName(''); setTcSymbol(''); setTcSupply('1000000');
     } catch (e: any) {
       const msg = e?.reason || e?.message || 'Gagal deploy token.';
+      if (/out of gas|gas required exceeds|intrinsic gas too low/i.test(String(msg))) setTcGasSimFailed(true);
       setTcDeployStatus({ type: 'error', msg: String(msg).slice(0, 200) });
       showAlert('Gagal deploy: ' + String(msg).slice(0, 160), 'error');
     }
@@ -6226,64 +7088,141 @@ export const WalletGenerator: React.FC = () => {
   };
 
   // Shared Asset selector (native coin vs ERC-20 token) — used by Single Send, Multi Send, and Sweep.
-  const renderAssetSelector = () => (
+  // Asset selector EVM — segmented "Native / Token" (ala mode Native/Jetton di
+  // Gram, TANPA opsi Swap) + picker token yang dipegang wallet. Dipakai bareng
+  // di Single/Multi Send & Sweep — txAsset tetap satu-satunya sumber kebenaran.
+  const renderAssetSelector = () => {
+    const tokenStandardLabel = getEvmTokenStandardLabel(selectedNetwork?.chainId);
+    return (
     <div style={{ marginBottom:'16px' }}>
-      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'5px' }}>
-        <label style={{ fontSize:'11px', color:'#555' }}>Asset</label>
-        <button onClick={() => txFetchTokenBalances()} disabled={txTokensLoading || knownTxTokens.length === 0}
-          style={{ background:'none', border:'none', color:'#555', cursor:'pointer', fontSize:'10px', display:'flex', alignItems:'center', gap:'4px' }}>
-          <FaSync size={9} style={{ animation:txTokensLoading?'spin 1s linear infinite':undefined }}/> Refresh token
-        </button>
+      <div style={{ display:'flex', gap:'6px', marginBottom:'14px' }}>
+        <button onClick={() => { setTxSendAssetMode('native'); setTxAsset('native'); }} style={{
+          flex:1, padding:'8px', fontSize:'12px', fontWeight:'bold', cursor:'pointer',
+          background: txSendAssetMode === 'native' ? (selectedNetwork?.color ?? '#01a2ff') : 'none',
+          color: txSendAssetMode === 'native' ? '#000' : '#888',
+          border: `1px solid ${txSendAssetMode === 'native' ? (selectedNetwork?.color ?? '#01a2ff') : '#333'}`,
+        }}><FaPaperPlane style={{ marginRight:'6px' }}/>Native ({selectedNetwork?.symbol ?? 'ETH'})</button>
+        <button onClick={() => setTxSendAssetMode('token')} style={{
+          flex:1, padding:'8px', fontSize:'12px', fontWeight:'bold', cursor:'pointer',
+          background: txSendAssetMode === 'token' ? (selectedNetwork?.color ?? '#01a2ff') : 'none',
+          color: txSendAssetMode === 'token' ? '#000' : '#888',
+          border: `1px solid ${txSendAssetMode === 'token' ? (selectedNetwork?.color ?? '#01a2ff') : '#333'}`,
+        }}><FaCoins style={{ marginRight:'6px' }}/>Token ({tokenStandardLabel})</button>
       </div>
-      <select value={txAsset} onChange={e => setTxAsset(e.target.value)}
-        style={{ width:'100%', fontFamily:'monospace', fontSize:'12px', padding:'10px 12px' }}>
-        <option value="native">{selectedNetwork?.symbol ?? 'ETH'} (native)</option>
-        {knownTxTokens.map(t => {
-          const fetched = txTokens.find(x => x.address.toLowerCase() === t.address.toLowerCase());
-          const balLabel = fetched
-            ? parseFloat(fetched.balance).toLocaleString(undefined,{maximumFractionDigits:6})
-            : (txTokensLoading ? '...' : '?');
-          return (
-            <option key={t.address} value={t.address}>
-              {t.symbol} · {shortAddr(t.address)} · saldo {balLabel}
-            </option>
-          );
-        })}
-      </select>
-      {knownTxTokens.length === 0 && (
-        <div style={{ fontSize:'10px', color:'#444', marginTop:'4px' }}>
-          Belum ada token ERC-20 yang dikenal di network ini — tambahkan lewat contract address di bawah.
-        </div>
-      )}
-      <div style={{ display:'flex', gap:'6px', marginTop:'8px' }}>
-        <input type="text" placeholder="Tambah token via contract address (0x...)" value={txAddTokenAddr}
-          onChange={e => setTxAddTokenAddr(e.target.value)}
-          style={{ flex:1, boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px', padding:'8px 10px' }}/>
-        <button onClick={addCustomErc20Token} disabled={txAddingToken || !txAddTokenAddr.trim()}
-          style={{ background:'none', border:'1px solid #333', color:'#01a2ff', padding:'0 12px', cursor:'pointer', fontSize:'11px', whiteSpace:'nowrap', opacity:(!txAddTokenAddr.trim())?0.5:1 }}>
-          {txAddingToken ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : <FaPlus size={10}/>}
-        </button>
-      </div>
-      {knownTxTokens.length > 0 && (
-        <div style={{ display:'flex', flexWrap:'wrap', gap:'6px', marginTop:'8px' }}>
-          {knownTxTokens.map(t => (
-            <span key={t.address} style={{
-              fontSize:'10px', color:'#666', border:'1px solid #222', padding:'3px 7px',
-              display:'flex', alignItems:'center', gap:'6px',
-            }}>
-              {t.symbol}
-              <FaTrash size={8} style={{ cursor:'pointer', color:'#444' }}
-                onClick={() => removeCustomErc20Token(t.address)} title="Hapus dari daftar"/>
-            </span>
-          ))}
-        </div>
+
+      {txSendAssetMode === 'token' && (
+        <>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'5px' }}>
+            <label style={{ fontSize:'11px', color:'#555' }}>Token</label>
+            <button onClick={() => txFetchTokenBalances()} disabled={txTokensLoading || knownTxTokens.length === 0}
+              style={{ background:'none', border:'none', color:'#555', cursor:'pointer', fontSize:'10px', display:'flex', alignItems:'center', gap:'4px' }}>
+              <FaSync size={9} style={{ animation:txTokensLoading?'spin 1s linear infinite':undefined }}/> Refresh saldo
+            </button>
+          </div>
+
+          <button onClick={() => { setTxTokenPickerOpen(true); if (txDetectedTokens.length === 0) txLoadDetectedTokens(); }}
+            style={{ width:'100%', boxSizing:'border-box', display:'flex', alignItems:'center', gap:'10px', background:'#0d0d0d', border:'1px solid #262626', padding:'10px 12px', cursor:'pointer', textAlign:'left' }}>
+            {selectedTxToken
+              ? <div style={{ width:28, height:28, borderRadius:'50%', background:'#222', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'10px', color:'#888', fontWeight:'bold' }}>{selectedTxToken.symbol.slice(0,2).toUpperCase()}</div>
+              : <FaCoins color="#555"/>}
+            <div style={{ flex:1, minWidth:0 }}>
+              {selectedTxToken ? (
+                <>
+                  <div style={{ fontSize:'13px', fontWeight:'bold', color:'#eee' }}>{selectedTxToken.symbol}</div>
+                  <div style={{ fontSize:'10px', color:'#555', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{shortAddr(selectedTxToken.address)}</div>
+                </>
+              ) : (
+                <span style={{ color:'#555', fontSize:'12px' }}>Pilih Token {tokenStandardLabel}...</span>
+              )}
+            </div>
+            <FaSearch size={11} color="#444"/>
+          </button>
+
+          {knownTxTokens.length === 0 && (
+            <div style={{ fontSize:'10px', color:'#444', marginTop:'6px' }}>
+              Belum ada token {tokenStandardLabel} yang dikenal di network ini — buka "Pilih Token {tokenStandardLabel}" di atas buat pilih dari token yang terdeteksi, atau tambah manual via contract address.
+            </div>
+          )}
+
+          {knownTxTokens.length > 0 && (
+            <div style={{ display:'flex', flexWrap:'wrap', gap:'6px', marginTop:'8px' }}>
+              {knownTxTokens.map(t => {
+                const isActive = txAsset.toLowerCase() === t.address.toLowerCase();
+                const fetched = txTokens.find(x => x.address.toLowerCase() === t.address.toLowerCase());
+                const balLabel = fetched ? parseFloat(fetched.balance).toLocaleString(undefined,{maximumFractionDigits:6}) : (txTokensLoading ? '...' : '?');
+                return (
+                  <span key={t.address} onClick={() => setTxAsset(t.address)} style={{
+                    fontSize:'10px', color: isActive ? (selectedNetwork?.color ?? '#01a2ff') : '#666',
+                    border:`1px solid ${isActive ? (selectedNetwork?.color ?? '#01a2ff') : '#222'}`,
+                    padding:'3px 7px', display:'flex', alignItems:'center', gap:'6px', cursor:'pointer',
+                  }}>
+                    {t.symbol} · {balLabel}
+                    <FaTrash size={8} style={{ cursor:'pointer', color:'#444' }}
+                      onClick={e => { e.stopPropagation(); removeCustomErc20Token(t.address); }} title="Hapus dari daftar"/>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </>
       )}
     </div>
-  );
+  );};
 
   // Compact gas-fee control — collapsed by default (just shows the active mode),
   // expands into the full slow/standard/fast/manual grid on demand.
   // Shared Asset selector Solana (SOL native vs SPL token) — dipakai Kirim, Multi Send, Sweep.
+  // Symbol native coin yang lagi "aktif" buat kirim, berdasarkan chain yang
+  // dipilih di tab Kirim — dipakai buat nge-fetch harga fiat-nya.
+  const activeGasNativeSymbol = (() => {
+    switch (txChain) {
+      case 'evm':  return selectedNetwork?.symbol ?? null;
+      case 'sol':  return SOLANA_NETWORK.symbol;
+      case 'tron': return tronNetwork.symbol;
+      case 'axm':  return AXIOME_NETWORK.symbol;
+      case 'atom': return COSMOS_NETWORK.symbol;
+      case 'gram': return 'TON'; // GRAM = TON native, harga dari CoinGecko id "the-open-network"
+      default:     return null;
+    }
+  })();
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeGasNativeSymbol) { setGasFiatPrice(null); return; }
+    setGasFiatLoading(true);
+    fetchFiatPrice(activeGasNativeSymbol).then(price => {
+      if (cancelled) return;
+      setGasFiatPrice(price);
+      setGasFiatLoading(false);
+    }).catch(() => { if (!cancelled) setGasFiatLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeGasNativeSymbol]);
+
+  // Badge kecil ≈ $x.xx / ≈ Rp x.xxx dipasang di sebelah angka native fee —
+  // dipakai bareng-bareng sama semua box "Estimasi Fee" (EVM/Tron/Axiome/
+  // Cosmos/Gram). Kalau harga belum ke-fetch / symbol-nya gak dikenal,
+  // return null diam-diam (gak nampilin apa-apa, bukan error).
+  const renderGasFiatBadge = (nativeAmount: number | null | undefined) => {
+    if (nativeAmount === null || nativeAmount === undefined || !isFinite(nativeAmount) || nativeAmount <= 0) return null;
+    const label = formatGasFiat(nativeAmount, gasFiatPrice, gasFiatCcy);
+    return (
+      <span style={{ display:'inline-flex', alignItems:'center', gap:'6px' }}>
+        {label && (
+          <span style={{ color:'#888', fontFamily:'monospace', background:'#0a0a0a', border:'1px solid #1e1e1e', padding:'2px 6px' }}>
+            ≈ {label}
+          </span>
+        )}
+        {gasFiatLoading && !label && <span style={{ color:'#333', fontSize:'10px' }}>…</span>}
+        <button
+          onClick={e => { e.stopPropagation(); setGasFiatCcy(c => c === 'usd' ? 'idr' : 'usd'); }}
+          title="Ganti mata uang"
+          style={{ background:'none', border:'1px solid #262626', color:'#555', cursor:'pointer', fontSize:'9px', fontWeight:'bold', padding:'2px 5px', letterSpacing:'0.5px' }}>
+          {gasFiatCcy.toUpperCase()}
+        </button>
+      </span>
+    );
+  };
+
   const renderSolAssetSelector = () => (
     <div style={{ marginBottom:'16px' }}>
       <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'5px' }}>
@@ -6349,6 +7288,7 @@ export const WalletGenerator: React.FC = () => {
                 ≈ {currentFeeEth} {nativeSymbol}
               </span>
             )}
+            {currentFeeEth !== null && renderGasFiatBadge(parseFloat(currentFeeEth))}
           </div>
           <button onClick={() => setGasAdvanced(p => !p)}
             style={{ background:'none', border:'none', color:'#01a2ff', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'4px' }}>
@@ -6409,8 +7349,9 @@ export const WalletGenerator: React.FC = () => {
                     style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
                 </div>
                 {currentFeeEth !== null && (
-                  <div style={{ gridColumn:'1 / -1', fontSize:'10px', color:'#4caf50', fontFamily:'monospace' }}>
-                    Estimasi total fee ≈ {currentFeeEth} {nativeSymbol}
+                  <div style={{ gridColumn:'1 / -1', fontSize:'10px', color:'#4caf50', fontFamily:'monospace', display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                    <span>Estimasi total fee ≈ {currentFeeEth} {nativeSymbol}</span>
+                    {renderGasFiatBadge(parseFloat(currentFeeEth))}
                   </div>
                 )}
               </div>
@@ -6420,7 +7361,7 @@ export const WalletGenerator: React.FC = () => {
                 <input type="number" value={txGasLimit} min="21000"
                   onChange={e => setTxGasLimit(e.target.value)}
                   style={{ width:'100px', fontFamily:'monospace', fontSize:'12px' }}/>
-                <span style={{ fontSize:'10px', color:'#333' }}>def: 21000 (native tx)</span>
+                <span style={{ fontSize:'10px', color:'#333' }}>kosong = auto-estimate via RPC</span>
               </div>
             )}
           </div>
@@ -6461,6 +7402,7 @@ export const WalletGenerator: React.FC = () => {
                 ≈ {currentFeeAtom} ATOM
               </span>
             )}
+            {currentFeeAtom !== null && renderGasFiatBadge(parseFloat(currentFeeAtom))}
             {atomFeeEstimating && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
           </div>
           <button onClick={() => setAtomGasAdvanced(p => !p)}
@@ -6511,8 +7453,9 @@ export const WalletGenerator: React.FC = () => {
                   onChange={e => setAtomGasManual(e.target.value)}
                   style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
                 {currentFeeAtom !== null && (
-                  <div style={{ fontSize:'10px', color:'#4caf50', fontFamily:'monospace', marginTop:'6px' }}>
-                    Estimasi total fee ≈ {currentFeeAtom} ATOM
+                  <div style={{ fontSize:'10px', color:'#4caf50', fontFamily:'monospace', marginTop:'6px', display:'flex', alignItems:'center', gap:'8px', flexWrap:'wrap' }}>
+                    <span>Estimasi total fee ≈ {currentFeeAtom} ATOM</span>
+                    {renderGasFiatBadge(parseFloat(currentFeeAtom))}
                   </div>
                 )}
               </div>
@@ -6531,18 +7474,23 @@ export const WalletGenerator: React.FC = () => {
     FaExclamationTriangle, FaEye, FaEyeSlash, FaFaucet, FaFileCode, FaFileExport, FaFileImport, FaGasPump, 
     FaGlobe, FaHashtag, FaInfoCircle, FaKey, FaLayerGroup, FaLink, FaList, FaNetworkWired, FaPaperPlane, FaPlug, 
     FaPlus, FaQrcode, FaRandom, FaRocket, FaSearch, FaShieldAlt, FaSpinner, FaSync, FaTerminal, FaTrash, 
-    FaUpload, FaWallet, FaSlidersH, FaArrowRight, LAMPORTS_PER_SOL, SOLANA_NETWORK, SOLANA_NETWORKS, SmartContractConfig, 
+    FaUpload, FaWallet, FaSlidersH, FaArrowRight, FaTimes, FaCloudDownloadAlt,
+    showChainlistImport, setShowChainlistImport, chainlistSearch, setChainlistSearch,
+    chainlistLoading, chainlistError, filteredChainlistChains, openChainlistImport,
+    refreshChainlistImport, selectChainlistChain,
+    LAMPORTS_PER_SOL, SOLANA_NETWORK, SOLANA_NETWORKS, SmartContractConfig, 
     TOKEN_2022_PROGRAM_ID, TRON_NETWORKS, activeTab, addToMetaMask, addressCount, agHistory, airdropTasks, 
     atEditId, atEmptyForm, atFilter, atForm, atSearch, atShowForm, atStats, atomAddress, atomBalance, 
     atomConnect, atomConnected, atomConnecting, atomDisconnect, atomFeeEstimate, atomFeeEstimateError, 
     atomLoadingBal, atomMaxLoading, atomNetId, atomPrivKey, atomRefreshBalance, atomSend, atomSendAmt, atomSendTo, atomSending, atomSetMaxAmount, 
     atomStatus, atomWalletSel, axmAddress, axmBalance, axmConnect, axmConnected, axmConnecting, axmDisconnect, 
     axmFeeEstimate, axmFeeEstimateError, axmFeeEstimating, axmLoadingBal, axmMaxLoading, axmNetId, axmPrivKey, 
-    axmRefreshBalance, axmSend, axmSendAmt, axmSendTo, axmSending, axmSetMaxAmount, axmStatus, axmWalletSel, balCheckNetId, 
+    axmRefreshBalance, axmSend, axmSendAmt, axmSendTo, axmSending, axmSetMaxAmount, axmStatus, axmWalletSel, balCheckNetId, balCheckChain, setBalCheckChain,
     balChecking, balResults, batchSelectedIds, chainView, checkAllAtomBalances, checkAllAxmBalances, 
     checkAllGramBalances, gramAddress, gramBalance, gramConnect, gramConnected, gramConnecting, gramDisconnect, 
     gramLoadingBal, gramNetId, gramPrivKey, gramRefreshBalance, gramSend, gramSendAmt, gramSendTo, gramSending, 
-    gramStatus, gramWalletSel, handleGramWalletSel, setGramPrivKey, setGramSendAmt, setGramSendTo, 
+    gramMemo, setGramMemo, 
+    gramStatus, gramWalletSel, handleGramWalletSel, gramConnectWithWallet, setGramPrivKey, setGramSendAmt, setGramSendTo, 
     setGramWalletSel, switchGramNetwork, gramVersion, setGramVersion, 
     gramConnectVersion, setGramConnectVersion, switchGramVersion, 
     gramFeeEstimate, gramFeeEstimateError, gramFeeEstimating, gramMaxLoading, gramSetMaxAmount, 
@@ -6559,7 +7507,7 @@ export const WalletGenerator: React.FC = () => {
     gramSwapInsufficientBalance, gramSwapAvailableBalance, 
     gramSwapPickerOpen, setGramSwapPickerOpen, gramSwapPickerSearch, setGramSwapPickerSearch, 
     gramSwapPickAsset, gramSwapFlip, gramExecuteSwap, gramSwapMaxLoading, gramSwapSetMaxAmount, 
-    checkAllBalances, checkAllSolBalances, checkAllTronBalances, compileTcCustomContract, copiedKey, copyText, 
+    checkAllBalances, checkAllSolBalances, checkAllTronBalances, checkAllSuiBalances, checkAllAptBalances, compileTcCustomContract, copiedKey, copyText, 
     createSplToken, csvExporting, customMnemonic, deleteAirdropTask, deleteErc20Token, deleteSplToken, 
     deleteWallet, deployErc20Token, deployTrc20Token, deriveMore, editAirdropTask, entropyBits, erc20Tokens, 
     estimateTcEvmGas, estimateTcSolFee, estimateTcTronFee, ethers, execContract, execGasLimit, execLog, execMode, 
@@ -6570,7 +7518,7 @@ export const WalletGenerator: React.FC = () => {
     handleTcSolWalletSel, handleTcTronWalletSel, handleTcWalletSel, handleTronWalletSel, handleTxWalletSel, 
     highlightFaucet, importMode, tonImportMode, setTonImportMode, tonMnemonicPassword, setTonMnemonicPassword, isValidTronAddress, knownTxTokens, markTaskDone, netEditId, netForm, netSearch, 
     networks, openExecPanel, openPortfolio, openTronFaucet, refreshPendingTrc20, renderAssetSelector, 
-    renderAtomGasFeeBox, renderGasFeeBox, renderSolAssetSelector, revealedIds, revealedPKs, runExec, 
+    renderAtomGasFeeBox, renderGasFeeBox, renderGasFiatBadge, gasFiatCcy, setGasFiatCcy, renderSolAssetSelector, revealedIds, revealedPKs, runExec, 
     saveAirdropTask, saveNetwork, search, selectedNetwork, selectedSolToken, selectedTxToken, setActiveTab, 
     setAddressCount, setAgHistory, setAirdropTasks, setAtEditId, setAtFilter, setAtForm, setAtSearch, 
     setAtShowForm, setAtomPrivKey, setAtomSendAmt, setAtomSendTo, setAtomWalletSel, setAxmPrivKey, setAxmSendAmt, 
@@ -6596,6 +7544,7 @@ export const WalletGenerator: React.FC = () => {
     solCloseSelectedAccounts, solCloseToggleSelect, solCloseToggleSelectAll, solCloseTokenAccount, solClosingId, 
     solConnect, solConnected, solConnecting, solDisconnect, solFaucetLoading, solFetchCloseAccounts, solIsToken, 
     solIsValidAddr, solLoadingBal, solMaxLoading, solMode, solMultiAddRow, solMultiApplyEqual, solMultiEqualAmt, 
+    solDestAtaExists, solDestAtaChecking, SOL_TOKEN_ACCOUNT_RENT_LAMPORTS, 
     solMultiRemoveRow, solMultiRows, solMultiRunning, solMultiSend, solMultiUpdateRow, solNetId, solPrivKey, 
     solRefreshBalance, solRequestAirdrop, solSend, solSendAmt, solSendTo, solSending, solSetMaxAmount, solStatus, 
     solSweepAddFromBIP39, solSweepAddManualPK, solSweepAmtMode, solSweepDelayMs, solSweepDestAddr, 
@@ -6606,7 +7555,7 @@ export const WalletGenerator: React.FC = () => {
     sweepRun, sweepRunning, sweepSources, switchAtomNetwork, switchAxmNetwork, switchSolNetwork, 
     switchTronNetwork, tcChain, tcCompileError, tcCompiled, tcCompiling, tcCustomCtorArgs, tcCustomSolidity, 
     tcDecimals, tcDeployStatus, tcDeploying, tcEvmMode, tcGasError, tcGasFeeNative, tcGasLimitEst, tcGasLoading, 
-    tcGasPriceGwei,
+    tcGasPriceGwei, tcGasLimit, setTcGasLimit, tcGasSimFailed, setTcGasSimFailed,
     GRAM_WALLET_VERSIONS, GRAM_JETTON_DEPLOY_VALUE, gramTokens, deleteGramToken, createGramJetton, estimateTcGramFee,
     tcGramNetId, setTcGramNetId, tcGramVersion, setTcGramVersion, tcGramWalletSel, handleTcGramWalletSel,
     tcGramPrivKey, setTcGramPrivKey, tcGramName, setTcGramName, tcGramSymbol, setTcGramSymbol,
@@ -6630,7 +7579,16 @@ export const WalletGenerator: React.FC = () => {
     txBalance, txChain, txConnect, txConnected, txConnecting, txDisconnect, txIsToken, txLoadingBal, 
     txMaxLoading, txMode, txMultiAddRow, txMultiApplyEqual, txMultiEqualAmt, txMultiRemoveRow, txMultiRows, 
     txMultiRunning, txMultiSend, txMultiUpdateRow, txNetworkId, txPrivKey, txRefreshBalance, txSend, txSendAmt, 
-    txSendTo, txSending, txSetMaxAmount, txStatus, txStatusColor, txWalletSel, walletName, wallets
+    txSendTo, txSending, txSetMaxAmount, txStatus, txStatusColor, txWalletSel, txSendAssetMode, 
+    txWalletHistory, txWalletHistoryLoading, txWalletHistoryError, txLoadWalletHistory,
+    txTokenDetail, txTokenDetailLoading, txTokenDetailError,
+    walletName, wallets,
+    SUI_NETWORK, SUI_NETWORKS, suiAddress, suiBalance, suiConnect, suiConnected, suiConnecting, suiDisconnect,
+    suiLoadingBal, suiMaxLoading, suiNetId, suiPrivKey, suiRefreshBalance, suiSend, suiSendAmt, suiSendTo, suiSending,
+    suiSetMaxAmount, suiStatus, suiWalletSel, handleSuiWalletSel, switchSuiNetwork,
+    APTOS_NETWORK, APTOS_NETWORKS, aptAddress, aptBalance, aptConnect, aptConnected, aptConnecting, aptDisconnect,
+    aptLoadingBal, aptMaxLoading, aptNetId, aptPrivKey, aptRefreshBalance, aptSend, aptSendAmt, aptSendTo, aptSending,
+    aptSetMaxAmount, aptStatus, aptWalletSel, handleAptWalletSel, switchAptNetwork,
   };
 
   return (
@@ -6656,6 +7614,25 @@ export const WalletGenerator: React.FC = () => {
           activeMaster={gramJettonMaster}
           onSelect={gramSelectJetton}
           onRefresh={gramLoadDetectedJettons}
+        />
+      )}
+      {txTokenPickerOpen && (
+        <GramJettonPickerModal
+          onClose={() => { setTxTokenPickerOpen(false); setTxTokenPickerSearch(''); }}
+          search={txTokenPickerSearch}
+          setSearch={setTxTokenPickerSearch}
+          jettons={txDetectedTokens}
+          loading={txDetectedTokensLoading}
+          activeMaster={txAsset}
+          onSelect={txSelectDetectedToken}
+          onRefresh={txLoadDetectedTokens}
+          assetLabel={`Token ${getEvmTokenStandardLabel(selectedNetwork?.chainId)}`}
+          error={txDetectedTokensError}
+          onAddCustom={addCustomErc20Token}
+          customAddrValue={txAddTokenAddr}
+          setCustomAddrValue={setTxAddTokenAddr}
+          addingCustom={txAddingToken}
+          customAddrPlaceholder="Contract address token (0x...)"
         />
       )}
       {gramSwapPickerOpen && (
