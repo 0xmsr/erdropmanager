@@ -1,35 +1,87 @@
 // @ts-nocheck
-// Semua state & handler di file ini datang dari ctx (Record<string, any>) yang
-// diteruskan dari Walletgenerator.tsx, jadi TypeScript tidak bisa menurunkan
-// tipe parameter callback (.map/.filter/dst) di sini secara otomatis.
-// Type-safety sesungguhnya tetap ada penuh di state/handler aslinya
-// (Walletgenerator.tsx) dan di ./types.ts — file ini murni JSX passthrough.
 
 import React from 'react';
 import type { WalletGeneratorCtx, ChainKind } from './types';
 import { QLENGTH_OPTIONS, WALLET_CHAIN_OPTIONS } from './constants';
 import { GRAM_WALLET_VERSIONS } from './network/Gramnet';
 
-/**
- * WalletsTab: dipecah dari Walletgenerator.tsx (tab "WalletsTab").
- * Semua state, handler, dan helper dari komponen induk diteruskan lewat prop `ctx`
- * (lihat WalletGeneratorCtx di ../types.ts) supaya logic tetap terpusat di
- * Walletgenerator.tsx tanpa perlu re-wiring ratusan handler satu per satu.
- */
 export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
   const {
     FaChartBar, FaCheckCircle, FaChevronDown, FaChevronUp, FaCoins, FaCopy, FaEye, FaEyeSlash, 
-    FaFileExport, FaFileImport, FaKey, FaNetworkWired, FaPlus, FaQrcode, FaRandom, FaSearch, 
-    FaShieldAlt, FaSync, FaTrash, FaWallet, activeTab, addressCount, balCheckNetId, balChecking, 
+    FaFileExport, FaFileImport, FaKey, FaNetworkWired, FaPaperPlane, FaPlus, FaQrcode, FaRandom, FaSearch, 
+    FaShieldAlt, FaSync, FaTrash, FaWallet, activeTab, addressCount, balCheckNetId, balCheckChain, setBalCheckChain, balChecking, 
     balResults, chainView, checkAllAtomBalances, checkAllAxmBalances, checkAllBalances, checkAllGramBalances, 
-    checkAllSolBalances, checkAllTronBalances, copiedKey, copyText, csvExporting, customMnemonic, 
+    checkAllSolBalances, checkAllTronBalances, checkAllSuiBalances, checkAllAptBalances, copiedKey, copyText, csvExporting, customMnemonic, 
     deleteWallet, deriveMore, entropyBits, expandedId, exportAllCSV, exportWallet, filteredWallets, 
-    generateWallet, generating, importMode, networks, openPortfolio, revealedIds, revealedPKs, search, 
-    setAddressCount, setBalCheckNetId, setBalResults, setChainView, setCustomMnemonic, setEntropyBits, 
+    generateWallet, generating, handleAtomWalletSel, handleAxmWalletSel, 
+    handleSolWalletSel, handleTronWalletSel, handleTxWalletSel, handleSuiWalletSel, handleAptWalletSel, gramConnectWithWallet, importMode, networks, openPortfolio, 
+    revealedIds, revealedPKs, search, 
+    setActiveTab, setAddressCount, setBalCheckNetId, setBalResults, setChainView, setCustomMnemonic, setEntropyBits, 
     setExpandedId, setImportMode, setQrAddress, setRevealedIds, setRevealedPKs, setSearch, 
+    setSolMode, setTronMode, setTxChain, setTxMode, setTxNetworkId,
     setWalletName, walletName, wallets, gramVersion, setGramVersion, switchGramVersion,
     tonImportMode, setTonImportMode, tonMnemonicPassword, setTonMnemonicPassword,
   } = ctx;
+
+  const findAddressOwner = (address: string, chain: string): { wi: number; ai: number } | null => {
+    for (let wi = 0; wi < wallets.length; wi++) {
+      const w = wallets[wi];
+      const list =
+        chain === 'sol'  ? w.solAddresses :
+        chain === 'tron' ? w.tronAddresses :
+        chain === 'atom' ? w.atomAddresses :
+        chain === 'axm'  ? w.axmAddresses :
+        chain === 'sui'  ? w.suiAddresses :
+        chain === 'apt'  ? w.aptAddresses :
+        chain === 'gram' ? (w.gramAddress ? [{ index: 0, address: w.gramAddress.address }] : []) :
+        w.addresses;
+      const found = (list || []).find((a: any) => a.address === address);
+      if (found) return { wi, ai: found.index };
+    }
+    return null;
+  };
+
+  const goToSendAddress = (address: string) => {
+    const owner = findAddressOwner(address, balCheckChain);
+    if (!owner) return;
+    const sel = `${owner.wi},${owner.ai}`;
+    setActiveTab('transfer');
+    setTxChain(balCheckChain);
+    if (balCheckChain === 'evm') {
+      setTxMode('single');
+      setTxNetworkId(balCheckNetId);
+      handleTxWalletSel(sel);
+    } else if (balCheckChain === 'sol') {
+      setSolMode('single');
+      handleSolWalletSel(sel);
+    } else if (balCheckChain === 'tron') {
+      setTronMode('single');
+      handleTronWalletSel(sel);
+    } else if (balCheckChain === 'atom') {
+      handleAtomWalletSel(sel);
+    } else if (balCheckChain === 'axm') {
+      handleAxmWalletSel(sel);
+    } else if (balCheckChain === 'sui') {
+      handleSuiWalletSel(sel);
+    } else if (balCheckChain === 'apt') {
+      handleAptWalletSel(sel);
+    } else if (balCheckChain === 'gram') {
+      gramConnectWithWallet(owner.wi);
+    }
+  };
+
+  const BAL_CHECK_CHAINS: Record<string, { label: string; color: string; textColor: string; action: () => void; title: string }> = {
+    evm:  { label: `Cek Semua ${networks.find(n => n.id === balCheckNetId)?.symbol || 'EVM'}`, color:'#4caf50', textColor:'#000', action: checkAllBalances, title:'Cek saldo EVM semua address (sesuai network yang dipilih)' },
+    sol:  { label: 'Cek Semua SOL',  color:'#9945FF', textColor:'#000', action: checkAllSolBalances,  title:'Cek saldo SOL semua address Solana yang tersimpan' },
+    tron: { label: 'Cek Semua TRX',  color:'#EF0027', textColor:'#fff', action: checkAllTronBalances, title:'Cek saldo TRX semua address Tron yang tersimpan' },
+    atom: { label: 'Cek Semua ATOM', color:'#2E3148', textColor:'#fff', action: checkAllAtomBalances, title:'Cek saldo ATOM semua address Cosmos Hub yang tersimpan' },
+    axm:  { label: 'Cek Semua AXM',  color:'#75bbe9', textColor:'#fff', action: checkAllAxmBalances,  title:'Cek saldo AXM semua address Axiome yang tersimpan' },
+    gram: { label: 'Cek Semua GRAM', color:'#0088CC', textColor:'#fff', action: checkAllGramBalances, title:'Cek saldo TON semua address Gram yang tersimpan' },
+    sui:  { label: 'Cek Semua SUI',  color:'#4DA2FF', textColor:'#000', action: checkAllSuiBalances,  title:'Cek saldo SUI semua address Sui yang tersimpan' },
+    apt:  { label: 'Cek Semua APT',  color:'#00D2AA', textColor:'#000', action: checkAllAptBalances,  title:'Cek saldo APT semua address Aptos yang tersimpan' },
+  };
+  const balCheckCfg = BAL_CHECK_CHAINS[balCheckChain] || BAL_CHECK_CHAINS.evm;
+
 
   return (
         <>
@@ -123,52 +175,38 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                 <span style={{ fontSize:'11px', color:'#4caf50', textTransform:'uppercase', letterSpacing:'1px', whiteSpace:'nowrap', display:'flex', alignItems:'center', gap:'5px' }}>
                   <FaChartBar size={11}/> Cek Balance Semua Wallet
                 </span>
-                <select value={balCheckNetId} onChange={e => { setBalCheckNetId(e.target.value); setBalResults({}); }}
-                  style={{ fontSize:'12px', padding:'5px 8px', fontFamily:'monospace', minWidth:'140px', maxWidth:'100%', boxSizing:'border-box' }}>
-                  {networks.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
+                <select value={balCheckChain} onChange={e => { setBalCheckChain(e.target.value as any); setBalResults({}); }}
+                  style={{ fontSize:'12px', padding:'5px 8px', minWidth:'120px', maxWidth:'100%', boxSizing:'border-box' }}>
+                  <option value="evm">EVM</option>
+                  <option value="sol">Solana (SOL)</option>
+                  <option value="tron">Tron (TRX)</option>
+                  <option value="atom">Cosmos Hub (ATOM)</option>
+                  <option value="axm">Axiome (AXM)</option>
+                  <option value="gram">Gram / TON</option>
+                  <option value="sui">Sui (SUI)</option>
+                  <option value="apt">Aptos (APT)</option>
                 </select>
+                {balCheckChain === 'evm' && (
+                  <select value={balCheckNetId} onChange={e => { setBalCheckNetId(e.target.value); setBalResults({}); }}
+                    style={{ fontSize:'12px', padding:'5px 8px', fontFamily:'monospace', minWidth:'140px', maxWidth:'100%', boxSizing:'border-box' }}>
+                    {networks.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
+                  </select>
+                )}
+                {balCheckChain === 'gram' && (
+                  <select value={gramVersion} onChange={e => { setGramVersion(e.target.value as any); setBalResults({}); }}
+                    title="Versi wallet contract TON yang dipakai saat generate wallet Gram baru, DAN dipakai 'Cek Semua GRAM' — kalau beda dari versi yang tersimpan di suatu wallet, saldo dicek dari address versi ini (diturunkan on-the-fly, tidak mengubah address yang tersimpan)"
+                    style={{ fontSize:'12px', padding:'5px 8px', minWidth:'140px', maxWidth:'100%', boxSizing:'border-box' }}>
+                    {GRAM_WALLET_VERSIONS.map(o => <option key={o.id} value={o.id}>{o.label}</option>)}
+                  </select>
+                )}
               </div>
               <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', width:'100%', boxSizing:'border-box' }}>
-                <button onClick={checkAllBalances} disabled={balChecking || wallets.length === 0}
-                  style={{ background: balChecking ? '#1a2a1a' : '#4caf50', color:'#000', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
+                <button onClick={balCheckCfg.action} disabled={balChecking || wallets.length === 0}
+                  title={balCheckCfg.title}
+                  style={{ background: balChecking ? '#1a2a1a' : balCheckCfg.color, color:balCheckCfg.textColor, border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'150px', boxSizing:'border-box' }}>
                   {balChecking
                     ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
-                    : <><FaSync size={10}/> Cek Semua {networks.find(n => n.id === balCheckNetId)?.symbol || 'EVM'}</>}
-                </button>
-                <button onClick={checkAllSolBalances} disabled={balChecking || wallets.length === 0}
-                  title="Cek saldo SOL semua address Solana yang tersimpan"
-                  style={{ background: balChecking ? '#1a1a2a' : '#9945FF', color:'#000', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
-                  {balChecking
-                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
-                    : <><FaSync size={10}/> Cek Semua SOL</>}
-                </button>
-                <button onClick={checkAllTronBalances} disabled={balChecking || wallets.length === 0}
-                  title="Cek saldo TRX semua address Tron yang tersimpan"
-                  style={{ background: balChecking ? '#2a1a1a' : '#EF0027', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
-                  {balChecking
-                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
-                    : <><FaSync size={10}/> Cek Semua TRX</>}
-                </button>
-                <button onClick={checkAllAtomBalances} disabled={balChecking || wallets.length === 0}
-                  title="Cek saldo ATOM semua address Cosmos Hub yang tersimpan"
-                  style={{ background: balChecking ? '#15161d' : '#2E3148', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
-                  {balChecking
-                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
-                    : <><FaSync size={10}/> Cek Semua ATOM</>}
-                </button>
-                <button onClick={checkAllAxmBalances} disabled={balChecking || wallets.length === 0}
-                  title="Cek saldo AXM semua address Axiome yang tersimpan"
-                  style={{ background: balChecking ? '#181229' : '#75bbe9', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
-                  {balChecking
-                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
-                    : <><FaSync size={10}/> Cek Semua AXM</>}
-                </button>
-                <button onClick={checkAllGramBalances} disabled={balChecking || wallets.length === 0}
-                  title="Cek saldo TON semua address Gram yang tersimpan"
-                  style={{ background: balChecking ? '#0d222b' : '#0088CC', color:'#fff', border:'none', padding:'8px 16px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity: wallets.length === 0 ? 0.4 : 1, flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
-                  {balChecking
-                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Checking...</>
-                    : <><FaSync size={10}/> Cek Semua GRAM</>}
+                    : <><FaSync size={10}/> {balCheckCfg.label}</>}
                 </button>
                 <button onClick={exportAllCSV} disabled={csvExporting || wallets.length === 0}
                   style={{ background:'#111', color: wallets.length === 0 ? '#333' : '#f3ba2f', border:`1px solid ${wallets.length === 0 ? '#222' : '#f3ba2f44'}`, padding:'8px 14px', cursor: wallets.length === 0 ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', flex:'1 1 auto', minWidth:'110px', boxSizing:'border-box' }}>
@@ -184,6 +222,14 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                     <span style={{ color: r.error ? '#f44336' : r.loading ? '#888' : '#4caf50', fontWeight:'bold' }}>
                       {r.loading ? '⟳' : r.balance}
                     </span>
+                    <button onClick={() => goToSendAddress(addr)} title="Kirim dari address ini"
+                      style={{ background:'none', border:'none', color:'#01a2ff', cursor:'pointer', padding:'2px', display:'flex', alignItems:'center' }}>
+                      <FaPaperPlane size={10}/>
+                    </button>
+                    <button onClick={() => setQrAddress(addr)} title="Terima (tampilkan QR & address)"
+                      style={{ background:'none', border:'none', color:'#4caf50', cursor:'pointer', padding:'2px', display:'flex', alignItems:'center' }}>
+                      <FaQrcode size={10}/>
+                    </button>
                   </span>
                 ))}
               </div>
@@ -201,8 +247,8 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
               const isExpanded      = expandedId === w.id;
               const isMnemonicShown = revealedIds.has(w.id);
               const activeChain: ChainKind = chainView[w.id] || (w.isTonNative ? 'gram' : 'evm');
-              const activeList  = activeChain === 'sol' ? (w.solAddresses || []) : activeChain === 'tron' ? (w.tronAddresses || []) : activeChain === 'axm' ? (w.axmAddresses || []) : activeChain === 'atom' ? (w.atomAddresses || []) : activeChain === 'gram' ? (w.gramAddress ? [{ index: 0, address: w.gramAddress.address, privateKey: w.gramAddress.privateKey }] : []) : w.addresses;
-              const activePath  = activeChain === 'sol' ? "m/44'/501'/x'/0'" : activeChain === 'tron' ? "m/44'/195'/0'/0/x" : activeChain === 'axm' ? "m/44'/118'/x'/0/0" : activeChain === 'atom' ? "m/44'/118'/x'/0/0" : activeChain === 'gram' ? "m/44'/607'/0'" : "m/44'/60'/0'/0/x";
+              const activeList  = activeChain === 'sol' ? (w.solAddresses || []) : activeChain === 'tron' ? (w.tronAddresses || []) : activeChain === 'axm' ? (w.axmAddresses || []) : activeChain === 'atom' ? (w.atomAddresses || []) : activeChain === 'sui' ? (w.suiAddresses || []) : activeChain === 'apt' ? (w.aptAddresses || []) : activeChain === 'gram' ? (w.gramAddress ? [{ index: 0, address: w.gramAddress.address, privateKey: w.gramAddress.privateKey }] : []) : w.addresses;
+              const activePath  = activeChain === 'sol' ? "m/44'/501'/x'/0'" : activeChain === 'tron' ? "m/44'/195'/0'/0/x" : activeChain === 'axm' ? "m/44'/118'/x'/0/0" : activeChain === 'atom' ? "m/44'/118'/x'/0/0" : activeChain === 'sui' ? "m/44'/784'/x'/0'/0'" : activeChain === 'apt' ? "m/44'/637'/x'/0'/0'" : activeChain === 'gram' ? "m/44'/607'/0'" : "m/44'/60'/0'/0/x";
               return (
                 <div key={w.id} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #01a2ff', overflow:'hidden' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:'10px', padding:'14px 16px', cursor:'pointer' }}
@@ -301,7 +347,7 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                       <div>
                         <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px' }}>
                           <FaShieldAlt style={{ marginRight:'5px' }}/>
-                          Derived Addresses {activeChain === 'sol' ? '(Solana · ed25519)' : activeChain === 'tron' ? '(Tron · secp256k1, base58check)' : activeChain === 'axm' ? '(Axiome · secp256k1, bech32 "axm1...")' : activeChain === 'atom' ? '(Cosmos Hub · secp256k1, bech32 "cosmos1...")' : activeChain === 'gram' ? `(Gram/TON · ed25519, wallet ${w.gramAddress?.version === 'v4' ? 'V4R2' : 'W5/v5r1'})` : '(EIP-55 Checksummed)'}
+                          Derived Addresses {activeChain === 'sol' ? '(Solana · ed25519)' : activeChain === 'tron' ? '(Tron · secp256k1, base58check)' : activeChain === 'axm' ? '(Axiome · secp256k1, bech32 "axm1...")' : activeChain === 'atom' ? '(Cosmos Hub · secp256k1, bech32 "cosmos1...")' : activeChain === 'sui' ? '(Sui · ed25519)' : activeChain === 'apt' ? '(Aptos · ed25519)' : activeChain === 'gram' ? `(Gram/TON · ed25519, wallet ${w.gramAddress?.version === 'v4' ? 'V4R2' : 'W5/v5r1'})` : '(EIP-55 Checksummed)'}
                         </div>
 
                         {activeList.length === 0 && activeChain === 'sol' && (
@@ -322,6 +368,16 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         {activeList.length === 0 && activeChain === 'atom' && (
                           <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
                             Belum ada address Cosmos Hub — sedang diturunkan dari mnemonic yang sama (async), atau klik "Turunkan Address" di bawah.
+                          </div>
+                        )}
+                        {activeList.length === 0 && activeChain === 'sui' && (
+                          <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
+                            Belum ada address Sui — klik "Turunkan Address" di bawah untuk generate dari mnemonic yang sama.
+                          </div>
+                        )}
+                        {activeList.length === 0 && activeChain === 'apt' && (
+                          <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
+                            Belum ada address Aptos — klik "Turunkan Address" di bawah untuk generate dari mnemonic yang sama.
                           </div>
                         )}
                         {activeList.length === 0 && activeChain === 'gram' && (
