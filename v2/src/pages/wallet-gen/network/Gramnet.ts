@@ -175,6 +175,32 @@ function markGramEndpointUnhealthy(endpoint: string, ms: number = GRAM_COOLDOWN_
   gramEndpointCooldown[endpoint] = Date.now() + ms;
 }
 
+// Endpoint dari @orbs-network/ton-access itu gateway pihak ketiga yang
+// mem-balance beban ke banyak node di belakang layar — network yang diminta
+// cuma parameter permintaan, bukan sesuatu yang bisa kita verifikasi dari
+// URL-nya sendiri (host-nya generik, "...ton.access.orbs.network", sama
+// untuk mainnet maupun testnet). Kalau gateway ini lagi degradasi / salah
+// rute, dia bisa diam-diam balikin endpoint jaringan yang SALAH tanpa error
+// apapun — dan karena hasilnya di-cache 4 menit (GRAM_ENDPOINT_CACHE_MS),
+// sekali salah, semua cek saldo dalam window itu ikut salah baca saldo
+// testnet padahal yang dicek mainnet (atau sebaliknya).
+//
+// Endpoint langsung ke toncenter.com/testnet.toncenter.com (net.apiUrls)
+// TIDAK punya masalah ini — jaringannya sudah pasti benar cuma dari hostname­
+// nya sendiri. Makanya endpoint itu yang sekarang dicoba DULUAN; endpoint
+// dinamis dari ton-access cuma dipakai sebagai cadangan tambahan kalau
+// toncenter langsung gagal/kena rate-limit — bukan yang utama seperti
+// sebelumnya.
+function looksLikeWrongNetworkEndpoint(url: string, wantTestnet: boolean): boolean {
+  const host = gramHostOf(url).toLowerCase();
+  const mentionsTestnet = host.includes('testnet');
+  // Cuma dibuang kalau host-nya secara eksplisit menyebut jaringan yang
+  // berlawanan dengan yang diminta — host generik ton-access yang tidak
+  // menyebut apa-apa tetap dianggap "kemungkinan aman" karena memang gak
+  // bisa diverifikasi lewat URL doang.
+  return wantTestnet ? false : mentionsTestnet;
+}
+
 async function resolveGramEndpoints(net: GramNetworkCfg): Promise<string[]> {
   let urls: string[];
   const cached = gramEndpointCache[net.id];
@@ -187,8 +213,12 @@ async function resolveGramEndpoints(net: GramNetworkCfg): Promise<string[]> {
         getHttpEndpoints({ network: net.isTestnet ? 'testnet' : 'mainnet' }),
         new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 5000)),
       ]);
-      if (Array.isArray(orbsEndpoints) && orbsEndpoints.length > 0) {
-        urls = [...orbsEndpoints, ...net.apiUrls];
+      const safeOrbsEndpoints = (Array.isArray(orbsEndpoints) ? orbsEndpoints : [])
+        .filter(u => !looksLikeWrongNetworkEndpoint(u, net.isTestnet));
+      if (safeOrbsEndpoints.length > 0) {
+        // toncenter langsung duluan (jaringannya pasti benar), ton-access
+        // cuma cadangan tambahan.
+        urls = [...net.apiUrls, ...safeOrbsEndpoints];
       }
     } catch { /* Orbs gagal resolve (mis. offline) — tetap jalan pakai toncenter langsung */ }
     gramEndpointCache[net.id] = { urls, expiresAt: Date.now() + GRAM_ENDPOINT_CACHE_MS };
@@ -252,6 +282,415 @@ export async function getGramClient(net: GramNetworkCfg): Promise<TonClient> {
   throw lastErr || new Error(`Tidak dapat connect ke ${net.name}. Cek koneksi / RPC.`);
 }
 
+// ── Status jaringan (masterchain seqno terkini) — dipakai buat panel "live"
+//    di tab GRAM Explorer, mirip panel "Latest Blocks" di sisi EVM. TON gak
+//    punya konsep single "block number" linear kayak EVM (tiap workchain/shard
+//    punya seqno sendiri), jadi yang dipakai sebagai acuan "block terkini"
+//    adalah seqno block masterchain (workchain -1) — itu yang juga dipakai
+//    Tonscan sebagai referensi block utama. ──
+export interface GramMasterchainInfo {
+  workchain: number;
+  shard: string;
+  latestSeqno: number;
+}
+
+export async function getGramMasterchainInfo(net: GramNetworkCfg): Promise<GramMasterchainInfo> {
+  const endpoints = await resolveGramEndpoints(net);
+  let lastErr: any;
+  for (const endpoint of endpoints) {
+    try {
+      await gramThrottleFor(endpoint);
+      const client = new TonClient({ endpoint, apiKey: net.apiKey });
+      const info = await withGramRetry(() => Promise.race([
+        client.getMasterchainInfo(),
+        new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 8000)),
+      ]));
+      return { workchain: info.workchain, shard: info.shard, latestSeqno: info.latestSeqno };
+    } catch (e) { lastErr = e; markGramEndpointUnhealthy(endpoint); }
+  }
+  throw lastErr || new Error(`Tidak dapat ambil info masterchain ${net.name}.`);
+}
+
+// Format URL block Tonscan: https://tonscan.org/block/<workchain>:<shard>:<seqno>
+export function gramMasterchainBlockExplorerUrl(net: GramNetworkCfg, info: GramMasterchainInfo): string {
+  return `${net.explorerUrl}/block/${info.workchain}:${info.shard}:${info.latestSeqno}`;
+}
+
+// ── "Masterchain Detail" — daftar block masterchain terbaru & feed transaksi
+//    terbaru jaringan (lintas workchain), pelengkap seqno tunggal di atas.
+//    Mirip semangatnya panel "Latest Blocks" / "Latest Transactions" di
+//    homepage Etherscan, tapi buat TON. Sumber: TonCenter REST v3, endpoint
+//    `/blocks` & `/transactions` TANPA filter `account` (beda dari
+//    fetchGramTxHistory yang selalu di-scope ke 1 address). ──
+export interface GramLatestBlock {
+  workchain: number;
+  shard: string;
+  seqno: number;
+  timestamp: number; // gen_utime, unix seconds
+  rootHash: string;
+  fileHash: string;
+  startLt: string;
+  endLt: string;
+  explorerUrl: string;
+}
+
+export async function fetchGramLatestBlocks(net: GramNetworkCfg, limit = 10): Promise<GramLatestBlock[]> {
+  const params = new URLSearchParams({
+    workchain: '-1', // masterchain aja -- ini yang jadi acuan "block terkini" di seluruh app ini
+    limit: String(Math.min(Math.max(limit, 1), 50)),
+    sort: 'desc',
+  });
+  let json: any;
+  try {
+    const res = await Promise.race([
+      fetch(`${net.restBase}/api/v3/blocks?${params.toString()}`),
+      new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 10000)),
+    ]) as Response;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    json = await res.json();
+  } catch (e: any) {
+    throw new Error(`Gagal ambil daftar block dari TonCenter.${e?.message ? ` (${e.message})` : ' Coba lagi beberapa saat.'}`);
+  }
+
+  const rawBlocks: any[] = Array.isArray(json?.blocks) ? json.blocks : [];
+  return rawBlocks.map((b): GramLatestBlock => ({
+    workchain: Number(b?.workchain ?? -1),
+    shard: String(b?.shard ?? ''),
+    seqno: Number(b?.seqno ?? 0),
+    timestamp: Number(b?.gen_utime ?? 0),
+    rootHash: b?.root_hash ?? '',
+    fileHash: b?.file_hash ?? '',
+    startLt: String(b?.start_lt ?? ''),
+    endLt: String(b?.end_lt ?? ''),
+    explorerUrl: `${net.explorerUrl}/block/${Number(b?.workchain ?? -1)}:${b?.shard ?? ''}:${Number(b?.seqno ?? 0)}`,
+  }));
+}
+
+// ── Klasifikasi tipe akun (interface) & tipe transaksi (action) ala
+//    Tonscan/TonViewer. Datanya BUKAN tebakan lokal — "interfaces" datang
+//    dari address_book TonCenter v3 (deteksi kode kontrak per address), dan
+//    tipe transaksi datang dari field "type" endpoint /api/v3/actions
+//    (klasifikasi resmi TonCenter atas trace transaksi). ──
+export const GRAM_ACCOUNT_TYPES: Record<string, { label: string; color: string; description: string }> = {
+  undetected:             { label: 'Tidak Terdeteksi',        color: '#888', description: 'Kontrak punya kode, tapi code hash-nya belum dikenali template manapun oleh TonCenter.' },
+  wallet_v4r2:            { label: 'Wallet v4R2',             color: '#4caf50', description: 'Wallet standar v4R2 — versi paling umum dipakai (Tonkeeper, Tonhub, dst).' },
+  jetton_wallet_v2:       { label: 'Jetton Wallet v2',         color: '#01a2ff', description: 'Kontrak jetton wallet standar TEP-74 versi 2 — nyimpen saldo 1 jenis token milik 1 owner.' },
+  nft_item:               { label: 'NFT Item',                color: '#e81899', description: 'Kontrak 1 item NFT (TEP-62) — bagian dari sebuah NFT collection.' },
+  jetton_wallet:          { label: 'Jetton Wallet',            color: '#01a2ff', description: 'Kontrak jetton wallet standar TEP-74 — nyimpen saldo 1 jenis token milik 1 owner.' },
+  wallet_v5r1:            { label: 'Wallet v5R1',              color: '#4caf50', description: 'Wallet standar v5R1 (W5) — versi terbaru, support gasless & multi-message.' },
+  jetton_wallet_v1:       { label: 'Jetton Wallet v1',         color: '#01a2ff', description: 'Kontrak jetton wallet TEP-74 versi lama (v1).' },
+  uninited:               { label: 'Belum Aktif',              color: '#555', description: 'Address ada di address book, tapi belum pernah dideploy / gak punya kode kontrak (uninitialized).' },
+  jetton_wallet_governed: { label: 'Jetton Wallet (Governed)', color: '#01a2ff', description: 'Jetton wallet dari jetton yang punya admin/governance khusus (mis. bisa di-freeze admin).' },
+  wallet_v3r2:            { label: 'Wallet v3R2',              color: '#4caf50', description: 'Wallet standar v3R2 — versi lama, masih banyak dipakai wallet lawas.' },
+  other:                  { label: 'Lainnya',                  color: '#aaa', description: 'Interface terdeteksi tapi di luar daftar kategori umum di atas.' },
+};
+
+// Urutan prioritas kalau 1 address kebetulan punya >1 interface terdeteksi.
+const GRAM_ACCOUNT_TYPE_PRIORITY = [
+  'jetton_wallet_governed', 'jetton_wallet_v2', 'jetton_wallet_v1', 'jetton_wallet',
+  'nft_item', 'wallet_v5r1', 'wallet_v4r2', 'wallet_v3r2', 'uninited',
+];
+
+export function classifyGramAccountType(interfaces: string[] | null | undefined): string {
+  if (!interfaces || interfaces.length === 0) return 'undetected';
+  for (const key of GRAM_ACCOUNT_TYPE_PRIORITY) {
+    if (interfaces.includes(key)) return key;
+  }
+  if (interfaces.includes('undetected')) return 'undetected';
+  return GRAM_ACCOUNT_TYPES[interfaces[0]] ? interfaces[0] : 'other';
+}
+
+export const GRAM_TX_TYPES: Record<string, { label: string; color: string; description: string }> = {
+  SimpleTransfer:           { label: 'Transfer GRAM',             color: '#4caf50', description: 'Transfer TON/GRAM polos ke address lain, tanpa payload khusus.' },
+  unknown:                  { label: 'Tidak Diketahui',            color: '#555', description: 'Tipe belum berhasil diklasifikasi (lookup Actions API gagal/timeout, atau belum diindeks).' },
+  TextComment:              { label: 'Comment / Memo',             color: '#61dfff', description: 'Transfer yang menyertakan pesan teks (op 0x00000000) — biasanya buat memo exchange/CEX.' },
+  Excess:                   { label: 'Excess (Sisa Gas)',          color: '#888', description: 'Pesan balasan otomatis dari kontrak, ngembaliin sisa gas yang gak kepake.' },
+  WalletSignedExternalV5R1: { label: 'Wallet v5R1 Signed',         color: '#e8a119', description: 'Pesan eksternal yang ditandatangani & dieksekusi oleh wallet v5R1 (W5) milik user.' },
+  JettonTransfer:           { label: 'Jetton Transfer',            color: '#01a2ff', description: 'Transfer token (jetton) dari 1 jetton wallet ke jetton wallet lain.' },
+  JettonInternalTransfer:   { label: 'Jetton Internal Transfer',   color: '#01a2ff', description: 'Pesan internal jetton wallet → jetton wallet tujuan buat nge-mint saldo si penerima.' },
+  JettonNotify:             { label: 'Jetton Notify',              color: '#01a2ff', description: 'Notifikasi ke kontrak penerima (mis. DEX) bahwa jetton sudah masuk — dipicu abis transfer.' },
+  WalletSignedV4:           { label: 'Wallet v4 Signed',           color: '#e8a119', description: 'Pesan eksternal yang ditandatangani & dieksekusi oleh wallet v4 milik user.' },
+  TeleitemStartAuction:     { label: 'Lelang Domain .ton',         color: '#e81899', description: 'Mulai lelang NFT domain .ton (Telemint/DNS auction).' },
+  other:                    { label: 'Lainnya',                    color: '#aaa', description: 'Tipe action terdeteksi tapi di luar daftar kategori umum di atas.' },
+};
+
+export function classifyGramTxType(actionType: string | null | undefined): string {
+  if (!actionType) return 'unknown';
+  return GRAM_TX_TYPES[actionType] ? actionType : 'other';
+}
+
+export interface GramLatestTx {
+  hash: string;
+  timestamp: number;
+  workchain: number;
+  fromAddress: string | null;
+  toAddress: string | null;
+  amountGram: number | null;
+  totalFeeGram: number;
+  success: boolean;
+  comment: string;
+  explorerUrl: string;
+  // Key di GRAM_TX_TYPES, hasil klasifikasi TonCenter Actions API (best-effort —
+  // fallback 'unknown' kalau lookup actions gagal/timeout).
+  txType: string;
+  // ── Detail tambahan ala Etherscan-lite, buat panel "Akun Terbaru & Transaksi
+  //    Terbaru" yang lebih informatif ──
+  lt: string | null;              // logical time transaksi (urutan pasti di dalam 1 account)
+  opCode: string | null;          // opcode pesan masuk (hex), ex. "0x00000000" = simple transfer/comment
+  outMsgCount: number;            // jumlah pesan keluar dari transaksi ini
+  computeExitCode: number | null; // exit code compute phase (0 = sukses)
+  accountBalanceAfter: number | null; // saldo account SETELAH transaksi ini (GRAM)
+}
+
+// -- Feed transaksi terbaru LINTAS WORKCHAIN (bukan punya 1 address kayak
+//    fetchGramTxHistory) — dipakai buat nunjukin denyut jaringan GRAM secara
+//    umum. Karena gak ada 1 "owner" yang jadi acuan in/out, from/to diambil
+//    apa adanya dari in_msg (kalau ada) & out_msgs pertama. --
+export async function fetchGramLatestTransactions(net: GramNetworkCfg, limit = 10): Promise<GramLatestTx[]> {
+  const params = new URLSearchParams({
+    limit: String(Math.min(Math.max(limit, 1), 50)),
+    sort: 'desc',
+  });
+  let json: any;
+  try {
+    const res = await Promise.race([
+      fetch(`${net.restBase}/api/v3/transactions?${params.toString()}`),
+      new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 10000)),
+    ]) as Response;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    json = await res.json();
+  } catch (e: any) {
+    throw new Error(`Gagal ambil feed transaksi dari TonCenter.${e?.message ? ` (${e.message})` : ' Coba lagi beberapa saat.'}`);
+  }
+
+  // -- Klasifikasi tipe transaksi (op) via endpoint /api/v3/actions TonCenter,
+  //    dicocokkan ke tiap tx lewat hash (field "transactions" tiap action).
+  //    Best-effort: kalau endpoint ini gagal/timeout, feed utama TETAP tampil,
+  //    cuma semua tx jatuh ke fallback 'unknown'. --
+  const txTypeByHash = new Map<string, string>();
+  try {
+    const actionsParams = new URLSearchParams({
+      limit: String(Math.min(Math.max(limit, 1), 50)),
+      sort: 'desc',
+      include_accounts: 'false',
+    });
+    const actionsRes = await Promise.race([
+      fetch(`${net.restBase}/api/v3/actions?${actionsParams.toString()}`),
+      new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 8000)),
+    ]) as Response;
+    if (actionsRes.ok) {
+      const actionsJson = await actionsRes.json();
+      const rawActions: any[] = Array.isArray(actionsJson?.actions) ? actionsJson.actions : [];
+      for (const a of rawActions) {
+        const type = classifyGramTxType(a?.type);
+        const txHashes: string[] = Array.isArray(a?.transactions) ? a.transactions : [];
+        for (const h of txHashes) {
+          if (!txTypeByHash.has(h)) txTypeByHash.set(h, type);
+        }
+      }
+    }
+  } catch { /* best-effort, biarin fallback 'unknown' di bawah */ }
+
+  const rawTxs: any[] = Array.isArray(json?.transactions) ? json.transactions : [];
+  return rawTxs.map((t): GramLatestTx => {
+    const inMsg = t?.in_msg ?? null;
+    const outMsgs: any[] = Array.isArray(t?.out_msgs) ? t.out_msgs : [];
+    const hashB64 = t?.hash || '';
+
+    let fromAddress: string | null = null;
+    let toAddress: string | null = null;
+    let amountNano: bigint | null = null;
+
+    if (inMsg && inMsg.source) {
+      fromAddress = inMsg.source;
+      toAddress   = inMsg.destination ?? null;
+      amountNano  = BigInt(inMsg.value || '0');
+    } else if (outMsgs.length > 0) {
+      fromAddress = t?.account ?? null;
+      toAddress   = outMsgs[0]?.destination ?? null;
+      amountNano  = outMsgs.reduce((sum, m) => sum + BigInt(m?.value || '0'), 0n);
+    }
+
+    return {
+      hash: gramTxHashToHex(hashB64),
+      timestamp: Number(t?.now ?? 0),
+      workchain: typeof t?.account === 'string' && t.account.includes(':') ? Number(t.account.split(':')[0]) : Number(t?.workchain ?? 0),
+      fromAddress,
+      toAddress,
+      amountGram: amountNano !== null ? Number(fromNano(amountNano.toString())) : null,
+      totalFeeGram: Number(fromNano(String(t?.total_fees ?? '0'))),
+      success: gramTxSuccess(t),
+      comment: decodeGramMsgComment(inMsg ?? outMsgs[0]),
+      explorerUrl: gramTxExplorerUrl(net, hashB64),
+      txType: txTypeByHash.get(hashB64) ?? 'unknown',
+      lt: t?.lt != null ? String(t.lt) : null,
+      opCode: (inMsg?.opcode ?? outMsgs[0]?.opcode) ?? null,
+      outMsgCount: outMsgs.length,
+      computeExitCode: typeof t?.description?.compute_ph?.exit_code === 'number' ? t.description.compute_ph.exit_code : null,
+      accountBalanceAfter: t?.account_state_after?.balance != null ? Number(fromNano(String(t.account_state_after.balance))) : null,
+    };
+  });
+}
+
+// ── "Latest Accounts" — TON gak punya feed native "akun terbaru" kayak
+//    Etherscan, jadi diturunin dari address_book milik feed transaksi
+//    terbaru (/api/v3/transactions), yang isinya udah ngandung hasil
+//    deteksi interface (tipe kontrak) tiap address yang nongol di situ.
+//    Diambil dari batch tx yang lebih besar dari `limit` biar address
+//    unik yang kekumpul cukup. ──
+export const GRAM_ACCOUNT_STATUS_LABELS: Record<string, { label: string; color: string }> = {
+  active:   { label: 'Aktif',                   color: '#4caf50' },
+  uninit:   { label: 'Belum Diinisialisasi',    color: '#888' },
+  frozen:   { label: 'Frozen',                  color: '#ff6666' },
+  nonexist: { label: 'Tidak Ada',               color: '#555' },
+};
+
+export interface GramLatestAccount {
+  address: string;          // raw address dari address_book (workchain:hex)
+  friendlyAddress: string;  // user_friendly kalau ada, fallback ke raw
+  accountType: string;      // key di GRAM_ACCOUNT_TYPES
+  interfaces: string[];
+  domain: string | null;
+  explorerUrl: string;
+  // ── Detail otoritatif dari /api/v3/accountStates (bukan cuma dari
+  //    address_book) — status kontrak, saldo terkini, code hash. ──
+  status: string | null;          // 'active' | 'uninit' | 'frozen' | 'nonexist'
+  balanceGram: number | null;
+  codeHash: string | null;
+  lastTxLt: string | null;        // logical time transaksi terakhir account ini
+  lastSeenAt: number | null;      // best-effort: timestamp tx terakhir yg kelihatan di feed ini (bukan aktivitas absolut)
+  // ── Detail tambahan ala explorer TON pada umumnya (Tonscan/Tonviewer) —
+  //    data hash kontrak, hash tx terakhir, frozen hash (kalau status
+  //    frozen), & jumlah get-method yang terdeteksi di kode kontrak. Semua
+  //    best-effort: kalau field-nya gak ada di response, tetap null, gak
+  //    bikin daftar akun gagal tampil. ──
+  dataHash: string | null;
+  lastTxHash: string | null;
+  frozenHash: string | null;
+  getMethodsCount: number | null;
+}
+
+export async function fetchGramLatestAccounts(net: GramNetworkCfg, limit = 10): Promise<GramLatestAccount[]> {
+  const params = new URLSearchParams({
+    limit: String(Math.min(Math.max(limit * 3, 1), 100)),
+    sort: 'desc',
+  });
+  let json: any;
+  try {
+    const res = await Promise.race([
+      fetch(`${net.restBase}/api/v3/transactions?${params.toString()}`),
+      new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 10000)),
+    ]) as Response;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    json = await res.json();
+  } catch (e: any) {
+    throw new Error(`Gagal ambil daftar akun dari TonCenter.${e?.message ? ` (${e.message})` : ' Coba lagi beberapa saat.'}`);
+  }
+
+  const addressBook: Record<string, { user_friendly?: string; domain?: string | null; interfaces?: string[] }> = json?.address_book ?? {};
+  const rawTxs: any[] = Array.isArray(json?.transactions) ? json.transactions : [];
+
+  // -- Best-effort "terlihat terakhir" — cuma dari batch tx yang barusan
+  //    ditarik di atas, BUKAN riwayat lengkap account. Cukup buat konteks
+  //    "kenapa account ini nongol di daftar", bukan acuan aktivitas absolut. --
+  const lastSeenByAddr = new Map<string, number>();
+  for (const t of rawTxs) {
+    const addr = typeof t?.account === 'string' ? t.account : null;
+    const ts = Number(t?.now ?? 0);
+    if (addr && (!lastSeenByAddr.has(addr) || ts > (lastSeenByAddr.get(addr) ?? 0))) {
+      lastSeenByAddr.set(addr, ts);
+    }
+  }
+
+  const rawAddrs = Object.keys(addressBook).slice(0, Math.max(limit, 1));
+
+  // -- Status/saldo/code hash OTORITATIF via /api/v3/accountStates, dipanggil
+  //    batch buat semua address yang mau ditampilkan. Best-effort: kalau
+  //    gagal/timeout, daftar akun TETAP tampil, cuma tanpa status & saldo. --
+  const stateByAddr = new Map<string, {
+    status: string | null; balanceGram: number | null; codeHash: string | null; lastTxLt: string | null; interfaces: string[];
+    dataHash: string | null; lastTxHash: string | null; frozenHash: string | null; getMethodsCount: number | null;
+  }>();
+  if (rawAddrs.length > 0) {
+    try {
+      const stateParams = new URLSearchParams();
+      for (const a of rawAddrs) stateParams.append('address', a);
+      stateParams.set('include_boc', 'false');
+      const stateRes = await Promise.race([
+        fetch(`${net.restBase}/api/v3/accountStates?${stateParams.toString()}`),
+        new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 8000)),
+      ]) as Response;
+      if (stateRes.ok) {
+        const stateJson = await stateRes.json();
+        const rawAccounts: any[] = Array.isArray(stateJson?.accounts) ? stateJson.accounts : [];
+        for (const acc of rawAccounts) {
+          const addr = acc?.address;
+          if (!addr) continue;
+          stateByAddr.set(addr, {
+            status: acc?.status ?? null,
+            balanceGram: acc?.balance != null ? Number(fromNano(String(acc.balance))) : null,
+            codeHash: acc?.code_hash ?? null,
+            lastTxLt: acc?.last_transaction_lt != null ? String(acc.last_transaction_lt) : null,
+            interfaces: Array.isArray(acc?.interfaces) ? acc.interfaces : [],
+            dataHash: acc?.data_hash ?? null,
+            lastTxHash: acc?.last_transaction_hash ?? null,
+            frozenHash: acc?.frozen_hash ?? null,
+            getMethodsCount: Array.isArray(acc?.get_methods) ? acc.get_methods.length : null,
+          });
+        }
+      }
+    } catch { /* best-effort, biarin status/saldo kosong di bawah */ }
+  }
+
+  const out: GramLatestAccount[] = [];
+  for (const rawAddr of rawAddrs) {
+    const info = addressBook[rawAddr];
+    const state = stateByAddr.get(rawAddr);
+    const friendly = info?.user_friendly || rawAddr;
+    // Interfaces dari accountStates lebih otoritatif (langsung dari deteksi
+    // kode kontrak saat ini) — fallback ke address_book kalau gak ketemu.
+    const mergedInterfaces = state?.interfaces?.length ? state.interfaces : (info?.interfaces ?? []);
+    out.push({
+      address: rawAddr,
+      friendlyAddress: friendly,
+      accountType: state?.status === 'uninit' ? 'uninited' : classifyGramAccountType(mergedInterfaces),
+      interfaces: mergedInterfaces,
+      domain: info?.domain ?? null,
+      explorerUrl: `${net.explorerUrl}/address/${friendly}`,
+      status: state?.status ?? null,
+      balanceGram: state?.balanceGram ?? null,
+      codeHash: state?.codeHash ?? null,
+      lastTxLt: state?.lastTxLt ?? null,
+      lastSeenAt: lastSeenByAddr.get(rawAddr) ?? null,
+      dataHash: state?.dataHash ?? null,
+      lastTxHash: state?.lastTxHash ?? null,
+      frozenHash: state?.frozenHash ?? null,
+      getMethodsCount: state?.getMethodsCount ?? null,
+    });
+  }
+  return out;
+}
+
+// ── Dual format address — akun TON/GRAM yang sama bisa direpresentasikan
+//    dalam 3 bentuk berbeda (bounceable EQ/kQ..., non-bounceable UQ/0Q...,
+//    & raw workchain:hex). Salah pilih format pas kirim ke exchange/kontrak
+//    yang gak toleran bisa bikin dana nyangkut — makanya ditampilkan semua
+//    sekaligus di panel address, murni lokal (gak perlu API tambahan). ──
+export interface GramAddressFormats {
+  bounceable: string;
+  nonBounceable: string;
+  raw: string;
+}
+
+export function gramAddressFormats(address: string, net: GramNetworkCfg): GramAddressFormats {
+  const addr = Address.parse(address.trim());
+  return {
+    bounceable:    addr.toString({ bounceable: true,  testOnly: net.isTestnet }),
+    nonBounceable: addr.toString({ bounceable: false, testOnly: net.isTestnet }),
+    raw:           addr.toRawString(),
+  };
+}
+
 export async function getGramBalanceWithFallback(net: GramNetworkCfg, address: string): Promise<number> {
   const addr = Address.parse(address);
   const endpoints = await resolveGramEndpoints(net);
@@ -277,9 +716,49 @@ export interface GramAccountState {
   balanceNano: bigint;
   isDeployed: boolean;
   needsInitOnNextSend: boolean;
+  // ── detail tambahan ala tab "Contract"/"More Info" di Tonscan — dipakai
+  //    buat panel "Detail Akun" di Explorer, mirip detail isContract/code
+  //    yang sudah ada di sisi EVM. ──
+  codeHash: string | null;
+  dataHash: string | null;
+  // Tebakan versi wallet (v4/v5r1) berdasarkan code hash on-chain — code
+  // contract SAMA persis untuk semua wallet versi yang sama (cuma data/pubkey
+  // yang beda per address), jadi cukup dicocokkan sekali terhadap hash code
+  // "template" v4 & v5r1 yang di-build lokal, tanpa perlu API tambahan.
+  walletVersionGuess: GramVersion | 'unknown';
+  // Seqno cuma valid & berhasil diambil untuk kontrak yang cocok dengan
+  // walletVersionGuess (v4/v5r1) — kontrak lain (Jetton master, custom
+  // contract, dst) gak punya get-method "seqno" & akan tetap null di sini.
+  seqno: number | null;
+  lastTxLt: string | null;
+  lastTxHash: string | null;
+  blockSeqno: number | null;
 }
 
 export const GRAM_DEPLOY_RESERVE_NANO = BigInt(50_000_000);
+
+// ── Hash code contract wallet "template" v4/v5r1, dihitung sekali & di-cache —
+//    dipakai buat nebak versi wallet dari address sembarang tanpa API call
+//    tambahan (lihat komentar walletVersionGuess di atas). ──
+const gramWalletCodeHashCache: Partial<Record<GramVersion, string>> = {};
+function gramWalletTemplateCodeHash(version: GramVersion): string {
+  if (!gramWalletCodeHashCache[version]) {
+    gramWalletCodeHashCache[version] = buildGramWallet(Buffer.alloc(32), version).init.code.hash().toString('hex');
+  }
+  return gramWalletCodeHashCache[version]!;
+}
+
+function gramCellHashHex(bocBuf: Buffer | null): string | null {
+  if (!bocBuf) return null;
+  try { return Cell.fromBoc(bocBuf)[0].hash().toString('hex'); } catch { return null; }
+}
+
+function guessGramWalletVersion(codeHash: string | null): GramVersion | 'unknown' {
+  if (!codeHash) return 'unknown';
+  if (codeHash === gramWalletTemplateCodeHash('v5r1')) return 'v5r1';
+  if (codeHash === gramWalletTemplateCodeHash('v4')) return 'v4';
+  return 'unknown';
+}
 
 export async function getGramAccountState(net: GramNetworkCfg, address: string): Promise<GramAccountState> {
   const addr = Address.parse(address);
@@ -297,11 +776,30 @@ export async function getGramAccountState(net: GramNetworkCfg, address: string):
         state.state === 'active' ? 'active' :
         state.state === 'frozen' ? 'frozen' :
         'uninitialized';
+
+      const codeHash = gramCellHashHex(state.code);
+      const walletVersionGuess = guessGramWalletVersion(codeHash);
+
+      let seqno: number | null = null;
+      if (status === 'active' && walletVersionGuess !== 'unknown') {
+        try {
+          const res = await withGramRetry(() => client.runMethod(addr, 'seqno'));
+          seqno = res.stack.readNumber();
+        } catch { /* best-effort — biarkan null kalau get-method-nya gagal */ }
+      }
+
       return {
         status,
         balanceNano: BigInt(state.balance.toString()),
         isDeployed: status === 'active',
         needsInitOnNextSend: status !== 'active',
+        codeHash,
+        dataHash: gramCellHashHex(state.data),
+        walletVersionGuess,
+        seqno,
+        lastTxLt: state.lastTransaction?.lt ?? null,
+        lastTxHash: state.lastTransaction?.hash ?? null,
+        blockSeqno: state.blockId?.seqno ?? null,
       };
     } catch (e) { lastErr = e; markGramEndpointUnhealthy(endpoint); }
   }
@@ -682,20 +1180,39 @@ export async function fetchGramTokenPortfolio(address: string, net: GramNetworkC
     if (resolved) metaMap[addr] = resolved;
   }));
 
+  // ── Harga USD per Jetton (best-effort) — cuma tersedia di Mainnet karena
+  //    REST API STON.fi (sumber dexPriceUsd) cuma nge-serve data Mainnet
+  //    (lihat catatan gramSwapAssertMainnet di bawah). Kalau gagal / Testnet,
+  //    portfolio tetap ditampilkan tanpa nilai USD — bukan bagian kritis. ──
+  const priceMap: Record<string, number> = {};
+  if (net.id === 'mainnet') {
+    try {
+      const assets = await fetchGramSwapWalletAssets(owner);
+      for (const a of assets) {
+        if (a.kind === 'jetton' && a.dexPriceUsd != null) {
+          const key = toFriendlyBounceable(a.address);
+          priceMap[key] = a.dexPriceUsd;
+        }
+      }
+    } catch { /* best-effort — biarkan priceMap kosong kalau STON.fi gagal/down */ }
+  }
+
   return holdings.map((h: any) => {
     const meta      = metaMap[h.jetton] || {};
     const decimals  = meta.decimals ?? 9;
     const balance   = Number(h.balance) / Math.pow(10, decimals);
+    const jettonAddr = toFriendlyBounceable(h.jetton);
+    const price     = priceMap[jettonAddr] ?? null;
     return {
       chain: 'gram',
-      address: toFriendlyBounceable(h.jetton),
+      address: jettonAddr,
       symbol: meta.symbol || 'JETTON',
       name: meta.name || 'Unknown Jetton',
       decimals,
       balance,
       balanceFormatted: balance.toLocaleString('en-US', { maximumFractionDigits: 6 }),
-      usdPrice: null,
-      usdValue: null,
+      usdPrice: price,
+      usdValue: price !== null ? balance * price : null,
       logo: meta.image || undefined,
     } as DetectedToken;
   });
@@ -746,11 +1263,11 @@ function gramTxSuccess(t: any): boolean {
   return true;
 }
 
-function gramTxHashToHex(hashB64: string): string {
+export function gramTxHashToHex(hashB64: string): string {
   try { return Buffer.from(hashB64, 'base64').toString('hex'); } catch { return hashB64 || ''; }
 }
 
-function gramTxExplorerUrl(net: GramNetworkCfg, hashB64: string): string {
+export function gramTxExplorerUrl(net: GramNetworkCfg, hashB64: string): string {
   try {
     const b64url = Buffer.from(hashB64, 'base64').toString('base64')
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -830,6 +1347,128 @@ export async function fetchGramTxHistory(
 
   const nextBeforeLt = items.length === limit ? items[items.length - 1].lt : null;
   return { items, nextBeforeLt };
+}
+
+export interface GramTxDetail extends GramTxHistoryEntry {
+  fromAddress: string;
+  toAddress: string;
+  computeSuccess: boolean | null;
+  exitCode: number | null;
+  outMsgsCount: number;
+  rawJson: string;
+  // ── breakdown fee & transisi status akun ala tab detail TX Tonscan — total
+  //    fee-nya sendiri sudah ada di totalFeeGram (warisan GramTxHistoryEntry),
+  //    field di bawah ini rinciannya per fase (storage/compute/action+forward). ──
+  gasUsed: number | null;
+  storageFeeGram: number | null;
+  computeFeeGram: number | null;
+  actionFeeGram: number | null;
+  forwardFeeGram: number | null;
+  // Status akun sebelum & sesudah tx ini — berguna buat nunjukin momen wallet
+  // pertama kali di-deploy (uninitialized/frozen → active).
+  origStatus: string | null;
+  endStatus: string | null;
+  aborted: boolean;
+}
+
+// ── Cari 1 transaksi TON berdasarkan hash (hex, 64 char) — dipakai buat
+// lookup langsung di Explorer (mirip lookup tx hash di explorer EVM), tanpa
+// perlu tahu address pemiliknya dulu. TonCenter v3 nerima hash dalam format
+// base64url, jadi hex dari input di-convert dulu.
+export async function fetchGramTxByHash(net: GramNetworkCfg, hashHex: string): Promise<GramTxDetail | null> {
+  let hashB64url: string;
+  try {
+    hashB64url = Buffer.from(hashHex.trim(), 'hex').toString('base64')
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  } catch {
+    throw new Error('Format tx hash Gram (TON) tidak valid.');
+  }
+
+  let json: any;
+  try {
+    const res = await Promise.race([
+      fetch(`${net.restBase}/api/v3/transactions?hash=${encodeURIComponent(hashB64url)}`),
+      new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 10000)),
+    ]) as Response;
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    json = await res.json();
+  } catch (e: any) {
+    throw new Error(`Gagal ambil detail transaksi dari TonCenter.${e?.message ? ` (${e.message})` : ' Coba lagi beberapa saat.'}`);
+  }
+
+  const rawTxs: any[] = Array.isArray(json?.transactions) ? json.transactions : [];
+  const t = rawTxs[0];
+  if (!t) return null;
+
+  const inMsg   = t?.in_msg ?? null;
+  const outMsgs: any[] = Array.isArray(t?.out_msgs) ? t.out_msgs : [];
+  const hashB64 = t?.hash || '';
+
+  let direction: GramTxDirection = 'unknown';
+  let amountNano = 0n;
+  let counterparty = '';
+  let comment = '';
+  let fromAddress = '';
+  let toAddress = '';
+
+  if (inMsg && inMsg.source) {
+    direction    = 'in';
+    amountNano   = BigInt(inMsg.value || '0');
+    counterparty = inMsg.source;
+    comment      = decodeGramMsgComment(inMsg);
+    fromAddress  = inMsg.source || '';
+    toAddress    = inMsg.destination || '';
+  } else if (outMsgs.length > 0) {
+    direction    = 'out';
+    amountNano   = outMsgs.reduce((sum, m) => sum + BigInt(m?.value || '0'), 0n);
+    counterparty = outMsgs[0]?.destination || '';
+    comment      = decodeGramMsgComment(outMsgs[0]);
+    fromAddress  = outMsgs[0]?.source || '';
+    toAddress    = outMsgs[0]?.destination || '';
+  }
+
+  const d = t?.description;
+  const computeSuccess: boolean | null = typeof d?.compute_ph?.success === 'boolean' ? d.compute_ph.success : null;
+  const exitCode: number | null = typeof d?.compute_ph?.exit_code === 'number' ? d.compute_ph.exit_code : null;
+
+  const toGramOrNull = (nano: unknown): number | null =>
+    nano !== null && nano !== undefined ? Number(fromNano(String(nano))) : null;
+  const gasUsed: number | null =
+    typeof d?.compute_ph?.gas_used === 'string' || typeof d?.compute_ph?.gas_used === 'number'
+      ? Number(d.compute_ph.gas_used) : null;
+  const storageFeeGram = toGramOrNull(d?.storage_ph?.storage_fees_collected);
+  const computeFeeGram = toGramOrNull(d?.compute_ph?.gas_fees);
+  const actionFeeGram  = toGramOrNull(d?.action?.total_action_fees);
+  const forwardFeeGram = toGramOrNull(d?.action?.total_fwd_fees);
+  const origStatus: string | null = typeof t?.orig_status === 'string' ? t.orig_status : null;
+  const endStatus: string | null  = typeof t?.end_status === 'string' ? t.end_status : null;
+
+  return {
+    hash: gramTxHashToHex(hashB64),
+    lt: String(t?.lt ?? ''),
+    timestamp: Number(t?.now ?? 0),
+    success: gramTxSuccess(t),
+    direction,
+    amountGram: Number(fromNano(amountNano.toString())),
+    counterparty,
+    comment,
+    totalFeeGram: Number(fromNano(String(t?.total_fees ?? '0'))),
+    explorerUrl: gramTxExplorerUrl(net, hashB64),
+    fromAddress,
+    toAddress,
+    computeSuccess,
+    exitCode,
+    outMsgsCount: outMsgs.length,
+    rawJson: JSON.stringify(t, null, 2),
+    gasUsed,
+    storageFeeGram,
+    computeFeeGram,
+    actionFeeGram,
+    forwardFeeGram,
+    origStatus,
+    endStatus,
+    aborted: d?.aborted === true,
+  };
 }
 
 
@@ -1345,10 +1984,16 @@ export interface GramSwapAssetInfo {
   name: string;
   decimals: number;
   image?: string;
+  // Harga USD dari STON.fi (dex-implied) — best-effort, null kalau STON.fi
+  // gak punya data pool buat token ini.
+  dexPriceUsd?: number | null;
 }
 
 function mapStonAsset(a: any): GramSwapAssetInfo {
   const isTon = a?.kind === 'Ton' || a?.contractAddress === 'ton';
+  const priceRaw = a?.dexPriceUsd;
+  const dexPriceUsd = priceRaw !== undefined && priceRaw !== null && priceRaw !== '' && !isNaN(parseFloat(priceRaw))
+    ? parseFloat(priceRaw) : null;
   return {
     address:  isTon ? 'ton' : String(a?.contractAddress || ''),
     kind:     isTon ? 'ton' : 'jetton',
@@ -1356,6 +2001,7 @@ function mapStonAsset(a: any): GramSwapAssetInfo {
     name:     a?.meta?.displayName || a?.meta?.symbol || (isTon ? 'Gram (Prev TON Blockchain)' : 'Unknown Token'),
     decimals: typeof a?.meta?.decimals === 'number' ? a.meta.decimals : 9,
     image:    a?.meta?.imageUrl || a?.meta?.image,
+    dexPriceUsd,
   };
 }
 
