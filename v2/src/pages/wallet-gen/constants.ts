@@ -30,6 +30,7 @@ export const SEPOLIA_RPCS = [
 ];
 
 export const RPC_NETWORKS_STORAGE_KEY = 'rpcNetworks';
+export const CHAINLIST_API_URL = 'https://chainid.network/chains.json';
 
 export const DEFAULT_NETWORKS: RPCNetwork[] = [
   { id:'ethereum',      name:'Ethereum Mainnet',      chainId:1,          symbol:'ETH',    rpcUrls:['https://1rpc.io/eth','https://eth.llamarpc.com'],                                  explorerUrl:'https://etherscan.io',                  color:'#627EEA' },
@@ -39,23 +40,7 @@ export const DEFAULT_NETWORKS: RPCNetwork[] = [
   { id:'polygon',       name:'Polygon',               chainId:137,        symbol:'MATIC',  rpcUrls:['https://1rpc.io/matic','https://polygon-rpc.com'],                                 explorerUrl:'https://polygonscan.com',               color:'#8247E5' },
   { id:'bnb',           name:'BNB Smart Chain',       chainId:56,         symbol:'BNB',    rpcUrls:['https://1rpc.io/bnb','https://bsc-dataseed1.binance.org'],                         explorerUrl:'https://bscscan.com',                   color:'#F3BA2F' },
   { id:'avalanche',     name:'Avalanche C-Chain',     chainId:43114,      symbol:'AVAX',   rpcUrls:['https://1rpc.io/avax/c','https://api.avax.network/ext/bc/C/rpc'],                  explorerUrl:'https://snowtrace.io',                  color:'#E84142' },
-  { id:'fantom',        name:'Fantom Opera',          chainId:250,        symbol:'FTM',    rpcUrls:['https://1rpc.io/ftm','https://rpc.ftm.tools'],                                     explorerUrl:'https://ftmscan.com',                   color:'#1969FF' },
-  { id:'cronos',        name:'Cronos',                chainId:25,         symbol:'CRO',    rpcUrls:['https://1rpc.io/cro','https://evm.cronos.org'],                                    explorerUrl:'https://cronoscan.com',                 color:'#002D74' },
-  { id:'gnosis',        name:'Gnosis Chain',          chainId:100,        symbol:'xDAI',   rpcUrls:['https://1rpc.io/gnosis','https://rpc.gnosischain.com'],                            explorerUrl:'https://gnosisscan.io',                 color:'#04795B' },
-  { id:'celo',          name:'Celo',                  chainId:42220,      symbol:'CELO',   rpcUrls:['https://1rpc.io/celo','https://forno.celo.org'],                                   explorerUrl:'https://celoscan.io',                   color:'#35D07F' },
-  { id:'moonbeam',      name:'Moonbeam',              chainId:1284,       symbol:'GLMR',   rpcUrls:['https://1rpc.io/glmr','https://rpc.api.moonbeam.network'],                         explorerUrl:'https://moonbeam.moonscan.io',          color:'#53CBC9' },
-  { id:'moonriver',     name:'Moonriver',             chainId:1285,       symbol:'MOVR',   rpcUrls:['https://1rpc.io/movr','https://rpc.api.moonriver.moonbeam.network'],               explorerUrl:'https://moonriver.moonscan.io',         color:'#F2A007' },
-  { id:'aurora',        name:'Aurora (NEAR)',         chainId:1313161554, symbol:'ETH',    rpcUrls:['https://mainnet.aurora.dev'],                                                      explorerUrl:'https://aurorascan.dev',                color:'#70D44B' },
-  { id:'klaytn',        name:'Klaytn',                chainId:8217,       symbol:'KLAY',   rpcUrls:['https://1rpc.io/klay','https://public-node-api.klaytnapi.com/v1/cypress'],          explorerUrl:'https://scope.klaytn.com',              color:'#FA5F2B' },
-  { id:'zksync',        name:'zkSync Era',            chainId:324,        symbol:'ETH',    rpcUrls:['https://1rpc.io/zksync2-era','https://mainnet.era.zksync.io'],                     explorerUrl:'https://explorer.zksync.io',            color:'#8C8DFC' },
-  { id:'scroll',        name:'Scroll',                chainId:534352,     symbol:'ETH',    rpcUrls:['https://1rpc.io/scroll','https://rpc.scroll.io'],                                  explorerUrl:'https://scrollscan.com',                color:'#EEB878' },
-  { id:'linea',         name:'Linea',                 chainId:59144,      symbol:'ETH',    rpcUrls:['https://1rpc.io/linea','https://rpc.linea.build'],                                 explorerUrl:'https://lineascan.build',               color:'#61DFFF' },
-  { id:'polygonzkevm',  name:'Polygon zkEVM',         chainId:1101,       symbol:'ETH',    rpcUrls:['https://1rpc.io/polygon/zkevm','https://zkevm-rpc.com'],                           explorerUrl:'https://zkevm.polygonscan.com',         color:'#8247E5' },
   { id:'mantle',        name:'Mantle',                chainId:5000,       symbol:'MNT',    rpcUrls:['https://1rpc.io/mantle','https://rpc.mantle.xyz'],                                 explorerUrl:'https://explorer.mantle.xyz',           color:'#C0C0C0' },
-  { id:'blast',         name:'Blast',                 chainId:81457,      symbol:'ETH',    rpcUrls:['https://1rpc.io/blast','https://rpc.blast.io'],                                    explorerUrl:'https://blastscan.io',                  color:'#FCFC03' },
-  { id:'taiko',         name:'Taiko',                 chainId:167000,     symbol:'ETH',    rpcUrls:['https://1rpc.io/taiko','https://rpc.mainnet.taiko.xyz'],                           explorerUrl:'https://taikoscan.io',                  color:'#E81899' },
-  { id:'mode',          name:'Mode Network',          chainId:34443,      symbol:'ETH',    rpcUrls:['https://mainnet.mode.network'],                                                    explorerUrl:'https://modescan.io',                   color:'#DFFE00' },
-  { id:'bob',           name:'BOB Network',           chainId:60808,      symbol:'ETH',    rpcUrls:['https://rpc.gobob.xyz'],                                                           explorerUrl:'https://explorer.gobob.xyz',            color:'#FF7600' },
   { id:'monad',         name:'Monad Testnet',         chainId:10143,      symbol:'MON',    rpcUrls:['https://testnet-rpc.monad.xyz'],                                                   explorerUrl:'https://testnet.monadexplorer.com',     color:'#836EFD' },
   { id:'pharos',        name:'Pharos Testnet',        chainId:688688,     symbol:'PHRS',   rpcUrls:['https://testnet.dplabs-internal.com'],                                             explorerUrl:'https://testnet.pharosscan.xyz',        color:'#1000F0' },
   { id:'sepolia',       name:'Ethereum Sepolia',      chainId:11155111,   symbol:'ETH',    rpcUrls:SEPOLIA_RPCS,                                                                        explorerUrl:'https://sepolia.etherscan.io',          color:'#9E9E9E' },
@@ -105,9 +90,9 @@ export const CHAIN_OPTIONS: { id: ChainKind | string; label: string; soon?: bool
   { id: 'atom', label: 'ATOM' },
   { id: 'axm',  label: 'AXM' },
   { id: 'gram', label: 'GRAM (ex-TON)' },
+  { id: 'sui',  label: 'SUI' },
+  { id: 'apt',  label: 'APT' },
   { id: 'btc', label: 'BTC',  soon: true },
-  { id: 'sui', label: 'SUI',  soon: true },
-  { id: 'apt', label: 'APT',  soon: true },
 ];
 
 export const WALLET_CHAIN_OPTIONS: { id: ChainKind | string; label: string; soon?: boolean }[] = [
@@ -117,9 +102,9 @@ export const WALLET_CHAIN_OPTIONS: { id: ChainKind | string; label: string; soon
   { id: 'atom', label: 'ATOM' },
   { id: 'axm',  label: 'AXM' },
   { id: 'gram', label: 'GRAM (ex-TON)' },
+  { id: 'sui',  label: 'SUI' },
+  { id: 'apt',  label: 'APT' },
   { id: 'btc', label: 'BTC',  soon: true },
-  { id: 'sui', label: 'SUI',  soon: true },
-  { id: 'apt', label: 'APT',  soon: true },
 ];
 
 export const BLOCKSCOUT_HOSTS: Record<string, string> = {
@@ -131,10 +116,7 @@ export const BLOCKSCOUT_HOSTS: Record<string, string> = {
   optimism:      'optimism.blockscout.com',
   arbitrum:      'arbitrum.blockscout.com',
   polygon:       'polygon.blockscout.com',
-  gnosis:        'gnosis.blockscout.com',
   celo:          'celo.blockscout.com',
-  scroll:        'scroll.blockscout.com',
-  zksync:        'zksync.blockscout.com',
 };
 
 export const TOKEN_METADATA_TYPE_SIZE = 2;
