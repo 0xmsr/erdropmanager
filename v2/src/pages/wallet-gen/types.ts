@@ -9,6 +9,8 @@ export interface BIP39Wallet {
   tronAddresses: { index: number; address: string; privateKey: string }[];
   axmAddresses: { index: number; address: string; privateKey: string }[];
   atomAddresses: { index: number; address: string; privateKey: string }[];
+  suiAddresses: { index: number; address: string; privateKey: string }[];
+  aptAddresses: { index: number; address: string; privateKey: string }[];
   gramAddress?: { address: string; privateKey: string; version: GramVersion };
   // true kalau wallet ini diimport dari mnemonic TON native (Telegram Wallet /
   // Tonkeeper / dst), bukan dari mnemonic BIP39 multi-chain buatan app ini.
@@ -29,6 +31,20 @@ export interface RPCNetwork {
   rpcUrls: string[];
   explorerUrl: string;
   color: string;
+}
+
+// Bentuk data mentah satu chain dari Chainlist (chainid.network/chains.json).
+// Hanya field yang benar-benar dipakai yang dideklarasikan di sini — respons
+// aslinya punya banyak field lain (icon, faucets, parent, dll) yang diabaikan.
+export interface ChainlistChain {
+  name: string;
+  chain: string;
+  chainId: number;
+  shortName: string;
+  nativeCurrency: { name: string; symbol: string; decimals: number };
+  rpc: string[];
+  explorers?: { name: string; url: string; standard?: string }[];
+  infoURL?: string;
 }
 
 export interface AirdropTask {
@@ -64,6 +80,7 @@ export interface TxQueueItem {
   error?: string;
   gasEstimate?: string;
   timestamp?: number;
+  networkId?: string;
 }
 
 export interface AutoContractCall {
@@ -74,7 +91,7 @@ export interface AutoContractCall {
   value: string;
 }
 
-export type ChainKind = 'evm' | 'sol' | 'tron' | 'atom' | 'axm' | 'gram';
+export type ChainKind = 'evm' | 'sol' | 'tron' | 'atom' | 'axm' | 'gram' | 'sui' | 'apt';
 
 export interface CreatedGramToken {
   id: string;
@@ -92,6 +109,29 @@ export interface CreatedGramToken {
   metadataUri?: string;
   imageUrl?: string;
   description?: string;
+}
+
+export interface EvmWalletTx {
+  hash: string;
+  from: string;
+  to: string | null;
+  value: string;
+  timestamp: number | null;
+  status: 'success' | 'failed' | 'pending';
+  methodGuess: string | null;
+}
+
+export interface EvmTokenDetail {
+  address: string;
+  name: string | null;
+  symbol: string | null;
+  decimals: number | null;
+  totalSupply: string | null;
+  standard: string;
+  holdersCount: number | null;
+  iconUrl: string | null;
+  priceUsd: number | null;
+  marketCapUsd: number | null;
 }
 
 export interface DetectedToken {
