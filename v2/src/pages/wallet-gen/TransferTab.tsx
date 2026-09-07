@@ -1,25 +1,16 @@
 // @ts-nocheck
-// Semua state & handler di file ini datang dari ctx (Record<string, any>) yang
-// diteruskan dari Walletgenerator.tsx, jadi TypeScript tidak bisa menurunkan
-// tipe parameter callback (.map/.filter/dst) di sini secara otomatis.
-// Type-safety sesungguhnya tetap ada penuh di state/handler aslinya
-// (Walletgenerator.tsx) dan di ./types.ts — file ini murni JSX passthrough.
 
 import React from 'react';
+import { Link } from 'react-router-dom';
 import type { WalletGeneratorCtx, ChainKind } from './types';
 import { CHAIN_OPTIONS } from './constants';
 import { shortAddr } from './helpers';
 import { GRAM_WALLET_VERSIONS, formatGramSwapOutput } from './network/Gramnet';
 
-/**
- * TransferTab: dipecah dari Walletgenerator.tsx (tab "TransferTab").
- * Semua state, handler, dan helper dari komponen induk diteruskan lewat prop `ctx`
- * (lihat WalletGeneratorCtx di ../types.ts) supaya logic tetap terpusat di
- * Walletgenerator.tsx tanpa perlu re-wiring ratusan handler satu per satu.
- */
 export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
   const {
-    AXIOME_NETWORK, AXIOME_NETWORKS, COSMOS_NETWORK, COSMOS_NETWORKS, GRAM_NETWORK, GRAM_NETWORKS, FaBolt, FaCheckCircle, 
+    AXIOME_NETWORK, AXIOME_NETWORKS, COSMOS_NETWORK, COSMOS_NETWORKS, GRAM_NETWORK, GRAM_NETWORKS,
+    SUI_NETWORK, SUI_NETWORKS, APTOS_NETWORK, APTOS_NETWORKS, FaBolt, FaCheckCircle, 
     FaChevronDown, FaChevronUp, FaCoins, FaCopy, FaExchangeAlt, FaExclamationTriangle, FaFaucet, 
     FaGasPump, FaGlobe, FaInfoCircle, FaKey, FaLayerGroup, FaLink, FaNetworkWired, FaPaperPlane, 
     FaPlug, FaPlus, FaQrcode, FaRocket, FaSpinner, FaSync, FaTrash, LAMPORTS_PER_SOL, SOLANA_NETWORK, 
@@ -30,8 +21,15 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     axmConnect, axmConnected, axmConnecting, axmDisconnect, axmFeeEstimate, axmFeeEstimateError, 
     axmFeeEstimating, axmLoadingBal, axmMaxLoading, axmNetId, axmPrivKey, axmRefreshBalance, axmSend, axmSendAmt, 
     axmSendTo, axmSending, axmSetMaxAmount, axmStatus, axmWalletSel, 
+    suiAddress, suiBalance, suiConnect, suiConnected, suiConnecting, suiDisconnect,
+    suiLoadingBal, suiMaxLoading, suiNetId, suiPrivKey, suiRefreshBalance, suiSend, suiSendAmt, suiSendTo, suiSending, suiSetMaxAmount,
+    suiStatus, suiWalletSel, handleSuiWalletSel, switchSuiNetwork,
+    aptAddress, aptBalance, aptConnect, aptConnected, aptConnecting, aptDisconnect,
+    aptLoadingBal, aptMaxLoading, aptNetId, aptPrivKey, aptRefreshBalance, aptSend, aptSendAmt, aptSendTo, aptSending, aptSetMaxAmount,
+    aptStatus, aptWalletSel, handleAptWalletSel, switchAptNetwork,
     gramAddress, gramBalance, gramConnect, gramConnected, gramConnecting, gramDisconnect, 
     gramLoadingBal, gramNetId, gramPrivKey, gramRefreshBalance, gramSend, gramSendAmt, gramSendTo, 
+    gramMemo, setGramMemo, 
     gramSending, gramStatus, gramWalletSel, handleGramWalletSel, setGramPrivKey, setGramSendAmt, 
     setGramSendTo, setGramWalletSel, switchGramNetwork, gramConnectVersion, setGramConnectVersion, 
     gramFeeEstimate, gramFeeEstimateError, gramFeeEstimating, gramMaxLoading, gramSetMaxAmount, 
@@ -47,6 +45,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     gramSwapSending, gramSwapStatus, setGramSwapPickerOpen, 
     gramSwapFlip, gramExecuteSwap, gramSwapMaxLoading, gramSwapSetMaxAmount, 
     FaSlidersH, FaArrowRight, FaWallet, 
+    renderGasFiatBadge, gasFiatCcy, setGasFiatCcy, solDestAtaExists, solDestAtaChecking, SOL_TOKEN_ACCOUNT_RENT_LAMPORTS,
     copiedKey, copyText, ethers, handleAtomWalletSel, 
     handleAxmWalletSel, handleSolWalletSel, handleTronWalletSel, handleTxWalletSel, highlightFaucet, 
     isValidTronAddress, knownTxTokens, networks, openTronFaucet, renderAssetSelector, 
@@ -87,10 +86,11 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     txConnect, txConnected, txConnecting, txDisconnect, txIsToken, txLoadingBal, txMaxLoading, txMode, 
     txMultiAddRow, txMultiApplyEqual, txMultiEqualAmt, txMultiRemoveRow, txMultiRows, txMultiRunning, 
     txMultiSend, txMultiUpdateRow, txNetworkId, txPrivKey, txRefreshBalance, txSend, txSendAmt, 
-    txSendTo, txSending, txSetMaxAmount, txStatus, txStatusColor, txWalletSel, wallets
+    txSendTo, txSending, txSetMaxAmount, txStatus, txStatusColor, txWalletSel, txSendAssetMode, wallets,
+    txWalletHistory, txWalletHistoryLoading, txWalletHistoryError, txLoadWalletHistory,
+    txTokenDetail, txTokenDetailLoading, txTokenDetailError,
   } = ctx;
 
-  // Animasi flip arah swap (murni UI, gak perlu nyangkut di ctx parent).
   const [gramSwapFlipSpin, setGramSwapFlipSpin] = React.useState(false);
   const handleGramSwapFlip = () => {
     setGramSwapFlipSpin(true);
@@ -98,9 +98,6 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     setTimeout(() => setGramSwapFlipSpin(false), 300);
   };
 
-  // Saldo token "Dari" yang lagi dipilih di swap — dari sumber yang udah ada
-  // (gramBalance buat TON native, gramJettonDetected buat Jetton), tanpa
-  // request API tambahan.
   const gramSwapFromHolding = gramSwapFrom && gramSwapFrom.kind !== 'ton'
     ? gramJettonDetected.find(t => t.address === gramSwapFrom.address)
     : null;
@@ -110,8 +107,6 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
       ? (gramBalance === '—' || gramBalance === 'Error' ? null : gramBalance)
       : (gramSwapFromHolding ? `${gramSwapFromHolding.balanceFormatted} ${gramSwapFrom.symbol}` : '0 ' + gramSwapFrom.symbol);
 
-  // Label tombol Swap yang berubah sesuai state — biar user tahu persis apa
-  // yang perlu dilakukan berikutnya, bukan cuma disabled tanpa penjelasan.
   const gramSwapButtonLabel = (() => {
     if (gramSwapSending) return 'Swapping...';
     if (!gramSwapFrom || !gramSwapTo) return 'Pilih Token';
@@ -123,7 +118,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
 
   return (
         <>
-          {/* ── Ganti Network: EVM / Solana / Lainnya (Segera) ── */}
+
           <div style={{ marginBottom:'16px' }}>
             <label style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'block', marginBottom:'8px' }}>
               <FaNetworkWired style={{ marginRight:'5px' }}/>Ganti Network
@@ -139,7 +134,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                     </button>
                   );
                 }
-                const chainColor = opt.id === 'sol' ? '#9945FF' : opt.id === 'tron' ? '#EF0027' : opt.id === 'axm' ? '#75bbe9' : opt.id === 'gram' ? '#0088CC' : '#01a2ff';
+                const chainColor = opt.id === 'sol' ? '#9945FF' : opt.id === 'tron' ? '#EF0027' : opt.id === 'axm' ? '#75bbe9' : opt.id === 'gram' ? '#0088CC' : opt.id === 'sui' ? '#4DA2FF' : opt.id === 'apt' ? '#00D2AA' : '#01a2ff';
                 return (
                   <button key={opt.id}
                     onClick={() => setTxChain(opt.id as ChainKind)}
@@ -158,7 +153,6 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
 
           {txChain === 'evm' && (
           <>
-          {/* ── Network Selector ── */}
           <div style={{ marginBottom:'16px' }}>
             <label style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'block', marginBottom:'6px' }}>
               <FaGlobe style={{ marginRight:'4px' }}/>Network
@@ -226,8 +220,6 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
             </div>
           ) : (
             <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-
-              {/* ── Balance / Receive card ── */}
               <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${selectedNetwork?.color??'#01a2ff'}`, padding:'20px' }}>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'16px' }}>
                   <div>
@@ -242,13 +234,16 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                   </button>
                 </div>
                 <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #161616', display:'flex', alignItems:'center', gap:'8px' }}>
-                  <FaQrcode size={11} color="#444"/>
                   <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                     {txAddress}
                   </code>
                   <button onClick={() => copyText(txAddress, 'tx_addr')}
                     style={{ background:'none', border:'1px solid #333', color:copiedKey==='tx_addr'?'#4caf50':'#555', padding:'4px 8px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}>
                     {copiedKey==='tx_addr' ? <FaCheckCircle/> : <FaCopy/>}
+                  </button>
+                  <button onClick={() => setQrAddress(txAddress)} title="QR Code"
+                    style={{ background:'none', border:'1px solid #333', color:'#555', padding:'4px 8px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}>
+                    <FaQrcode size={11}/>
                   </button>
                   {selectedNetwork?.explorerUrl && (
                     <a href={`${selectedNetwork.explorerUrl}/address/${txAddress}`} target="_blank" rel="noreferrer"
@@ -260,10 +255,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                 </div>
               </div>
 
-              {/* ── Mode + Form card ── */}
               <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
-
-                {/* Mode segmented control */}
                 <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', padding:'2px', marginBottom:'20px' }}>
                   {([
                     ['single', <FaPaperPlane key="i" size={11}/>, 'Kirim'],
@@ -281,7 +273,6 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
 
                 {renderAssetSelector()}
 
-                {/* ── Single Send ── */}
                 {txMode === 'single' && (
                   <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
                     <div>
@@ -307,11 +298,13 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
 
                     {renderGasFeeBox()}
 
-                    <button onClick={txSend} disabled={txSending || !txSendTo || !txSendAmt}
-                      style={{ padding:'13px', background:txSending?'#1a1a2a':selectedNetwork?.color??'#01a2ff', color:'#000', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!txSendTo||!txSendAmt)?0.5:1 }}>
+                    <button onClick={txSend} disabled={txSending || !txSendTo || !txSendAmt || (txSendAssetMode==='token' && txAsset==='native')}
+                      style={{ padding:'13px', background:txSending?'#1a1a2a':selectedNetwork?.color??'#01a2ff', color:'#000', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!txSendTo||!txSendAmt||(txSendAssetMode==='token'&&txAsset==='native'))?0.5:1 }}>
                       {txSending
                         ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
-                        : <><FaPaperPlane/> {txAsset === 'native' ? 'Kirim Transaksi' : 'Kirim Token'}</>}
+                        : (txSendAssetMode==='token' && txAsset==='native')
+                          ? <><FaCoins/> Pilih Token Dulu</>
+                          : <><FaPaperPlane/> {txAsset === 'native' ? 'Kirim Transaksi' : 'Kirim Token'}</>}
                     </button>
 
                     {txStatus.type !== 'idle' && (
@@ -338,10 +331,8 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                   </div>
                 )}
 
-                {/* ── Multi Send ── */}
                 {txMode === 'multi' && (
                   <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                    {/* Equal amount helper */}
                     <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
                       <label style={{ fontSize:'11px', color:'#555', whiteSpace:'nowrap' }}>
                         Jumlah rata ({txIsToken ? selectedTxToken!.symbol : (selectedNetwork?.symbol ?? 'ETH')}):
@@ -410,16 +401,18 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                     {renderGasFeeBox()}
 
                     <button onClick={txMultiSend}
-                      disabled={txMultiRunning || txMultiRows.every(r => !r.to || !r.amount)}
+                      disabled={txMultiRunning || txMultiRows.every(r => !r.to || !r.amount) || (txSendAssetMode==='token' && txAsset==='native')}
                       style={{
                         padding:'13px', background:txMultiRunning?'#1a1a2a':'#01a2ff', color:'#000', border:'none',
                         cursor:txMultiRunning?'wait':'pointer', fontSize:'14px', fontWeight:'bold',
                         display:'flex', alignItems:'center', justifyContent:'center', gap:'7px',
-                        opacity: txMultiRows.every(r=>!r.to||!r.amount) ? 0.5 : 1,
+                        opacity: (txMultiRows.every(r=>!r.to||!r.amount) || (txSendAssetMode==='token' && txAsset==='native')) ? 0.5 : 1,
                       }}>
                       {txMultiRunning
                         ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim {txMultiRows.filter(r=>r.status==='success').length}/{txMultiRows.filter(r=>ethers.utils.isAddress(r.to)&&parseFloat(r.amount)>0).length}...</>
-                        : <><FaPaperPlane/> Kirim {txMultiRows.filter(r=>ethers.utils.isAddress(r.to)&&parseFloat(r.amount)>0).length || txMultiRows.length} {txIsToken ? 'Token' : 'Transaksi'}</>}
+                        : (txSendAssetMode==='token' && txAsset==='native')
+                          ? <><FaCoins/> Pilih Token Dulu</>
+                          : <><FaPaperPlane/> Kirim {txMultiRows.filter(r=>ethers.utils.isAddress(r.to)&&parseFloat(r.amount)>0).length || txMultiRows.length} {txIsToken ? 'Token' : 'Transaksi'}</>}
                     </button>
                     <div style={{ fontSize:'10px', color:'#444', textAlign:'center' }}>
                       Dikirim satu per satu — tiap TX menunggu konfirmasi sebelum lanjut ke baris berikutnya.
@@ -600,20 +593,136 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
 
                     {/* Run button */}
                     <button onClick={sweepRun}
-                      disabled={sweepRunning || sweepSources.length === 0 || !ethers.utils.isAddress(sweepDestAddr)}
+                      disabled={sweepRunning || sweepSources.length === 0 || !ethers.utils.isAddress(sweepDestAddr) || (txSendAssetMode==='token' && txAsset==='native')}
                       style={{
                         padding:'13px', fontWeight:'bold', fontSize:'14px', cursor:sweepRunning?'wait':'pointer',
-                        background: sweepRunning ? '#001a00' : (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)) ? 'transparent' : '#00e676',
+                        background: sweepRunning ? '#001a00' : (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)||(txSendAssetMode==='token'&&txAsset==='native')) ? 'transparent' : '#00e676',
                         color: sweepRunning ? '#00e676' : '#000',
                         border:`1px solid ${sweepRunning?'#00e67644':'#00e676'}`,
                         display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
-                        opacity: (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)) ? 0.4 : 1,
+                        opacity: (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)||(txSendAssetMode==='token'&&txAsset==='native')) ? 0.4 : 1,
                         transition:'all 0.2s',
                       }}>
                       {sweepRunning
                         ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Sweeping {sweepSources.filter(s=>s.status==='success').length}/{sweepSources.length}...</>
-                        : <><FaExchangeAlt/> Mulai Sweep {sweepSources.length} Wallet{txIsToken ? ` (${selectedTxToken!.symbol})` : ''}</>}
+                        : (txSendAssetMode==='token' && txAsset==='native')
+                          ? <><FaCoins/> Pilih Token Dulu</>
+                          : <><FaExchangeAlt/> Mulai Sweep {sweepSources.length} Wallet{txIsToken ? ` (${selectedTxToken!.symbol})` : ''}</>}
                     </button>
+                  </div>
+                )}
+              </div>
+
+              {txIsToken && selectedTxToken && (
+                <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'18px' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px', gap:'8px', flexWrap:'wrap' }}>
+                    <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'flex', alignItems:'center', gap:'6px' }}>
+                      <FaCoins size={11}/> Detail Token
+                      {txTokenDetailLoading && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
+                    </div>
+                    <Link to={`/explorer/address/${selectedTxToken.address}?network=${selectedNetwork?.id ?? ''}`}
+                      style={{ fontSize:'11px', color:'#01a2ff', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
+                      <FaLink size={9}/> Lihat Detail Lengkap di Explorer
+                    </Link>
+                  </div>
+
+                  {txTokenDetailError && !txTokenDetail && (
+                    <p style={{ color:'#ff8888', fontSize:'11px', margin:0 }}>{txTokenDetailError}</p>
+                  )}
+
+                  {!txTokenDetailError && !txTokenDetail && !txTokenDetailLoading && (
+                    <p style={{ color:'#333', fontSize:'12px', textAlign:'center', padding:'10px 0', margin:0 }}>Mengambil detail token…</p>
+                  )}
+
+                  {txTokenDetail && (
+                    <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))', gap:'10px' }}>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Nama / Symbol</div>
+                        <div style={{ fontSize:'12px', color:'#ccc', marginTop:'3px' }}>
+                          {txTokenDetail.name || selectedTxToken.name} ({txTokenDetail.symbol || selectedTxToken.symbol})
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Standard</div>
+                        <div style={{ fontSize:'12px', color:'#ccc', marginTop:'3px' }}>{txTokenDetail.standard}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Total Supply</div>
+                        <div style={{ fontSize:'12px', color:'#ccc', marginTop:'3px', fontFamily:'monospace' }}>
+                          {txTokenDetail.totalSupply ? parseFloat(txTokenDetail.totalSupply).toLocaleString('en-US', { maximumFractionDigits: 4 }) : '—'}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Holders</div>
+                        <div style={{ fontSize:'12px', color:'#ccc', marginTop:'3px' }}>{txTokenDetail.holdersCount?.toLocaleString('en-US') ?? '—'}</div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Harga (USD)</div>
+                        <div style={{ fontSize:'12px', color:'#4caf50', marginTop:'3px', fontFamily:'monospace' }}>
+                          {txTokenDetail.priceUsd != null ? `$${txTokenDetail.priceUsd.toLocaleString('en-US', { maximumFractionDigits: 6 })}` : '—'}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Market Cap (USD)</div>
+                        <div style={{ fontSize:'12px', color:'#ccc', marginTop:'3px', fontFamily:'monospace' }}>
+                          {txTokenDetail.marketCapUsd != null ? `$${txTokenDetail.marketCapUsd.toLocaleString('en-US', { maximumFractionDigits: 0 })}` : '—'}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'18px' }}>
+                <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px', gap:'8px', flexWrap:'wrap' }}>
+                  <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'flex', alignItems:'center', gap:'6px' }}>
+                    Riwayat Transaksi Wallet
+                    {txWalletHistoryLoading && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
+                  </div>
+                  <div style={{ display:'flex', alignItems:'center', gap:'12px' }}>
+                    <button onClick={() => txLoadWalletHistory()} disabled={txWalletHistoryLoading}
+                      style={{ background:'none', border:'1px solid #333', color:'#666', padding:'4px 10px', cursor:'pointer', fontSize:'10px', display:'flex', alignItems:'center', gap:'4px' }}>
+                      <FaSync size={9} style={{ animation:txWalletHistoryLoading?'spin 1s linear infinite':undefined }}/> Refresh
+                    </button>
+                    <Link to={`/explorer/address/${txAddress}?network=${selectedNetwork?.id ?? ''}`}
+                      style={{ fontSize:'11px', color:selectedNetwork?.color??'#01a2ff', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
+                      <FaLink size={9}/> Lihat Semua di Explorer
+                    </Link>
+                  </div>
+                </div>
+
+                {txWalletHistoryError ? (
+                  <p style={{ color:'#ff8888', fontSize:'11px', textAlign:'center', padding:'12px 0', margin:0 }}>{txWalletHistoryError}</p>
+                ) : !txWalletHistoryLoading && txWalletHistory.length === 0 ? (
+                  <p style={{ color:'#333', fontSize:'12px', textAlign:'center', padding:'16px 0', margin:0 }}>Belum ada transaksi untuk address ini.</p>
+                ) : (
+                  <div style={{ display:'flex', flexDirection:'column', gap:'2px' }}>
+                    {txWalletHistory.map(h => {
+                      const stColor = h.status==='success' ? '#4caf50' : h.status==='failed' ? '#f44336' : '#ffaa00';
+                      const isOut = h.from.toLowerCase() === txAddress.toLowerCase();
+                      return (
+                        <Link key={h.hash} to={`/explorer/tx/${h.hash}?network=${selectedNetwork?.id ?? ''}`} className="explorer-row"
+                          style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', padding:'9px 8px', borderBottom:'1px solid #141414', textDecoration:'none', border:'1px solid transparent' }}>
+                          <div style={{ minWidth:0, flex:1 }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                              <span style={{ fontSize:'9px', fontWeight:'bold', color:stColor, border:`1px solid ${stColor}44`, padding:'1px 5px' }}>
+                                {h.status === 'success' ? 'OK' : h.status === 'failed' ? 'FAIL' : 'PENDING'}
+                              </span>
+                              <span style={{ fontSize:'11px', color:'#ccc' }}>
+                                {h.methodGuess || (isOut ? 'Transfer Keluar' : 'Transfer Masuk')}
+                              </span>
+                            </div>
+                            <div style={{ fontSize:'10px', color:'#444', marginTop:'2px', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                              {shortAddr(h.hash)} · {isOut ? `Ke ${shortAddr(h.to||'')}` : `Dari ${shortAddr(h.from)}`}
+                              {h.timestamp && ` · ${new Date(h.timestamp*1000).toLocaleString('id-ID')}`}
+                            </div>
+                          </div>
+                          <div style={{ fontSize:'11px', fontFamily:'monospace', color:isOut?'#f44336':'#4caf50', flexShrink:0 }}>
+                            {isOut?'-':'+'}{parseFloat(h.value).toFixed(5)} {selectedNetwork?.symbol??'ETH'}
+                          </div>
+                        </Link>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -721,13 +830,16 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                       </div>
                     </div>
                     <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #161616', display:'flex', alignItems:'center', gap:'8px' }}>
-                      <FaQrcode size={11} color="#444"/>
                       <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                         {solAddress}
                       </code>
                       <button onClick={() => copyText(solAddress, 'sol_addr')}
                         style={{ background:'none', border:'1px solid #333', color:copiedKey==='sol_addr'?'#4caf50':'#555', padding:'4px 8px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}>
                         {copiedKey==='sol_addr' ? <FaCheckCircle/> : <FaCopy/>}
+                      </button>
+                      <button onClick={() => setQrAddress(solAddress)} title="QR Code"
+                        style={{ background:'none', border:'1px solid #333', color:'#555', padding:'4px 8px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}>
+                        <FaQrcode size={11}/>
                       </button>
                       <a href={`${SOLANA_NETWORK.explorerUrl}/account/${solAddress}${SOLANA_NETWORK.clusterParam}`} target="_blank" rel="noreferrer"
                         style={{ color:'#555', padding:'4px 8px', border:'1px solid #333', display:'flex', flexShrink:0 }}
@@ -784,6 +896,36 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                             onChange={e => setSolSendAmt(e.target.value)}
                             style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
                         </div>
+                        {(() => {
+                          const needsNewAta = solIsToken && solDestAtaExists === false;
+                          const totalFeeLamports = 5000 + (needsNewAta ? SOL_TOKEN_ACCOUNT_RENT_LAMPORTS : 0);
+                          const totalFeeSol = totalFeeLamports / LAMPORTS_PER_SOL;
+                          return (
+                            <>
+                              {solIsToken && solDestAtaChecking && (
+                                <div style={{ fontSize:'10px', color:'#555', display:'flex', alignItems:'center', gap:'6px' }}>
+                                  <FaSpinner style={{ animation:'spin 1s linear infinite' }} size={9}/> Mengecek token account tujuan...
+                                </div>
+                              )}
+                              {needsNewAta && (
+                                <div style={{ background:'#1a1608', border:'1px solid #4a3f10', color:'#F1C40F', padding:'9px 12px', fontSize:'11px', display:'flex', gap:'8px', alignItems:'flex-start' }}>
+                                  <FaExclamationTriangle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
+                                  <span>
+                                    Address tujuan belum punya token account untuk mint ini — akan dibuatkan otomatis saat kirim,
+                                    nambah biaya rent ± <strong>{(SOL_TOKEN_ACCOUNT_RENT_LAMPORTS/LAMPORTS_PER_SOL).toFixed(6)} SOL</strong> (dibayar sekali, dari saldo SOL pengirim, bukan dari jumlah token yang dikirim).
+                                  </span>
+                                </div>
+                              )}
+                              <div style={{ display:'flex', alignItems:'center', gap:'8px', fontSize:'11px', color:'#555', flexWrap:'wrap' }}>
+                                <FaGasPump size={10} color="#f3ba2f"/> Fee jaringan{needsNewAta ? ' (+ rent akun baru)' : ''}:
+                                <span style={{ fontFamily:'monospace', color:'#4caf50', background:'#0a1a0a', border:'1px solid #1a2a1a', padding:'2px 6px' }}>
+                                  ≈ {totalFeeSol.toFixed(6)} SOL
+                                </span>
+                                {renderGasFiatBadge(totalFeeSol)}
+                              </div>
+                            </>
+                          );
+                        })()}
                         <button onClick={solSend} disabled={solSending || !solSendTo.trim() || !solSendAmt}
                           style={{
                             padding:'13px', background:solSending?'#1a1a2a':SOLANA_NETWORK.color, color:'#000', border:'none',
@@ -1430,6 +1572,10 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         <button onClick={() => setQrAddress(tronAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
                           <FaQrcode size={12}/>
                         </button>
+                        <a href={`${tronNetwork.explorerUrl}/address/${tronAddress}`} target="_blank" rel="noreferrer"
+                          style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 10px', display:'flex' }} title="Lihat di Explorer">
+                          <FaLink size={12}/>
+                        </a>
                       </div>
                     </div>
                   </div>
@@ -1556,10 +1702,13 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                                   </span>
                                 </div>
                               )}
-                              <div style={{ display:'flex', justifyContent:'space-between', paddingTop:'6px', borderTop:'1px solid #1a1a1a' }}>
+                              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', paddingTop:'6px', borderTop:'1px solid #1a1a1a', flexWrap:'wrap', gap:'6px' }}>
                                 <span style={{ color:'#888' }}>Total biaya</span>
-                                <span style={{ fontFamily:'monospace', fontWeight:'bold', color: tronFeeEstimate.coveredByFree ? '#4caf50' : '#ffaa00' }}>
-                                  {tronFeeEstimate.coveredByFree ? 'Gratis (dicover kuota)' : `~${sunToTrx(tronFeeEstimate.feeSun)} TRX`}
+                                <span style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                                  <span style={{ fontFamily:'monospace', fontWeight:'bold', color: tronFeeEstimate.coveredByFree ? '#4caf50' : '#ffaa00' }}>
+                                    {tronFeeEstimate.coveredByFree ? 'Gratis (dicover kuota)' : `~${sunToTrx(tronFeeEstimate.feeSun)} TRX`}
+                                  </span>
+                                  {!tronFeeEstimate.coveredByFree && renderGasFiatBadge(parseFloat(sunToTrx(tronFeeEstimate.feeSun)))}
                                 </span>
                               </div>
                             </>
@@ -1788,6 +1937,10 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         <button onClick={() => setQrAddress(axmAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
                           <FaQrcode size={12}/>
                         </button>
+                        <a href={`${AXIOME_NETWORK.explorerUrl}/address/${axmAddress}`} target="_blank" rel="noreferrer"
+                          style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 10px', display:'flex' }} title="Lihat di Explorer">
+                          <FaLink size={12}/>
+                        </a>
                       </div>
                     </div>
                   </div>
@@ -1820,6 +1973,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                               <span style={{ fontFamily:'monospace', fontWeight:'bold', color:'#4caf50' }}>
                                 ≈ {axmFeeEstimate.feeAxm.toLocaleString('en-US', { maximumFractionDigits: 6 })} AXM
                               </span>
+                              {renderGasFiatBadge(axmFeeEstimate.feeAxm)}
                             </div>
                           )}
                           {axmFeeEstimateError && (
@@ -1857,6 +2011,284 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
 
                   <div style={{ textAlign:'center' }}>
                     <button onClick={axmDisconnect}
+                      style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
+                      Disconnect Wallet
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {txChain === 'sui' && (
+            <>
+              <div style={{ marginBottom:'16px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
+                <select value={suiNetId} onChange={e => switchSuiNetwork(e.target.value)}
+                  style={{ flex:'1 1 260px', fontFamily:'monospace', fontSize:'13px', padding:'10px 12px', background:'#0d0d0d', border:'1px solid #1e1e1e', color:'#ccc' }}>
+                  {SUI_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
+                </select>
+                <a href={SUI_NETWORK.explorerUrl} target="_blank" rel="noreferrer"
+                  style={{ fontSize:'11px', color:'#4DA2FF', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
+                  <FaLink size={9}/> Explorer
+                </a>
+              </div>
+
+              {!suiConnected ? (
+                <div className="form-container" style={{ maxWidth:'420px', margin:'32px auto' }}>
+                  <h2 style={{ textAlign:'center', marginBottom:'18px', fontSize:'15px' }}>
+                    <FaPlug style={{ marginRight:'8px' }}/>Connect ke {SUI_NETWORK.name}
+                  </h2>
+                  {wallets.some(w => (w.suiAddresses||[]).length > 0) && (
+                    <div style={{ marginBottom:'14px' }}>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Sui tersimpan</label>
+                      <select value={suiWalletSel} onChange={e => handleSuiWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
+                        <option value="">-- Pilih address --</option>
+                        {wallets.flatMap((w, wi) =>
+                          (w.suiAddresses||[]).map(a => (
+                            <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
+                              {w.name} · #{a.index} · {a.address.slice(0,14)}...
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+                  )}
+                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
+                    <FaKey style={{ marginRight:'4px' }}/>Private Key (hex)
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="0x... 32-byte seed hex"
+                    value={suiPrivKey}
+                    onChange={e => { setSuiPrivKey(e.target.value); setSuiWalletSel(''); }}
+                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}
+                  />
+                  <button onClick={suiConnect} disabled={suiConnecting || !suiPrivKey.trim()}
+                    style={{ width:'100%', padding:'12px', background:suiConnecting?'#1a1e2a':SUI_NETWORK.color, color:'#000', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:!suiPrivKey.trim()?0.5:1 }}>
+                    {suiConnecting
+                      ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Connecting...</>
+                      : <><FaPlug/> Connect</>}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+
+                  {/* ── Balance / Receive card ── */}
+                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${SUI_NETWORK.color}`, padding:'20px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'16px' }}>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px' }}>Saldo</div>
+                        <div style={{ fontSize:'22px', fontWeight:'bold', fontFamily:'monospace' }}>
+                          {suiLoadingBal ? <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> : suiBalance}
+                        </div>
+                      </div>
+                      <button onClick={() => suiRefreshBalance()} disabled={suiLoadingBal}
+                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
+                        <FaSync size={11} style={{ animation:suiLoadingBal?'spin 1s linear infinite':undefined }}/> Refresh
+                      </button>
+                    </div>
+                    <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #1a1a1a' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                        <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'8px 10px' }}>
+                          {suiAddress}
+                        </code>
+                        <button onClick={() => copyText(suiAddress, 'sui_recv')} style={{ background:'none', border:'1px solid #333', color:copiedKey==='sui_recv'?'#4caf50':'#888', cursor:'pointer', padding:'8px 10px' }}>
+                          {copiedKey==='sui_recv' ? <FaCheckCircle size={12}/> : <FaCopy size={12}/>}
+                        </button>
+                        <button onClick={() => setQrAddress(suiAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
+                          <FaQrcode size={12}/>
+                        </button>
+                        <a href={`${SUI_NETWORK.explorerUrl}/${suiAddress}`} target="_blank" rel="noreferrer"
+                          style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 10px', display:'flex' }} title="Lihat di Explorer">
+                          <FaLink size={12}/>
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
+                    <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaPaperPlane style={{ marginRight:'6px' }}/>Kirim SUI</h3>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
+                      <input placeholder="0x..." value={suiSendTo} onChange={e => setSuiSendTo(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'4px' }}>
+                        <label style={{ fontSize:'11px', color:'#555' }}>Jumlah (SUI)</label>
+                        <button onClick={suiSetMaxAmount} disabled={suiMaxLoading || !suiConnected}
+                          style={{ background:'none', border:'1px solid #333', color:suiMaxLoading?'#555':SUI_NETWORK.color, padding:'2px 8px', cursor:(suiMaxLoading||!suiConnected)?'not-allowed':'pointer', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.5px', opacity:!suiConnected?0.4:1 }}>
+                          {suiMaxLoading ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : 'MAX'}
+                        </button>
+                      </div>
+                      <input type="number" placeholder="0.0" value={suiSendAmt} onChange={e => setSuiSendAmt(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'8px' }}/>
+                      <div style={{ fontSize:'10px', color:'#444', marginBottom:'16px' }}>
+                        <FaGasPump size={9} style={{ marginRight:'4px' }}/>Gas budget dipatok otomatis (dipotong dari saldo yang sama)
+                      </div>
+
+                      <button onClick={suiSend} disabled={suiSending || !suiSendTo.trim() || !suiSendAmt}
+                        style={{ width:'100%', padding:'12px', background:suiSending?'#1a1e2a':SUI_NETWORK.color, color:'#000', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!suiSendTo.trim()||!suiSendAmt)?0.5:1 }}>
+                        {suiSending
+                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
+                          : <><FaPaperPlane/> Kirim SUI</>}
+                      </button>
+                      {suiStatus.type !== 'idle' && (
+                        <div style={{
+                          marginTop:'14px', padding:'12px', fontSize:'12px',
+                          background: suiStatus.type==='error' ? '#2a0d0d' : suiStatus.type==='success' ? '#0d2a0d' : '#1a1a0d',
+                          border: `1px solid ${suiStatus.type==='error' ? '#5a1e1e' : suiStatus.type==='success' ? '#1e5a1e' : '#5a5a1e'}`,
+                          color: suiStatus.type==='error' ? '#ff8888' : suiStatus.type==='success' ? '#88ff88' : '#ffff88',
+                        }}>
+                          {suiStatus.msg}
+                          {suiStatus.hash && (
+                            <a href={`${SUI_NETWORK.explorerUrl.replace('/account','/tx')}/${suiStatus.hash}`} target="_blank" rel="noreferrer"
+                              style={{ display:'block', marginTop:'6px', color:'#4DA2FF', wordBreak:'break-all' }}>
+                              <FaLink size={9}/> {suiStatus.hash}
+                            </a>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                  <div style={{ textAlign:'center' }}>
+                    <button onClick={suiDisconnect}
+                      style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
+                      Disconnect Wallet
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {txChain === 'apt' && (
+            <>
+              <div style={{ marginBottom:'16px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
+                <select value={aptNetId} onChange={e => switchAptNetwork(e.target.value)}
+                  style={{ flex:'1 1 260px', fontFamily:'monospace', fontSize:'13px', padding:'10px 12px', background:'#0d0d0d', border:'1px solid #1e1e1e', color:'#ccc' }}>
+                  {APTOS_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
+                </select>
+                <a href={APTOS_NETWORK.explorerUrl} target="_blank" rel="noreferrer"
+                  style={{ fontSize:'11px', color:'#00D2AA', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
+                  <FaLink size={9}/> Explorer
+                </a>
+              </div>
+
+              {!aptConnected ? (
+                <div className="form-container" style={{ maxWidth:'420px', margin:'32px auto' }}>
+                  <h2 style={{ textAlign:'center', marginBottom:'18px', fontSize:'15px' }}>
+                    <FaPlug style={{ marginRight:'8px' }}/>Connect ke {APTOS_NETWORK.name}
+                  </h2>
+                  {wallets.some(w => (w.aptAddresses||[]).length > 0) && (
+                    <div style={{ marginBottom:'14px' }}>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Aptos tersimpan</label>
+                      <select value={aptWalletSel} onChange={e => handleAptWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
+                        <option value="">-- Pilih address --</option>
+                        {wallets.flatMap((w, wi) =>
+                          (w.aptAddresses||[]).map(a => (
+                            <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
+                              {w.name} · #{a.index} · {a.address.slice(0,14)}...
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+                  )}
+                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
+                    <FaKey style={{ marginRight:'4px' }}/>Private Key (hex)
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="0x... 32-byte seed hex"
+                    value={aptPrivKey}
+                    onChange={e => { setAptPrivKey(e.target.value); setAptWalletSel(''); }}
+                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}
+                  />
+                  <button onClick={aptConnect} disabled={aptConnecting || !aptPrivKey.trim()}
+                    style={{ width:'100%', padding:'12px', background:aptConnecting?'#0a1a16':APTOS_NETWORK.color, color:'#000', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:!aptPrivKey.trim()?0.5:1 }}>
+                    {aptConnecting
+                      ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Connecting...</>
+                      : <><FaPlug/> Connect</>}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+
+                  {/* ── Balance / Receive card ── */}
+                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${APTOS_NETWORK.color}`, padding:'20px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'16px' }}>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px' }}>Saldo</div>
+                        <div style={{ fontSize:'22px', fontWeight:'bold', fontFamily:'monospace' }}>
+                          {aptLoadingBal ? <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> : aptBalance}
+                        </div>
+                      </div>
+                      <button onClick={() => aptRefreshBalance()} disabled={aptLoadingBal}
+                        style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
+                        <FaSync size={11} style={{ animation:aptLoadingBal?'spin 1s linear infinite':undefined }}/> Refresh
+                      </button>
+                    </div>
+                    <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #1a1a1a' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                        <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'8px 10px' }}>
+                          {aptAddress}
+                        </code>
+                        <button onClick={() => copyText(aptAddress, 'apt_recv')} style={{ background:'none', border:'1px solid #333', color:copiedKey==='apt_recv'?'#4caf50':'#888', cursor:'pointer', padding:'8px 10px' }}>
+                          {copiedKey==='apt_recv' ? <FaCheckCircle size={12}/> : <FaCopy size={12}/>}
+                        </button>
+                        <button onClick={() => setQrAddress(aptAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
+                          <FaQrcode size={12}/>
+                        </button>
+                        <a href={`${APTOS_NETWORK.explorerUrl}/${aptAddress}`} target="_blank" rel="noreferrer"
+                          style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 10px', display:'flex' }} title="Lihat di Explorer">
+                          <FaLink size={12}/>
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
+                    <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaPaperPlane style={{ marginRight:'6px' }}/>Kirim APT</h3>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
+                      <input placeholder="0x..." value={aptSendTo} onChange={e => setAptSendTo(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'4px' }}>
+                        <label style={{ fontSize:'11px', color:'#555' }}>Jumlah (APT)</label>
+                        <button onClick={aptSetMaxAmount} disabled={aptMaxLoading || !aptConnected}
+                          style={{ background:'none', border:'1px solid #333', color:aptMaxLoading?'#555':APTOS_NETWORK.color, padding:'2px 8px', cursor:(aptMaxLoading||!aptConnected)?'not-allowed':'pointer', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.5px', opacity:!aptConnected?0.4:1 }}>
+                          {aptMaxLoading ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : 'MAX'}
+                        </button>
+                      </div>
+                      <input type="number" placeholder="0.0" value={aptSendAmt} onChange={e => setAptSendAmt(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'8px' }}/>
+                      <div style={{ fontSize:'10px', color:'#444', marginBottom:'16px' }}>
+                        <FaGasPump size={9} style={{ marginRight:'4px' }}/>Gas fee dipatok kecil & otomatis dipotong dari saldo yang sama — tombol MAX sudah menyisakan buffer-nya.
+                      </div>
+
+                      <button onClick={aptSend} disabled={aptSending || !aptSendTo.trim() || !aptSendAmt}
+                        style={{ width:'100%', padding:'12px', background:aptSending?'#0a1a16':APTOS_NETWORK.color, color:'#000', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!aptSendTo.trim()||!aptSendAmt)?0.5:1 }}>
+                        {aptSending
+                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
+                          : <><FaPaperPlane/> Kirim APT</>}
+                      </button>
+                      {aptStatus.type !== 'idle' && (
+                        <div style={{
+                          marginTop:'14px', padding:'12px', fontSize:'12px',
+                          background: aptStatus.type==='error' ? '#2a0d0d' : aptStatus.type==='success' ? '#0d2a0d' : '#1a1a0d',
+                          border: `1px solid ${aptStatus.type==='error' ? '#5a1e1e' : aptStatus.type==='success' ? '#1e5a1e' : '#5a5a1e'}`,
+                          color: aptStatus.type==='error' ? '#ff8888' : aptStatus.type==='success' ? '#88ff88' : '#ffff88',
+                        }}>
+                          {aptStatus.msg}
+                          {aptStatus.hash && (
+                            <a href={`${APTOS_NETWORK.explorerUrl}/${aptAddress}/transactions?txn=${aptStatus.hash}`} target="_blank" rel="noreferrer"
+                              style={{ display:'block', marginTop:'6px', color:'#00D2AA', wordBreak:'break-all' }}>
+                              <FaLink size={9}/> {aptStatus.hash}
+                            </a>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                  <div style={{ textAlign:'center' }}>
+                    <button onClick={aptDisconnect}
                       style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
                       Disconnect Wallet
                     </button>
@@ -1947,10 +2379,22 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         <button onClick={() => copyText(gramAddress, 'gram_recv')} style={{ background:'none', border:'1px solid #333', color:copiedKey==='gram_recv'?'#4caf50':'#888', cursor:'pointer', padding:'8px 10px' }}>
                           {copiedKey==='gram_recv' ? <FaCheckCircle size={12}/> : <FaCopy size={12}/>}
                         </button>
-                        <button onClick={() => setQrAddress(gramAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
+                        {/* QR/link ke address ini otomatis menyertakan memo dari field
+                            "Memo / Comment" di form Kirim GRAM di bawah (satu field dipakai bareng). */}
+                        <button onClick={() => setQrAddress(gramMemo.trim() ? `ton://transfer/${gramAddress}?text=${encodeURIComponent(gramMemo.trim())}` : gramAddress)}
+                          style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
                           <FaQrcode size={12}/>
                         </button>
+                        <a href={`${GRAM_NETWORK.explorerUrl}/address/${gramAddress}`} target="_blank" rel="noreferrer"
+                          style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 10px', display:'flex' }} title="Lihat di Explorer">
+                          <FaLink size={12}/>
+                        </a>
                       </div>
+                      {gramMemo.trim() && (
+                        <div style={{ fontSize:'10px', color:'#444', marginTop:'8px' }}>
+                          Memo aktif: <span style={{ color:'#888', fontFamily:'monospace' }}>"{gramMemo.trim()}"</span> — ikut disertakan ke QR/link di atas. Ubah di field "Memo / Comment" pada form Kirim GRAM.
+                        </div>
+                      )}
                     </div>
                   </div>
 
@@ -1989,7 +2433,14 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         </button>
                       </div>
                       <input type="number" placeholder="0.0" value={gramSendAmt} onChange={e => setGramSendAmt(e.target.value)}
-                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'16px' }}/>
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
+
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Memo / Comment (opsional)</label>
+                      <input placeholder="mis. memo transfer / ID exchange tujuan" value={gramMemo} onChange={e => setGramMemo(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'4px' }}/>
+                      <div style={{ fontSize:'10px', color:'#444', marginBottom:'16px' }}>
+                        Field ini dipakai bareng buat QR/link di kartu "Terima" di atas — kalau diisi, ikut ke-embed di sana juga.
+                      </div>
 
                       {gramFeeEstimateError && (
                         <div style={{ background:'#1a1608', border:'1px solid #4a3f10', padding:'10px 12px', marginBottom:'16px', display:'flex', gap:'6px', alignItems:'flex-start', color:'#ffaa00', fontSize:'11px' }}>
@@ -2002,7 +2453,8 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px', marginBottom:'16px', fontSize:'11px', color:'#666', display:'flex', gap:'8px', alignItems:'flex-start' }}>
                           <FaInfoCircle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
                           <span>
-                            Estimasi fee: <span style={{ fontFamily:'monospace', color:'#888' }}>~{gramFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} GRAM</span>
+                            Estimasi fee: <span style={{ fontFamily:'monospace', color:'#888' }}>~{gramFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} GRAM</span>{' '}
+                            {renderGasFiatBadge(gramFeeEstimate.totalFeeGram)}
                             {gramFeeEstimate.willDeploy && ' (termasuk deploy wallet — tx pertama dari address ini)'}
                             {gramFeeEstimating && <span style={{ marginLeft:'6px', animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
                           </span>
@@ -2133,7 +2585,8 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px', marginBottom:'16px', fontSize:'11px', color:'#666', display:'flex', gap:'8px', alignItems:'flex-start' }}>
                           <FaInfoCircle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
                           <span>
-                            Estimasi fee: <span style={{ fontFamily:'monospace', color:'#888' }}>~{gramJettonFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} GRAM</span>
+                            Estimasi fee: <span style={{ fontFamily:'monospace', color:'#888' }}>~{gramJettonFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} GRAM</span>{' '}
+                            {renderGasFiatBadge(gramJettonFeeEstimate.totalFeeGram)}
                             {gramJettonFeeEstimate.willDeploy && ' (termasuk deploy wallet — tx pertama dari address ini)'}
                             {gramJettonFeeEstimating && <span style={{ marginLeft:'6px', animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
                           </span>
@@ -2328,14 +2781,17 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                                       </span>
                                     </div>
                                   )}
-                                  <div style={{ display:'flex', justifyContent:'space-between' }}>
+                                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'6px', flexWrap:'wrap' }}>
                                     <span style={{ color:'#666', display:'flex', alignItems:'center', gap:'5px' }}><FaGasPump size={9}/> Fee network</span>
-                                    <span style={{ fontFamily:'monospace' }}>
-                                      {gramSwapFeeEstimateError
-                                        ? <span style={{ color:'#ffaa00' }}>gagal dihitung</span>
-                                        : gramSwapFeeEstimate
-                                          ? `~${gramSwapFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} GRAM`
-                                          : (gramSwapFeeEstimating ? 'menghitung...' : '—')}
+                                    <span style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                                      <span style={{ fontFamily:'monospace' }}>
+                                        {gramSwapFeeEstimateError
+                                          ? <span style={{ color:'#ffaa00' }}>gagal dihitung</span>
+                                          : gramSwapFeeEstimate
+                                            ? `~${gramSwapFeeEstimate.totalFeeGram.toLocaleString('en-US', { maximumFractionDigits: 6 })} GRAM`
+                                            : (gramSwapFeeEstimating ? 'menghitung...' : '—')}
+                                      </span>
+                                      {gramSwapFeeEstimate && renderGasFiatBadge(gramSwapFeeEstimate.totalFeeGram)}
                                     </span>
                                   </div>
                                   {highImpact && (
@@ -2517,6 +2973,10 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         <button onClick={() => setQrAddress(atomAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
                           <FaQrcode size={12}/>
                         </button>
+                        <a href={`${COSMOS_NETWORK.explorerUrl}/account/${atomAddress}`} target="_blank" rel="noreferrer"
+                          style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 10px', display:'flex' }} title="Lihat di Explorer">
+                          <FaLink size={12}/>
+                        </a>
                       </div>
                     </div>
                   </div>
