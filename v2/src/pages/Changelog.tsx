@@ -22,7 +22,7 @@ interface Version {
 const CHANGELOG: Version[] = [
   {
     version: '2.3.0',
-    date: '00 Sep 2026',
+    date: '08 Sep 2026',
     title: 'Update v2.3',
     changes: [
       { type: 'feature', text: 'Menambahkan fitur memo di Gram network ~WalletGen' },
