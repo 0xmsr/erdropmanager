@@ -49,17 +49,24 @@ export function keypairFromGramPrivateKey(privateKeyHex: string): GramKeypair {
 // Telegram, Tonkeeper, MyTonWallet, dst) TIDAK memakai skema BIP39+BIP32/SLIP-0010
 // seperti deriveGramKeypair() di atas (yang dipakai untuk menurunkan address Gram
 // dari mnemonic multi-chain buatan app ini sendiri). Wallet TON native derive
-// key langsung dari kata-kata mnemonic lewat PBKDF2-HMAC-SHA512 (opsional + salt
-// password), TANPA path derivation apapun — lihat spec resmi di
+// key langsung dari kata-kata mnemonic lewat PBKDF2-HMAC-SHA512, TANPA path
+// derivation apapun — lihat spec resmi di
 // https://docs.ton.org/develop/dapps/asset-processing/mnemonics/wallet-mnemonics.
 // Karena beda algoritma total, mnemonic dari Telegram Wallet:
 //   1) hampir pasti gagal lolos validasi checksum BIP39 biasa (ethers.utils.isValidMnemonic)
 //   2) kalaupun "dipaksa" lewat deriveGramKeypair(), akan menghasilkan address Gram
 //      yang SALAH / tidak cocok dengan yang muncul di app Telegram Wallet aslinya.
 // Makanya proses import-nya harus lewat fungsi khusus ini.
-export async function isValidTonMnemonic(words: string[], password: string = ''): Promise<boolean> {
+//
+// CATATAN: fitur "password" mnemonic TON (mode password terpisah yang didukung
+// sebagian wallet TON) sengaja TIDAK didukung di sini. Fitur itu cuma berlaku untuk
+// mnemonic yang sengaja dibuat dalam "mode password" — mayoritas mnemonic dari
+// Telegram Wallet/Tonkeeper adalah mnemonic biasa tanpa mode itu, jadi menambahkan
+// kolom password di UI lebih sering bikin bingung (kelihatan seperti "password
+// salah" padahal mnemonic-nya memang tidak pakai skema itu) daripada membantu.
+export async function isValidTonMnemonic(words: string[]): Promise<boolean> {
   try {
-    return await mnemonicValidate(words, password || undefined);
+    return await mnemonicValidate(words, undefined);
   } catch {
     return false;
   }
@@ -68,21 +75,16 @@ export async function isValidTonMnemonic(words: string[], password: string = '')
 export async function deriveGramFromTonMnemonic(
   words: string[],
   version: GramVersion = 'v5r1',
-  password: string = '',
 ): Promise<{ address: string; privateKey: string; publicKey: string; version: GramVersion }> {
   const cleaned = words.map(w => w.trim().toLowerCase()).filter(Boolean);
   if (cleaned.length !== 24) {
     throw new Error(`Mnemonic wallet TON (Telegram Wallet / Tonkeeper) harus 24 kata, ditemukan ${cleaned.length} kata.`);
   }
-  const valid = await isValidTonMnemonic(cleaned, password);
+  const valid = await isValidTonMnemonic(cleaned);
   if (!valid) {
-    throw new Error(
-      password
-        ? 'Mnemonic TON tidak valid untuk password yang dimasukkan. Cek ejaan kata & password-nya lagi.'
-        : 'Mnemonic TON tidak valid. Kalau wallet aslinya pakai password tambahan, isi kolom password dulu.'
-    );
+    throw new Error('Mnemonic TON tidak valid — cek ejaan/urutan 24 katanya lagi.');
   }
-  const keyPair = await mnemonicToPrivateKey(cleaned, password || undefined);
+  const keyPair = await mnemonicToPrivateKey(cleaned, undefined);
   const wallet  = buildGramWallet(keyPair.publicKey, version);
   return {
     address:    wallet.address.toString({ bounceable: false, testOnly: false }),
