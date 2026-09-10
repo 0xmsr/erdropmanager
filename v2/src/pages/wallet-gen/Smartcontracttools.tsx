@@ -2907,14 +2907,52 @@ async function resolveAllImports(entrySource: string): Promise<Record<string, st
 }
 
 // Worker dibuat dari Blob supaya tidak perlu file terpisah di project — isinya cuma
-// `importScripts(url)` + jembatan pesan compile (lihat penjelasan lengkap di atas).
+// eval source solc-js yang sudah di-fetch di main thread + jembatan pesan compile.
+//
+// PENTING: dulu di sini kita langsung `importScripts(url)` lalu postMessage('loaded')
+// SEBELUM runtime WASM/Emscripten-nya benar-benar selesai init. Untuk build solc yang
+// pakai WebAssembly, init itu ASINKRON — jadi worker sempat bilang "sudah siap" padahal
+// `Module.cwrap` belum bisa dipakai. Efeknya baru kelihatan pas message 'compile' masuk:
+// pemanggilan fungsi WASM yang belum ready itu nge-hang tanpa error sama sekali, jadi yang
+// muncul ke user cuma "Timeout menunggu respons worker compiler Solidity." dari timeout
+// compile (120s) — padahal akar masalahnya ada di fase load, bukan compile-nya sendiri.
+// Fix: tunggu `Module.onRuntimeInitialized` (dipasang SEBELUM source di-eval) sebelum
+// kirim 'loaded', dengan fallback poll `Module.calledRun` untuk build lama yang mungkin
+// tidak pernah memanggil callback itu.
 const SOLC_WORKER_SRC = `
 self.onmessage = function (e) {
   var msg = e.data || {};
   if (msg.type === 'load') {
     try {
-      importScripts(msg.url);
-      self.postMessage({ type: 'loaded', reqId: msg.reqId });
+      var done = false;
+      var finish = function () {
+        if (done) return;
+        done = true;
+        self.postMessage({ type: 'loaded', reqId: msg.reqId });
+      };
+      self.Module = self.Module || {};
+      self.Module.onRuntimeInitialized = finish;
+      // eslint-disable-next-line no-eval
+      (0, eval)(msg.source);
+      // Sebagian build lama (asm.js) sudah selesai secara sinkron begitu source
+      // dieksekusi dan tidak pernah memanggil onRuntimeInitialized — deteksi lewat
+      // calledRun / cwrap yang sudah tersedia.
+      if (!done && self.Module && (self.Module.calledRun || typeof self.Module.cwrap === 'function')) {
+        finish();
+      }
+      if (!done) {
+        var tries = 0;
+        var poll = setInterval(function () {
+          tries++;
+          if (done) { clearInterval(poll); return; }
+          if (self.Module && (self.Module.calledRun || typeof self.Module.cwrap === 'function')) {
+            clearInterval(poll);
+            finish();
+          } else if (tries > 300) {
+            clearInterval(poll); // biarkan timeout di sisi main thread yang melapor
+          }
+        }, 100);
+      }
     } catch (err) {
       self.postMessage({ type: 'error', reqId: msg.reqId, error: String((err && err.message) || err) });
     }
@@ -2978,12 +3016,58 @@ function solcWorkerRequest(worker: Worker, msg: Record<string, any>, timeoutMs: 
   });
 }
 
+// File compiler solc (soljson-*.js) besarnya puluhan MB dan sebelumnya di-download ULANG
+// dari CDN setiap kali worker dibuat/direset — di koneksi lambat ini sendiri gampang lebih
+// dari cukup buat kelewat batas waktu load (30s). Di-cache pakai Cache Storage API supaya
+// compile berikutnya (bahkan setelah reload halaman) nggak perlu download ulang sama sekali.
+const SOLC_SOURCE_CACHE_NAME = 'solc-compiler-cache-v1';
+
+async function fetchSolcSource(url: string): Promise<string> {
+  try {
+    if ('caches' in self) {
+      const cache = await caches.open(SOLC_SOURCE_CACHE_NAME);
+      const cached = await cache.match(url);
+      if (cached) return await cached.text();
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Gagal download compiler Solidity dari CDN (HTTP ${res.status}).`);
+      await cache.put(url, res.clone());
+      return await res.text();
+    }
+  } catch {
+    // Cache Storage nggak tersedia/gagal — lanjut fallback fetch polos di bawah.
+  }
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Gagal download compiler Solidity dari CDN (HTTP ${res.status}).`);
+  return await res.text();
+}
+
 async function ensureSolcWorkerLoaded(): Promise<Worker> {
   const worker = getSolcWorker();
   if (!solcWorkerReadyPromise) {
     solcWorkerReadyPromise = (async () => {
       const fileName = await resolveSolcFileName();
-      await solcWorkerRequest(worker, { type: 'load', url: SOLC_CDN_BASE + fileName }, 30000);
+      let source: string;
+      try {
+        source = await fetchSolcSource(SOLC_CDN_BASE + fileName);
+      } catch (primaryErr: any) {
+        // Rilis versi terbaru kadang belum ke-mirror penuh di CDN pas list.json
+        // sudah update duluan, atau kena hiccup sesaat — coba sekali lagi pakai
+        // build yang sudah pasti ada sebelum benar-benar nyerah.
+        if (fileName === SOLC_FALLBACK_FILE) {
+          throw new Error(primaryErr?.message || 'Gagal download compiler Solidity dari CDN — cek koneksi internet.');
+        }
+        try {
+          source = await fetchSolcSource(SOLC_CDN_BASE + SOLC_FALLBACK_FILE);
+        } catch (fallbackErr: any) {
+          throw new Error(
+            (primaryErr?.message || fallbackErr?.message || 'Gagal download compiler Solidity dari CDN') +
+            ' — sudah dicoba versi fallback juga, tetap gagal. Cek koneksi internet atau apakah "binaries.soliditylang.org" ke-block (firewall/adblock/CSP).'
+          );
+        }
+      }
+      // Load timeout dilonggarkan (90s): download besar di-cache di atas, tapi eval +
+      // init WASM-nya sendiri masih butuh waktu di perangkat yang lebih lambat.
+      await solcWorkerRequest(worker, { type: 'load', source }, 90000);
     })();
   }
   try {
