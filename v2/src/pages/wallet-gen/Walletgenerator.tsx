@@ -507,7 +507,6 @@ export const WalletGenerator: React.FC = () => {
   const [customMnemonic, setCustomMnemonic] = useState('');
   const [importMode,     setImportMode]     = useState(false);
   const [tonImportMode,      setTonImportMode]      = useState(false);
-  const [tonMnemonicPassword, setTonMnemonicPassword] = useState('');
   const [revealedIds,    setRevealedIds]    = useState<Set<string>>(new Set());
   const [revealedPKs,    setRevealedPKs]    = useState<Set<string>>(new Set());
   const [search,         setSearch]         = useState('');
@@ -999,9 +998,10 @@ export const WalletGenerator: React.FC = () => {
     const nextVersion: GramVersion = (w.gramAddress?.version ?? 'v5r1') === 'v4' ? 'v5r1' : 'v4';
     try {
       const derived = w.isTonNative
-        ? await deriveGramFromTonMnemonic(w.mnemonic.split(' '), nextVersion, '')
+        ? await deriveGramFromTonMnemonic(w.mnemonic.split(' '), nextVersion)
         : await deriveGramAddress(w.mnemonic, 0, nextVersion);
       setWallets(prev => prev.map(x => x.id === walletId ? { ...x, gramAddress: derived } : x));
+      showAlert(`Versi wallet Gram (TON) berhasil diganti ke ${nextVersion === 'v4' ? 'V4R2 (legacy)' : 'W5 (v5r1)'}.`, 'success');
     } catch (e: any) { showAlert('Gagal ganti versi Gram (TON): ' + e.message, 'error'); }
   };
 
@@ -2514,17 +2514,12 @@ export const WalletGenerator: React.FC = () => {
           showAlert(`Mnemonic Telegram Wallet / Tonkeeper harus 24 kata, ditemukan ${words.length} kata.`, 'error');
           setGenerating(false); return;
         }
-        const valid = await isValidTonMnemonic(words, tonMnemonicPassword);
+        const valid = await isValidTonMnemonic(words);
         if (!valid) {
-          showAlert(
-            tonMnemonicPassword
-              ? 'Mnemonic TON tidak valid untuk password yang dimasukkan.'
-              : 'Mnemonic TON tidak valid. Kalau wallet aslinya pakai password tambahan, isi kolom password dulu.',
-            'error',
-          );
+          showAlert('Mnemonic TON tidak valid — cek ejaan/urutan 24 katanya lagi.', 'error');
           setGenerating(false); return;
         }
-        const derivedGram = await deriveGramFromTonMnemonic(words, gramVersion, tonMnemonicPassword);
+        const derivedGram = await deriveGramFromTonMnemonic(words, gramVersion);
         const newWallet: BIP39Wallet = {
           id: Date.now().toString(), name: walletName.trim() || `Wallet TON #${wallets.length + 1}`,
           mnemonic: words.join(' '), addresses: [], solAddresses: [], tronAddresses: [], axmAddresses: [], atomAddresses: [], suiAddresses: [], aptAddresses: [],
@@ -2533,7 +2528,7 @@ export const WalletGenerator: React.FC = () => {
         setWallets(prev => [newWallet, ...prev]);
         setExpandedId(newWallet.id);
         showAlert('Wallet Telegram Wallet / Tonkeeper berhasil diimpor!', 'success');
-        setWalletName(''); setCustomMnemonic(''); setImportMode(false); setTonImportMode(false); setTonMnemonicPassword('');
+        setWalletName(''); setCustomMnemonic(''); setImportMode(false); setTonImportMode(false);
         setGenerating(false);
         return;
       }
@@ -7295,7 +7290,7 @@ export const WalletGenerator: React.FC = () => {
     filteredNetworks, filteredWallets, garapImportRef, generateWallet, generating, handleAtomWalletSel, 
     handleAxmWalletSel, handleExecWalSel, handleGarapImport, handleSolWalletSel, handleTcSolImageFile, 
     handleTcSolWalletSel, handleTcTronWalletSel, handleTcWalletSel, handleTronWalletSel, handleTxWalletSel, 
-    highlightFaucet, importMode, tonImportMode, setTonImportMode, tonMnemonicPassword, setTonMnemonicPassword, isValidTronAddress, knownTxTokens, markTaskDone, netEditId, netForm, netSearch, 
+    highlightFaucet, importMode, tonImportMode, setTonImportMode, isValidTronAddress, knownTxTokens, markTaskDone, netEditId, netForm, netSearch, 
     networks, openExecPanel, openPortfolio, openTronFaucet, refreshPendingTrc20, renderAssetSelector, 
     renderAtomGasFeeBox, renderGasFeeBox, renderGasFiatBadge, gasFiatCcy, setGasFiatCcy, renderSolAssetSelector, revealedIds, revealedPKs, runExec, 
     saveAirdropTask, saveNetwork, search, selectedNetwork, selectedSolToken, selectedTxToken, setActiveTab, 
