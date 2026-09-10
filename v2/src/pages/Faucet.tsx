@@ -5,6 +5,22 @@ import { FaSearch, FaTint, FaExternalLinkAlt, FaLink } from 'react-icons/fa';
 
 const FAUCET_DATA: FaucetItem[] = [
   {
+    id: 'svp',
+    name: 'SVP Chain Testnet',
+    description: 'Dapatkan Faucet SVP di Svp Chain Testnet',
+    url: 'https://www.svpchain.org/faucet',
+    urlText: 'Drip SVP',
+    color: 'rgb(91, 142, 189)'
+  },
+  {
+    id: 'kryvora',
+    name: 'Kryvora Chain Testnet',
+    description: 'Dapatkan Faucet ETH Kryvora Chain Testnet',
+    url: 'https://faucet-testnet.kryvora.network/',
+    urlText: 'Drip ETH Kryvora',
+    color: 'rgb(168, 206, 0)'
+  },
+  {
       id: 'gram',
       name: 'Gram Testnet (Prev Toncoin)',
       description: 'Dapatkan GRAM di jaringan Gram Testnet',
