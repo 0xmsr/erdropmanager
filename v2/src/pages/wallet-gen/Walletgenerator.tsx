@@ -90,6 +90,7 @@ import {
 } from 'react-icons/fa';
 
 // Wallet-Gen Dipecah jadi beberapa file mulai 20 agustus 2026 ~0xmsr
+
 import {
   SmartContractConfig,
   BytecodeExplorer,
@@ -127,39 +128,6 @@ export * from './types';
 export * from './constants';
 export * from './helpers';
 
-// ══════════════════════════════════════════════════════════════════════
-// ── Modal picker token (Jetton & Swap DEX) — SENGAJA didefinisikan di
-//    MODULE SCOPE (di luar komponen WalletGenerator), BUKAN sebagai
-//    `const XModal: React.FC = (...) => {...}` di dalam body WalletGenerator
-//    seperti sebelumnya.
-//
-//    KENAPA: komponen yang didefinisikan ULANG di setiap render body parent
-//    dapat IDENTITY BARU tiap kali parent-nya re-render (function reference
-//    beda tiap render, walau isinya "sama"). React ngebandingin identitas
-//    component type di posisi JSX yang sama — begitu identitasnya beda,
-//    React nge-UNMOUNT instance lama & nge-MOUNT instance baru dari NOL,
-//    BUKAN cuma update props. Efeknya:
-//      1) Animasi "masuk" (slideUp) keputer ULANG tiap kali parent re-render
-//         → modal kelihatan seperti kedip/nutup-buka sendiri.
-//      2) useEffect internal modal (auto-load daftar token / debounce
-//         search) ikut RE-RUN dari awal tiap kali di-mount ulang → manggil
-//         setState lagi → bikin parent re-render lagi → modal di-recreate
-//         lagi → ke-mount ulang lagi → efeknya jalan lagi... siklus ini
-//         bisa keulang TERUS SELAMA modal terbuka (setiap kali ada state
-//         apa pun di WalletGenerator yang berubah — termasuk yang gak ada
-//         hubungannya sama modal, misal tick estimasi fee/saldo di tab
-//         lain) — persis gejala "modal buka tutup terus".
-//
-//    FIX: definisikan komponennya SEKALI di module scope (identity-nya
-//    permanen, gak pernah berubah lintas render), lalu semua data yang
-//    tadinya diakses lewat closure (state WalletGenerator) sekarang
-//    dioper eksplisit sebagai props. Dengan gini React cuma re-render
-//    (update props) pas parent berubah, TANPA unmount/mount ulang —
-//    animasi gak keputer ulang & useEffect di dalamnya cuma jalan sesuai
-//    dependency array-nya sendiri, bukan tiap parent re-render. ──
-// ══════════════════════════════════════════════════════════════════════
-
-// ── Token picker Jetton (Gram/TON) ala Bitget Wallet ──
 const GramJettonPickerModal: React.FC<{
   onClose: () => void;
   search: string;
@@ -171,14 +139,6 @@ const GramJettonPickerModal: React.FC<{
   onRefresh: () => void;
   assetLabel?: string;
   error?: string | null;
-  // ── "Tambah via contract address" digabung LANGSUNG ke picker ini ──
-  // Sebelumnya buat kasus ERC-20, form tambah-manual ini kepisah di form
-  // Kirim (di luar modal) — jadi kalau token yang dicari gak ke-detect
-  // otomatis, user harus nutup picker dulu buat ketemu kolom "tambah via
-  // contract address"-nya, padahal pesan error di picker udah nunjuk ke situ.
-  // Sekarang kalau onAddCustom dikasih, picker ini nampilin kolom tambah
-  // manual sebagai footer permanen di bawah daftar — satu tempat buat pilih
-  // ATAU tambah token, gak perlu bolak-balik.
   onAddCustom?: (address: string) => void | Promise<void>;
   customAddrValue?: string;
   setCustomAddrValue?: (v: string) => void;
@@ -307,12 +267,6 @@ const GramJettonPickerModal: React.FC<{
   );
 };
 
-// ── Token picker Swap DEX (STON.fi) ala Bitget Wallet — sama polanya
-//    kayak GramJettonPickerModal di atas, cuma sumber datanya dari
-//    gramSwapAssets (hasil fetchGramSwapAssets, difilter liquidity layak)
-//    bukan dari token yang dipegang wallet. Ngetik di search box langsung
-//    query ulang ke STON.fi (debounced) biar bisa nemuin token apapun,
-//    bukan cuma yang ada di daftar populer awal.
 const GramSwapPickerModal: React.FC<{
   onClose: () => void;
   pickerSide: 'from' | 'to';
@@ -327,10 +281,6 @@ const GramSwapPickerModal: React.FC<{
   loadedForQueryRef: React.MutableRefObject<string>;
   onLoadAssets: (query: string) => void;
   onPickAsset: (asset: GramSwapAssetInfo) => void;
-  // Token yang benar-benar dipegang wallet (saldo > 0), buat section "Aset Anda"
-  // di atas daftar populer/hasil pencarian — lihat gramSwapOwnedAssets di
-  // WalletGenerator. ownedBalanceMap dipakai buat nampilin saldo inline juga
-  // di baris populer/pencarian biasa (bukan cuma di section "Aset Anda").
   ownedAssets: (GramSwapAssetInfo & { balance: number; usdValue?: number | null })[];
   ownedBalanceMap: Map<string, number>;
 }> = ({
@@ -340,24 +290,12 @@ const GramSwapPickerModal: React.FC<{
   const q = search.trim();
   useEffect(() => {
     if (!q) {
-      // Query kosong (modal baru dibuka / tombol × search dipencet): kalau
-      // data yang lagi nyangkut di gramSwapAssets adalah sisa hasil SEARCH
-      // dari sesi sebelumnya (baik dari picker ini atau picker sisi
-      // lain — "Dari" vs "Ke" berbagi state yang sama), kosongin dulu biar
-      // gak sempet ke-render di bawah label "Token Populer" padahal isinya
-      // token hasil pencarian lain yang gak relevan. Lalu muat ulang LANGSUNG
-      // tanpa nunggu debounce, karena ini bukan hasil ngetik user.
       if (loadedForQueryRef.current !== '') setAssets([]);
       onLoadAssets('');
       return;
     }
-    // Lagi aktif ngetik search — tetap pakai debounce & biarkan hasil lama
-    // (kalaupun beda query) tetap kelihatan sambil nunggu, biar gak flicker
-    // tiap keystroke. Header sudah benar nampilin "Hasil Pencarian" di kedua
-    // kondisi jadi gak mislabel.
     const timer = setTimeout(() => { onLoadAssets(q); }, 400);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q]);
 
   const otherSideAddr = pickerSide === 'from' ? swapTo?.address : swapFrom?.address;
@@ -403,9 +341,6 @@ const GramSwapPickerModal: React.FC<{
         </div>
 
         <div style={{ overflowY:'auto', flex:1, padding:'4px 10px 14px' }}>
-          {/* ── "Aset Anda" — token yang beneran dipegang wallet (saldo > 0). ──
-              Cuma muncul pas search kosong, biar user langsung liat token yang
-              dia punya tanpa harus ketik/cari manual di daftar populer STON.fi. */}
           {!q && ownedAssets.length > 0 && (
             <>
               <div style={{ padding:'2px 8px 6px' }}>
@@ -571,9 +506,6 @@ export const WalletGenerator: React.FC = () => {
   const [walletName,     setWalletName]     = useState('');
   const [customMnemonic, setCustomMnemonic] = useState('');
   const [importMode,     setImportMode]     = useState(false);
-  // Import mnemonic dari Telegram Wallet / Tonkeeper (wallet TON native) — beda
-  // algoritma total dari mnemonic BIP39 multi-chain buatan app ini, lihat catatan
-  // panjang di Gramnet.ts (deriveGramFromTonMnemonic).
   const [tonImportMode,      setTonImportMode]      = useState(false);
   const [tonMnemonicPassword, setTonMnemonicPassword] = useState('');
   const [revealedIds,    setRevealedIds]    = useState<Set<string>>(new Set());
@@ -620,18 +552,11 @@ export const WalletGenerator: React.FC = () => {
   const [txConnecting,  setTxConnecting]  = useState(false);
   const [txStatus,      setTxStatus]      = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
   const [txWalletSel,   setTxWalletSel]   = useState('');
-
-
   const [txAsset,        setTxAsset]        = useState<string>('native');
   const [txTokens,       setTxTokens]       = useState<{address:string;symbol:string;decimals:number;name:string;balance:string}[]>([]);
   const [txTokensLoading,setTxTokensLoading]= useState(false);
   const [txAddTokenAddr, setTxAddTokenAddr] = useState('');
   const [txAddingToken,  setTxAddingToken]  = useState(false);
-
-  // ── EVM "Native / Token" mode toggle (ala Gram Native/Jetton, tanpa Swap) ──
-  // txSendAssetMode cuma ngatur UI (toggle + picker) yang mana yang tampil;
-  // sumber kebenaran buat kirim tetap txAsset ('native' atau address token),
-  // sama persis dipakai di Single/Multi/Sweep yang sudah ada.
   const [txSendAssetMode,        setTxSendAssetMode]        = useState<'native'|'token'>('native');
   const [txDetectedTokens,       setTxDetectedTokens]       = useState<DetectedToken[]>([]);
   const [txDetectedTokensLoading,setTxDetectedTokensLoading]= useState(false);
@@ -642,22 +567,12 @@ export const WalletGenerator: React.FC = () => {
     try { return JSON.parse(localStorage.getItem('customErc20Tokens') || '[]'); } catch { return []; }
   });
   useEffect(() => { localStorage.setItem('customErc20Tokens', JSON.stringify(customErc20Tokens)); }, [customErc20Tokens]);
-
-  // ── Riwayat Transaksi Wallet & Detail Token di tab Kirim/Terima (EVM) —
-  // datanya diambil dari fetchEvmAddressTxHistory / fetchEvmTokenDetail di
-  // helpers.ts. Kedua fungsi itu utamakan Blockscout kalau network-nya ada
-  // di BLOCKSCOUT_HOSTS (sama & konsisten dengan Explorer.tsx), tapi KALAU
-  // GAK ADA, otomatis fallback: riwayat TX lewat Routescan (etherscan-
-  // compatible, tanpa API key, cakupan 70+ chain via chainId mentah), detail
-  // token lewat baca langsung ke kontrak via RPC — jadi gak ada lagi network
-  // yang mentok gara-gara belum ada instance Blockscout publiknya. ──
   const [txWalletHistory,        setTxWalletHistory]        = useState<EvmWalletTx[]>([]);
   const [txWalletHistoryLoading, setTxWalletHistoryLoading] = useState(false);
   const [txWalletHistoryError,   setTxWalletHistoryError]   = useState<string|null>(null);
   const [txTokenDetail,          setTxTokenDetail]          = useState<EvmTokenDetail|null>(null);
   const [txTokenDetailLoading,   setTxTokenDetailLoading]   = useState(false);
   const [txTokenDetailError,     setTxTokenDetailError]     = useState<string|null>(null);
-
   const [txGasMode,     setTxGasMode]     = useState<'slow'|'standard'|'fast'|'manual'>('standard');
   const [txGasPrices,   setTxGasPrices]   = useState<{slow:number;standard:number;fast:number}|null>(null);
   const [txGasManual,   setTxGasManual]   = useState('');
@@ -680,21 +595,13 @@ export const WalletGenerator: React.FC = () => {
   const [sweepFetchingBal, setSweepFetchingBal] = useState(false);
   const [gasAdvanced,   setGasAdvanced]   = useState(false);
   const [sweepAdvanced, setSweepAdvanced] = useState(false);
-
-  // ── Nilai fiat (USD/IDR) buat estimasi gas fee — dipakai di semua box
-  // "Estimasi Fee" (EVM/Tron/Axiome/Cosmos/Gram) biar gas fee kecil kayak
-  // 0.0001 ETH kebaca nilainya beneran (mis. "≈ $0.32"), bukan cuma angka
-  // native yang nggak kebayang. Harga di-refresh tiap ganti chain/network aktif
-  // di tab Kirim — lihat useEffect di bawah renderGasFeeBox. ──
   const [gasFiatCcy,   setGasFiatCcy]   = useState<'usd'|'idr'>('idr');
   const [gasFiatPrice, setGasFiatPrice] = useState<{ usd: number|null; idr: number|null } | null>(null);
   const [gasFiatLoading, setGasFiatLoading] = useState(false);
-
   const txProviderRef   = useRef<ethers.providers.JsonRpcProvider | null>(null);
   const txWalletRef     = useRef<ethers.Wallet | null>(null);
   const garapImportRef  = useRef<HTMLInputElement>(null);
-
-
+  
   const [solNetId,       setSolNetId]       = useState('mainnet');
   const SOLANA_NETWORK = SOLANA_NETWORKS.find(n => n.id === solNetId) ?? SOLANA_NETWORKS[0];
   const [solPrivKey,    setSolPrivKey]    = useState('');
@@ -713,23 +620,13 @@ export const WalletGenerator: React.FC = () => {
   const [solStatus,     setSolStatus]     = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
   const solConnRef      = useRef<Connection | null>(null);
   const solKeypairRef   = useRef<SolKeypair | null>(null);
-
-
   const [solMode, setSolMode] = useState<'single'|'multi'|'sweep'|'close'>('single');
-
-
   const [solAsset,          setSolAsset]          = useState<string>('native');
   const [solTokens,         setSolTokens]         = useState<{mint:string; decimals:number; uiAmount:number}[]>([]);
   const [solTokensLoading,  setSolTokensLoading]  = useState(false);
-
-  // ── Cek live apakah address tujuan SUDAH punya token account (ATA) untuk
-  // mint SPL yang lagi dipilih. Kalau belum, kirim otomatis bikinin dulu
-  // (lihat solSend/solMultiSend/solSweepRun) — TAPI itu nambah biaya rent
-  // ± 0.00203928 SOL yang gak keliatan dari "Jumlah" doang. State ini yang
-  // dipakai buat nampilin peringatan + nambah estimasi fee di UI sebelum kirim. ──
   const [solDestAtaExists,  setSolDestAtaExists]  = useState<boolean | null>(null);
   const [solDestAtaChecking, setSolDestAtaChecking] = useState(false);
-  const SOL_TOKEN_ACCOUNT_RENT_LAMPORTS = 2_039_280; // rent-exempt akun SPL Token standar (165 byte) — sama dengan yang dipakai fitur "Tutup Akun"
+  const SOL_TOKEN_ACCOUNT_RENT_LAMPORTS = 2_039_280;
 
 
   const [solCloseAccounts,   setSolCloseAccounts]   = useState<{
@@ -754,8 +651,6 @@ export const WalletGenerator: React.FC = () => {
   ]);
   const [solMultiRunning,  setSolMultiRunning]  = useState(false);
   const [solMultiEqualAmt, setSolMultiEqualAmt] = useState('');
-
-
   const [solSweepDestAddr,   setSolSweepDestAddr]   = useState('');
   const [solSweepAmtMode,    setSolSweepAmtMode]    = useState<'all'|'fixed'>('all');
   const [solSweepFixedAmt,   setSolSweepFixedAmt]   = useState('');
@@ -765,7 +660,6 @@ export const WalletGenerator: React.FC = () => {
   const [solSweepRunning,    setSolSweepRunning]    = useState(false);
   const [solSweepDelayMs,    setSolSweepDelayMs]    = useState(1200);
   const [solSweepFetchingBal,setSolSweepFetchingBal]= useState(false);
-
 
   const [tronNetId,       setTronNetId]       = useState('mainnet');
   const [tronPrivKey,     setTronPrivKey]     = useState('');
@@ -783,21 +677,17 @@ export const WalletGenerator: React.FC = () => {
   const [tronMaxLoading,  setTronMaxLoading]  = useState(false);
   const [tronWalletSel,   setTronWalletSel]   = useState('');
   const [tronStatus,      setTronStatus]      = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
-
-
   const [tronResources,        setTronResources]        = useState<TronAccountResources | null>(null);
   const [tronResourcesLoading, setTronResourcesLoading] = useState(false);
   const [tronFeeEstimate,      setTronFeeEstimate]      = useState<TronFeeEstimate | null>(null);
   const [tronFeeEstimating,    setTronFeeEstimating]    = useState(false);
   const [tronFeeEstimateError, setTronFeeEstimateError] = useState<string | null>(null);
-
   const [tronMode, setTronMode] = useState<'single'|'multi'|'sweep'>('single');
   const [tronMultiRows,   setTronMultiRows]   = useState<{id:string;to:string;amount:string;status:'idle'|'pending'|'success'|'failed';hash?:string;error?:string}[]>([
     { id: '1', to: '', amount: '', status: 'idle' },
   ]);
   const [tronMultiRunning,  setTronMultiRunning]  = useState(false);
   const [tronMultiEqualAmt, setTronMultiEqualAmt] = useState('');
-
   const [tronSweepDestAddr,    setTronSweepDestAddr]    = useState('');
   const [tronSweepAmtMode,     setTronSweepAmtMode]     = useState<'all'|'fixed'>('all');
   const [tronSweepFixedAmt,    setTronSweepFixedAmt]    = useState('');
@@ -807,8 +697,6 @@ export const WalletGenerator: React.FC = () => {
   const [tronSweepRunning,     setTronSweepRunning]     = useState(false);
   const [tronSweepDelayMs,     setTronSweepDelayMs]     = useState(1500);
   const [tronSweepFetchingBal, setTronSweepFetchingBal] = useState(false);
-
-
   const [tcTronNetId,     setTcTronNetId]     = useState('mainnet');
   const [tcTronWalletSel, setTcTronWalletSel] = useState('');
   const [tcTronPrivKey,   setTcTronPrivKey]   = useState('');
@@ -818,8 +706,6 @@ export const WalletGenerator: React.FC = () => {
   const [tcTronSupply,    setTcTronSupply]    = useState('1000000');
   const [tcTronCreating,  setTcTronCreating]  = useState(false);
   const [tcTronStatus,    setTcTronStatus]    = useState<{type:'idle'|'pending'|'success'|'error';msg:string}>({type:'idle',msg:''});
-
-  // ── Token Creator · Tron: estimasi Energy/Bandwidth/fee TRX sebelum deploy ──
   const [tcTronFeeEstimate, setTcTronFeeEstimate] = useState<TronFeeEstimate | null>(null);
   const [tcTronFeeLoading,  setTcTronFeeLoading]  = useState(false);
   const [tcTronFeeError,    setTcTronFeeError]    = useState('');
@@ -847,15 +733,8 @@ export const WalletGenerator: React.FC = () => {
   const [axmFeeEstimate,      setAxmFeeEstimate]      = useState<AxmFeeEstimate | null>(null);
   const [axmFeeEstimating,    setAxmFeeEstimating]    = useState(false);
   const [axmFeeEstimateError, setAxmFeeEstimateError] = useState<string | null>(null);
-
-
   const [axmCw20Input, setAxmCw20Input] = useState('');
 
-
-  // ══════════════════════════════════════════════════════════════════════
-  // ── Sui (SUI): Send & Receive — pola sama seperti Axiome/Cosmos di atas,
-  //    tapi lewat @mysten/sui (Ed25519Keypair + Transaction builder). ──
-  // ══════════════════════════════════════════════════════════════════════
   const [suiNetId,       setSuiNetId]       = useState('mainnet');
   const SUI_NETWORK = SUI_NETWORKS.find(n => n.id === suiNetId) ?? SUI_NETWORKS[0];
   const [suiPrivKey,    setSuiPrivKey]    = useState('');
@@ -871,10 +750,6 @@ export const WalletGenerator: React.FC = () => {
   const [suiWalletSel,  setSuiWalletSel]  = useState('');
   const [suiStatus,     setSuiStatus]     = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
 
-  // ══════════════════════════════════════════════════════════════════════
-  // ── Aptos (APT): Send & Receive — pola sama seperti Sui di atas, tapi
-  //    lewat @aptos-labs/ts-sdk (Account + transferCoinTransaction). ──
-  // ══════════════════════════════════════════════════════════════════════
   const [aptNetId,       setAptNetId]       = useState('mainnet');
   const APTOS_NETWORK = APTOS_NETWORKS.find(n => n.id === aptNetId) ?? APTOS_NETWORKS[0];
   const [aptPrivKey,    setAptPrivKey]    = useState('');
@@ -889,8 +764,6 @@ export const WalletGenerator: React.FC = () => {
   const [aptMaxLoading, setAptMaxLoading] = useState(false);
   const [aptWalletSel,  setAptWalletSel]  = useState('');
   const [aptStatus,     setAptStatus]     = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
-
-
 
   const [atomNetId,       setAtomNetId]       = useState('cosmoshub-mainnet');
   const COSMOS_NETWORK = COSMOS_NETWORKS.find(n => n.id === atomNetId) ?? COSMOS_NETWORKS[0];
@@ -915,36 +788,20 @@ export const WalletGenerator: React.FC = () => {
   const [atomGasAdvanced, setAtomGasAdvanced] = useState(false);
   const [atomGasRefreshNonce, setAtomGasRefreshNonce] = useState(0);
 
-
   const [gramNetId,       setGramNetId]       = useState('mainnet');
   const GRAM_NETWORK = GRAM_NETWORKS.find(n => n.id === gramNetId) ?? GRAM_NETWORKS[0];
-  // Versi wallet contract TON dipakai saat generate wallet baru (lihat GRAM_WALLET_VERSIONS di network/Gramnet.ts).
   const [gramVersion,        setGramVersion]        = useState<GramVersion>('v5r1');
-  // Versi dipakai saat connect manual via private key mentah — beda dari gramVersion
-  // karena connect bisa pakai private key dari wallet lama (V4) walau default generate sekarang W5.
   const [gramConnectVersion, setGramConnectVersion] = useState<GramVersion>('v5r1');
   const [gramPrivKey,    setGramPrivKey]    = useState('');
   const [gramConnected,  setGramConnected]  = useState(false);
   const [gramConnecting, setGramConnecting] = useState(false);
   const [gramAddress,    setGramAddress]    = useState('');
   const [gramBalance,    setGramBalance]    = useState('—');
-  // Nilai numerik mentah dari saldo native TON — dipakai buat kalkulasi UI
-  // (mis. daftar "Aset Anda" di token picker swap), karena gramBalance di atas
-  // sudah diformat pakai toLocaleString (bisa ada koma pemisah ribuan) jadi gak
-  // aman langsung di-parseFloat.
   const [gramBalanceNum, setGramBalanceNum] = useState<number | null>(null);
-  // Request-id guard buat gramRefreshBalance — cegah race condition saldo
-  // testnet/mainnet saling overwrite kalau network diganti-ganti cepat
-  // sebelum fetch sebelumnya selesai (lihat komentar di gramRefreshBalance).
   const gramBalanceReqIdRef = useRef(0);
   const [gramLoadingBal, setGramLoadingBal] = useState(false);
   const [gramSendTo,     setGramSendTo]     = useState('');
   const [gramSendAmt,    setGramSendAmt]    = useState('');
-  // Memo/comment opsional buat GRAM (TON) — dipakai bareng di dua tempat:
-  // (1) form "Kirim GRAM" native, dikirim sebagai comment on-chain
-  //     (lihat tonComment() di sendGram/estimateGramFee, network/Gramnet.ts), dan
-  // (2) kartu "Terima", di-embed ke QR/link ton://transfer buat kasih tau
-  //     pengirim memo apa yang harus dicantumkan. Satu field, dipakai dua arah.
   const [gramMemo, setGramMemo] = useState('');
   const [gramSending,    setGramSending]    = useState(false);
   const [gramWalletSel,  setGramWalletSel]  = useState('');
@@ -981,9 +838,6 @@ export const WalletGenerator: React.FC = () => {
 
   const tcGramSelectedNetwork = GRAM_NETWORKS.find(n => n.id === tcGramNetId) ?? GRAM_NETWORKS[0];
   const [gramMaxLoading,       setGramMaxLoading]       = useState(false);
-  // ── Jetton (kirim token TON, bukan native GRAM) — pola sama seperti
-  //    gramSend* di atas, cuma target-nya jetton-wallet, bukan wallet TON
-  //    langsung (lihat sendGramJetton/estimateGramJettonFee di Gramnet.ts).
   const [gramSendMode,      setGramSendMode]      = useState<'native' | 'jetton' | 'swap'>('native');
   const [gramJettonMaster,  setGramJettonMaster]  = useState('');
   const [gramJettonTo,      setGramJettonTo]      = useState('');
@@ -997,9 +851,6 @@ export const WalletGenerator: React.FC = () => {
   const [gramJettonFeeEstimate,      setGramJettonFeeEstimate]      = useState<GramFeeEstimate | null>(null);
   const [gramJettonFeeEstimating,    setGramJettonFeeEstimating]    = useState(false);
   const [gramJettonFeeEstimateError, setGramJettonFeeEstimateError] = useState<string | null>(null);
-  // Jetton yang terdeteksi otomatis di address yang lagi connect — dipakai buat
-  // token picker "pilih dari yang dipegang" (modal ala Bitget Wallet, bukan
-  // dropdown native) supaya user gak perlu ketik master address manual.
   const [gramJettonDetected,        setGramJettonDetected]        = useState<DetectedToken[]>([]);
   const [gramJettonDetectedLoading, setGramJettonDetectedLoading] = useState(false);
   const [gramJettonPickerOpen,   setGramJettonPickerOpen]   = useState(false);
@@ -1022,36 +873,13 @@ export const WalletGenerator: React.FC = () => {
   const [gramSwapFeeEstimate,      setGramSwapFeeEstimate]      = useState<GramFeeEstimate | null>(null);
   const [gramSwapFeeEstimating,    setGramSwapFeeEstimating]    = useState(false);
   const [gramSwapFeeEstimateError, setGramSwapFeeEstimateError] = useState<string | null>(null);
-  // Hasil cek "cukup gas TON minimum" sebelum swap — lihat checkGramSwapGasSufficiency
-  // di Gramnet.ts. Umum di TON/GRAM: swap Jetton tetap butuh TON native buat gas
-  // tiap hop pesan internal, jadi ini dicek terpisah dari fee estimate biasa.
   const [gramSwapGasCheck,         setGramSwapGasCheck]         = useState<GramSwapGasCheck | null>(null);
   const [gramSwapSending,       setGramSwapSending]       = useState(false);
   const [gramSwapStatus,        setGramSwapStatus]        = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
-  // Picker bottom-sheet ala Bitget Wallet — 'from' | 'to' | null (nutup)
   const [gramSwapPickerOpen,    setGramSwapPickerOpen]    = useState<'from'|'to'|null>(null);
   const [gramSwapPickerSearch,  setGramSwapPickerSearch]  = useState('');
-  // Request-id guard buat gramLoadSwapAssets — cegah race condition mirip
-  // kasus saldo testnet/mainnet: gramLoadSwapAssets dipanggil dari beberapa
-  // tempat (auto-load pas masuk mode swap, ngetik di search box picker,
-  // klik tombol token asal/tujuan). Kalau user ngetik cepat lalu ganti query,
-  // request pencarian yang lebih LAMA bisa resolve belakangan & nge-overwrite
-  // hasil pencarian yang lebih baru dgn hasil query yang sudah ditinggalkan.
   const gramSwapAssetsReqIdRef = useRef(0);
-  // Query terakhir yang datanya benar-benar tersimpan di gramSwapAssets. Dipakai
-  // modal picker buat tahu kapan list yang lagi ada di state itu "basi" (bukan
-  // buat query yang lagi aktif di picker sekarang) — misal abis search di picker
-  // "Dari" terus buka picker "Ke", list lama (hasil search) gak boleh nyangkut
-  // ditampilin salah label di picker yang baru.
   const gramSwapAssetsLoadedForQueryRef = useRef('');
-
-  // ── "Token yang kita miliki" untuk picker Swap ──
-  // Digabung dari 2 sumber saldo yang sudah ada & sudah otomatis di-fetch pas
-  // masuk mode Swap: gramBalanceNum (saldo TON native) + gramJettonDetected
-  // (portfolio Jetton hasil fetchGramTokenPortfolio). Ditampilkan sebagai
-  // section "Aset Anda" di paling atas token picker (GramSwapPickerModal),
-  // diurutkan dari saldo/nilai USD terbesar, biar user gampang milih token yang
-  // memang dia punya tanpa harus cari manual di daftar populer STON.fi.
   type GramSwapAssetWithBalance = GramSwapAssetInfo & { balance: number; usdValue?: number | null };
   const gramSwapOwnedAssets = useMemo<GramSwapAssetWithBalance[]>(() => {
     const owned: GramSwapAssetWithBalance[] = [];
@@ -1076,14 +904,6 @@ export const WalletGenerator: React.FC = () => {
     return map;
   }, [gramSwapOwnedAssets]);
 
-  // ── Cek saldo token "Dari" cukup atau enggak buat jumlah yang mau di-swap ──
-  // Real-time dari gramSwapOwnedBalanceMap di atas (client-side, gak perlu
-  // network call terpisah) — beda dari gramSwapGasCheck yang khusus ngecek
-  // saldo GAS (TON), ini ngecek saldo TOKEN "Dari" itu sendiri (TON native
-  // ATAU Jetton) supaya swap otomatis diblokir begitu jumlah yang diketik
-  // user melebihi saldo yang beneran dia punya, sebelum sempat kirim tx.
-  // Diabaikan (gramSwapInsufficientBalance = false) selagi saldo Jetton masih
-  // dimuat, biar gak sempat kelip "saldo kurang" palsu pas data belum sampai.
   const gramSwapAmtNum = parseFloat(gramSwapAmt) || 0;
   const gramSwapAvailableBalance = gramSwapFrom ? (gramSwapOwnedBalanceMap.get(gramSwapFrom.address) ?? 0) : null;
   const gramSwapInsufficientBalance =
@@ -1118,11 +938,6 @@ export const WalletGenerator: React.FC = () => {
 
 
   useEffect(() => {
-    // Wallet TON-native (import dari Telegram Wallet/Tonkeeper) sengaja tidak
-    // punya address EVM/AXM sama sekali (w.addresses kosong) — kalau ikut masuk
-    // ke sini, hasil derive selalu [] lagi (array baru), bikin `wallets` berubah
-    // referensi terus, effect ini ke-trigger ulang lagi, dst → infinite loop
-    // yang bikin app freeze/lag. Makanya wallet begini di-skip di sini.
     const need = wallets.filter(w => !w.isTonNative && w.addresses.length > 0 && (!w.axmAddresses || w.axmAddresses.length === 0));
     if (need.length === 0) return;
     let cancelled = false;
@@ -1143,8 +958,6 @@ export const WalletGenerator: React.FC = () => {
 
 
   useEffect(() => {
-    // Sama seperti effect axmAddresses di atas — cegah infinite loop untuk
-    // wallet TON-native yang memang tidak punya address Cosmos/Atom.
     const need = wallets.filter(w => !w.isTonNative && w.addresses.length > 0 && (!w.atomAddresses || w.atomAddresses.length === 0));
     if (need.length === 0) return;
     let cancelled = false;
@@ -1180,21 +993,11 @@ export const WalletGenerator: React.FC = () => {
 
   }, [wallets, gramVersion]);
 
-  // Beralih versi wallet contract Gram (TON) untuk 1 wallet BIP39 tersimpan —
-  // menurunkan ulang address dari mnemonic yang sama dengan versi kontrak lain
-  // (W5 <-> V4R2). Private key hasil turunan tetap sama, cuma address-nya beda.
   const switchGramVersion = async (walletId: string) => {
     const w = wallets.find(x => x.id === walletId);
     if (!w) return;
     const nextVersion: GramVersion = (w.gramAddress?.version ?? 'v5r1') === 'v4' ? 'v5r1' : 'v4';
     try {
-      // Wallet hasil import mnemonic TON native (Telegram Wallet / Tonkeeper) harus
-      // diturunkan ulang lewat jalur mnemonicToPrivateKey, BUKAN deriveGramAddress
-      // (BIP39/SLIP-0010) — kalau salah jalur, address hasil "ganti versi" bakal
-      // beda dari wallet aslinya di Telegram Wallet.
-      // Catatan: kalau mnemonic TON aslinya pakai password tambahan, "Ganti versi"
-      // ini akan gagal (password tidak disimpan demi keamanan) — user perlu re-import
-      // wallet-nya lewat form Import dengan password yang sama untuk versi yang beda.
       const derived = w.isTonNative
         ? await deriveGramFromTonMnemonic(w.mnemonic.split(' '), nextVersion, '')
         : await deriveGramAddress(w.mnemonic, 0, nextVersion);
@@ -1293,16 +1096,11 @@ export const WalletGenerator: React.FC = () => {
   const [tcCompiling,      setTcCompiling]       = useState(false);
   const [tcCompileError,   setTcCompileError]    = useState('');
   const [tcCompiled,       setTcCompiled]        = useState<CompiledContract | null>(null);
-
-  // ── Token Creator · EVM: estimasi gas sebelum deploy ──
   const [tcGasPriceGwei, setTcGasPriceGwei] = useState<number | null>(null);
   const [tcGasLimitEst,  setTcGasLimitEst]  = useState('');
   const [tcGasFeeNative, setTcGasFeeNative] = useState('');
   const [tcGasLoading,   setTcGasLoading]   = useState(false);
   const [tcGasError,     setTcGasError]     = useState('');
-  // Override gas limit manual (kosong = auto: ethers pakai hasil estimateGas
-  // sendiri saat deploy). Dipakai kalau node/RPC salah nebak estimateGas
-  // (kontrak kustom kompleks) atau user sengaja mau kasih buffer lebih besar.
   const [tcGasLimit,     setTcGasLimit]     = useState('');
   const [tcGasSimFailed, setTcGasSimFailed] = useState(false);
 
@@ -3244,19 +3042,6 @@ export const WalletGenerator: React.FC = () => {
     try { return ethers.utils.parseUnits(gwei.toFixed(9), 'gwei'); } catch { return undefined; }
   };
 
-  // ── Gas limit "aman" sebelum broadcast — FIX bug: sebelumnya native-transfer
-  // selalu pukul rata gasLimit 21000 (asumsi tujuan pasti EOA). Begitu address
-  // tujuannya kontrak yang butuh gas lebih (mis. ada logic di receive()/fallback()),
-  // 21000 itu abis duluan → tx tetap ke-mine tapi status gagal (out-of-gas), dan
-  // BNB yang udah kepotong buat gas ga balik lagi (persis kasus CALL_EXCEPTION /
-  // status:0 dengan gasUsed == gasLimit == 21000 di BSC).
-  //
-  // Kalau user isi gas limit manual, itu tetap dihormati apa adanya (dianggap
-  // sengaja override). Kalau auto, kita estimateGas dulu ke RPC + kasih buffer
-  // (default 25%) buat jaga-jaga node beda pendapat pas broadcast — dan yang
-  // PALING PENTING: kalau estimateGas-nya sendiri revert, itu sinyal kuat tx bakal
-  // gagal juga kalau dipaksa kirim, jadi kita lempar error DI SINI (sebelum kirim),
-  // bukan biarin user kehilangan fee gas dari tx yang gagal on-chain.
   const txEstimateSafeGasLimit = async (
     provider: ethers.providers.Provider,
     req: { from: string; to: string; value?: ethers.BigNumberish; data?: string },
@@ -3279,9 +3064,6 @@ export const WalletGenerator: React.FC = () => {
     }
   };
 
-  // ── Isi otomatis "Jumlah" dengan saldo maksimum yang bisa dikirim ──
-  // Token: seluruh saldo token (gas dibayar terpisah pakai native coin).
-  // Native: saldo dikurangi estimasi biaya gas (gasPrice × gasLimit) biar tidak insufficient funds.
   const txSetMaxAmount = async () => {
     const provider = txProviderRef.current;
     const address = txAddress;
@@ -3422,9 +3204,6 @@ export const WalletGenerator: React.FC = () => {
     setSolCloseSearch('');
   };
 
-  // ══════════════════════════════════════════════════════════════════════
-  // ── Tron: Send & Receive (connect, balance, single/multi/sweep TRX) ──
-  // ══════════════════════════════════════════════════════════════════════
   const tronNetwork = TRON_NETWORKS.find(n => n.id === tronNetId) ?? TRON_NETWORKS[0];
 
   const tronRefreshBalance = async (netOverride?: TronNetworkCfg, addr?: string) => {
@@ -7584,11 +7363,11 @@ export const WalletGenerator: React.FC = () => {
     txTokenDetail, txTokenDetailLoading, txTokenDetailError,
     walletName, wallets,
     SUI_NETWORK, SUI_NETWORKS, suiAddress, suiBalance, suiConnect, suiConnected, suiConnecting, suiDisconnect,
-    suiLoadingBal, suiMaxLoading, suiNetId, suiPrivKey, suiRefreshBalance, suiSend, suiSendAmt, suiSendTo, suiSending,
-    suiSetMaxAmount, suiStatus, suiWalletSel, handleSuiWalletSel, switchSuiNetwork,
+    suiLoadingBal, suiMaxLoading, suiNetId, suiPrivKey, setSuiPrivKey, suiRefreshBalance, suiSend, suiSendAmt, setSuiSendAmt, suiSendTo, setSuiSendTo, suiSending,
+    suiSetMaxAmount, suiStatus, suiWalletSel, setSuiWalletSel, handleSuiWalletSel, switchSuiNetwork,
     APTOS_NETWORK, APTOS_NETWORKS, aptAddress, aptBalance, aptConnect, aptConnected, aptConnecting, aptDisconnect,
-    aptLoadingBal, aptMaxLoading, aptNetId, aptPrivKey, aptRefreshBalance, aptSend, aptSendAmt, aptSendTo, aptSending,
-    aptSetMaxAmount, aptStatus, aptWalletSel, handleAptWalletSel, switchAptNetwork,
+    aptLoadingBal, aptMaxLoading, aptNetId, aptPrivKey, setAptPrivKey, aptRefreshBalance, aptSend, aptSendAmt, setAptSendAmt, aptSendTo, setAptSendTo, aptSending,
+    aptSetMaxAmount, aptStatus, aptWalletSel, setAptWalletSel, handleAptWalletSel, switchAptNetwork,
   };
 
   return (
