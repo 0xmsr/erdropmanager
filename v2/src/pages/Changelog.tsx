@@ -21,6 +21,15 @@ interface Version {
 
 const CHANGELOG: Version[] = [
   {
+    version: '2.3.1',
+    date: '10 Sep 2026',
+    title: 'Update v2.3.1',
+    changes: [
+      { type: 'feature', text: 'Menambahkan 2 Faucet Baru' },
+      { type: 'feature', text: 'Memperbaiki bug di 2 network (Sui & APT) ~input yang tidak merespon' },
+    ],
+  }, 
+  {
     version: '2.3.0',
     date: '08 Sep 2026',
     title: 'Update v2.3',
