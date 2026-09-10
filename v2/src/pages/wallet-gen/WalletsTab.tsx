@@ -20,7 +20,7 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     setExpandedId, setImportMode, setQrAddress, setRevealedIds, setRevealedPKs, setSearch, 
     setSolMode, setTronMode, setTxChain, setTxMode, setTxNetworkId,
     setWalletName, walletName, wallets, gramVersion, setGramVersion, switchGramVersion,
-    tonImportMode, setTonImportMode, tonMnemonicPassword, setTonMnemonicPassword,
+    tonImportMode, setTonImportMode,
   } = ctx;
 
   const findAddressOwner = (address: string, chain: string): { wi: number; ai: number } | null => {
@@ -86,75 +86,92 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
   return (
         <>
           <div className="form-container" style={{ marginBottom:'24px' }}>
-            <h2 style={{ textAlign:'center', marginBottom:'16px', fontSize:'15px' }}>
+            <h3 style={{ marginTop:0, marginBottom:'16px', fontSize:'13px', textTransform:'uppercase', letterSpacing:'1px', color:'#01a2ff', display:'flex', alignItems:'center', gap:'8px' }}>
               {importMode ? <><FaFileImport/> Import Mnemonic</> : <><FaRandom/> Generate Wallet Baru</>}
-            </h2>
-            <div style={{ display:'flex', gap:'8px', marginBottom:'14px', justifyContent:'center' }}>
+            </h3>
+
+            {/* Segmented mode switch */}
+            <div style={{ display:'flex', marginBottom:'16px', border:'1px solid #222', background:'#0a0a0a', padding:'3px' }}>
               {[false, true].map(isImport => (
-                <button key={String(isImport)} onClick={() => { setImportMode(isImport); if (!isImport) { setTonImportMode(false); setTonMnemonicPassword(''); } }} style={{
-                  padding:'7px 16px',
-                  background:importMode === isImport ? '#01a2ff' : '#111',
-                  border:`1px solid ${importMode === isImport ? '#01a2ff' : '#333'}`,
-                  color:importMode === isImport ? '#000' : '#888',
-                  cursor:'pointer', fontSize:'12px', fontWeight:'bold',
-                }}>
-                  {isImport ? <><FaFileImport style={{ marginRight:'5px' }}/>Import</> : <><FaRandom style={{ marginRight:'5px' }}/>Generate</>}
+                <button key={String(isImport)}
+                  onClick={() => { setImportMode(isImport); if (!isImport) { setTonImportMode(false); } }}
+                  style={{
+                    flex:1, padding:'9px 0', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px',
+                    background: importMode === isImport ? '#01a2ff' : 'transparent',
+                    border:'none', color: importMode === isImport ? '#000' : '#777',
+                    cursor:'pointer', fontSize:'12px', fontWeight:'bold', transition:'background .15s, color .15s',
+                  }}>
+                  {isImport ? <FaFileImport size={11}/> : <FaRandom size={11}/>}
+                  {isImport ? 'Import' : 'Generate'}
                 </button>
               ))}
             </div>
+
             {importMode && (
               <label style={{
-                display:'flex', alignItems:'center', gap:'8px', marginBottom:'12px', padding:'9px 12px',
-                background: tonImportMode ? '#0098EA20' : '#0d0d0d', border:`1px solid ${tonImportMode ? '#0098EA' : '#1e1e1e'}`,
-                cursor:'pointer', fontSize:'12px', color: tonImportMode ? '#0098EA' : '#888',
+                display:'flex', alignItems:'center', gap:'9px', marginBottom:'16px', padding:'10px 12px',
+                background: tonImportMode ? '#0098EA15' : '#0d0d0d', border:`1px solid ${tonImportMode ? '#0098EA' : '#1e1e1e'}`,
+                cursor:'pointer', fontSize:'12px', color: tonImportMode ? '#4db8ea' : '#777', lineHeight:1.4,
               }}>
                 <input type="checkbox" checked={tonImportMode}
                   onChange={e => setTonImportMode(e.target.checked)}
-                  style={{ width:'14px', height:'14px', cursor:'pointer', flexShrink:0 }}/>
+                  style={{ width:'14px', height:'14px', cursor:'pointer', flexShrink:0, accentColor:'#0098EA' }}/>
                 Mnemonic ini dari <strong>Telegram Wallet</strong> / Tonkeeper (24 kata, format TON native)
               </label>
             )}
-            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'12px' }}>
-              <input placeholder="Nama Wallet (opsional)" value={walletName} onChange={e => setWalletName(e.target.value)}/>
+
+            <div style={{ display:'grid', gridTemplateColumns: (importMode && tonImportMode) ? '1fr' : '1fr 1fr', gap:'12px' }}>
+              <div>
+                <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Nama Wallet (opsional)</label>
+                <input placeholder="cth. Wallet Farming 1" value={walletName} onChange={e => setWalletName(e.target.value)}
+                  style={{ width:'100%', boxSizing:'border-box' }}/>
+              </div>
+
               {!importMode && (
-                <select value={entropyBits} onChange={e => setEntropyBits(Number(e.target.value) as any)}>
-                  {QLENGTH_OPTIONS.map(o => <option key={o.bits} value={o.bits}>{o.label}</option>)}
-                </select>
+                <div>
+                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Panjang Mnemonic</label>
+                  <select value={entropyBits} onChange={e => setEntropyBits(Number(e.target.value) as any)} style={{ width:'100%' }}>
+                    {QLENGTH_OPTIONS.map(o => <option key={o.bits} value={o.bits}>{o.label}</option>)}
+                  </select>
+                </div>
               )}
-              {importMode && tonImportMode && (
-                <input type="password" placeholder="Password mnemonic (opsional, kosongkan jika tidak pakai)"
-                  value={tonMnemonicPassword} onChange={e => setTonMnemonicPassword(e.target.value)}/>
-              )}
+
               {!(importMode && tonImportMode) && (
-                <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
-                  <label style={{ fontSize:'12px', color:'#888', whiteSpace:'nowrap' }}>Jumlah Address:</label>
+                <div>
+                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Jumlah Address</label>
                   <input type="number" min={1} max={20} value={addressCount}
                     onChange={e => setAddressCount(Math.min(20, Math.max(1, parseInt(e.target.value) || 1)))}
-                    style={{ width:'70px' }}/>
+                    style={{ width:'100%', boxSizing:'border-box' }}/>
                 </div>
               )}
             </div>
+
             {importMode && (
-              <textarea
-                placeholder={tonImportMode
-                  ? 'Masukkan 24 kata mnemonic dari Telegram Wallet / Tonkeeper, dipisah spasi...'
-                  : 'Masukkan mnemonic phrase (12/15/18/21/24 kata, dipisah spasi)...'}
-                value={customMnemonic}
-                onChange={e => setCustomMnemonic(e.target.value)}
-                rows={3}
-                style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', resize:'vertical', marginBottom:'10px' }}
-              />
-            )}
-            {importMode && tonImportMode && (
-              <div style={{ fontSize:'11px', color:'#666', marginBottom:'10px', lineHeight:1.5 }}>
-                Wallet TON native (Telegram Wallet / Tonkeeper) pakai algoritma turunan key yang beda dari
-                mnemonic BIP39 chain lain di app ini — hasil import cuma menghasilkan <strong>1 address Gram (TON)</strong>,
-                tidak support chain lain
+              <div style={{ marginTop:'12px' }}>
+                <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Mnemonic Phrase</label>
+                <textarea
+                  placeholder={tonImportMode
+                    ? 'Masukkan 24 kata mnemonic dari Telegram Wallet / Tonkeeper, dipisah spasi...'
+                    : 'Masukkan mnemonic phrase (12/15/18/21/24 kata, dipisah spasi)...'}
+                  value={customMnemonic}
+                  onChange={e => setCustomMnemonic(e.target.value)}
+                  rows={3}
+                  style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', resize:'vertical' }}
+                />
               </div>
             )}
+
+            {importMode && tonImportMode && (
+              <div style={{ fontSize:'11px', color:'#666', marginTop:'12px', lineHeight:1.5, padding:'9px 12px', background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #0098EA' }}>
+                Wallet TON native (Telegram Wallet / Tonkeeper) pakai algoritma turunan key yang beda dari
+                mnemonic BIP39 chain lain di app ini — hasil import cuma menghasilkan <strong>1 address Gram (TON)</strong>,
+                tidak support chain lain.
+              </div>
+            )}
+
             <button onClick={generateWallet}
               disabled={generating || (importMode && !customMnemonic.trim())}
-              style={{ width:'100%', padding:'13px', background:generating?'#1a2a1a':'#01a2ff', color:generating?'#4caf50':'#000', border:'none', cursor:generating?'wait':'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:importMode&&!customMnemonic.trim()?0.5:1 }}>
+              style={{ width:'100%', padding:'13px', marginTop:'18px', background:generating?'#1a2a1a':'#01a2ff', color:generating?'#4caf50':'#000', border:'none', cursor:generating?'wait':'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:importMode&&!customMnemonic.trim()?0.5:1, transition:'opacity .15s' }}>
               {generating
                 ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Generating...</>
                 : importMode ? <><FaFileImport/> Import Wallet</> : <><FaRandom/> Generate Wallet</>}
