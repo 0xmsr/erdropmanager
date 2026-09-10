@@ -26,7 +26,7 @@ const CHANGELOG: Version[] = [
     title: 'Update v2.3.1',
     changes: [
       { type: 'feature', text: 'Menambahkan 2 Faucet Baru' },
-      { type: 'feature', text: 'Memperbaiki bug di 2 network (Sui & APT) ~input yang tidak merespon' },
+      { type: 'fix', text: 'Memperbaiki bug di 2 network (Sui & APT) ~input yang tidak merespon' },
     ],
   }, 
   {
