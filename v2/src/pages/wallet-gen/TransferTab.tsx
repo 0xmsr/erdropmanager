@@ -89,6 +89,10 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     txSendTo, txSending, txSetMaxAmount, txStatus, txStatusColor, txWalletSel, txSendAssetMode, wallets,
     txWalletHistory, txWalletHistoryLoading, txWalletHistoryError, txLoadWalletHistory,
     txTokenDetail, txTokenDetailLoading, txTokenDetailError,
+    txApproveSpender, setTxApproveSpender, txApproveAmt, setTxApproveAmt,
+    txApproveUnlimited, setTxApproveUnlimited, txApproving, txRevokingSpender,
+    txApproveStatus, txAllowanceResult, txAllowanceChecking,
+    txCheckAllowance, txApproveToken, txRevokeApproval, txApprovalHistoryForToken,
   } = ctx;
 
   const [gramSwapFlipSpin, setGramSwapFlipSpin] = React.useState(false);
@@ -672,7 +676,118 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                   )}
                 </div>
               )}
-              
+
+              {txIsToken && selectedTxToken && (() => {
+                const approveStatusColor = { idle:'#555', pending:'#ffaa00', success:'#4caf50', error:'#f44336' }[txApproveStatus.type];
+                const approvalHistory = txApprovalHistoryForToken(selectedTxToken.address);
+                return (
+                <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'18px' }}>
+                  <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'flex', alignItems:'center', gap:'6px', marginBottom:'14px' }}>
+                    <FaCheckCircle size={11}/> Approve &amp; Allowance ({selectedTxToken.symbol})
+                  </div>
+
+                  <div style={{ background:'#0a0a0a', border:'1px solid #1e1e1e', borderLeft:'3px solid #ffaa00', padding:'10px 12px', marginBottom:'14px', fontSize:'11px', color:'#aa8844', lineHeight:'1.6', display:'flex', gap:'8px' }}>
+                    <FaExclamationTriangle size={12} style={{ flexShrink:0, marginTop:'1px' }}/>
+                    <span>Approve memberi izin ke address lain (biasanya kontrak DEX/dApp) untuk menarik token ini dari wallet kamu. Cuma approve ke kontrak yang kamu percaya, dan revoke kalau sudah tidak dipakai.</span>
+                  </div>
+
+                  <div style={{ marginBottom:'14px' }}>
+                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Address Spender (kontrak yang diberi izin)</label>
+                    <div style={{ display:'flex', gap:'6px' }}>
+                      <input type="text" placeholder="0x..." value={txApproveSpender}
+                        onChange={e => setTxApproveSpender(e.target.value)}
+                        style={{ flex:1, boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
+                      <button onClick={() => txCheckAllowance()} disabled={txAllowanceChecking || !ethers.utils.isAddress(txApproveSpender.trim())}
+                        style={{ background:'none', border:'1px solid #333', color:txAllowanceChecking?'#555':'#01a2ff', padding:'0 12px', cursor:'pointer', fontSize:'11px', whiteSpace:'nowrap', opacity: ethers.utils.isAddress(txApproveSpender.trim()) ? 1 : 0.4 }}>
+                        {txAllowanceChecking ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : 'Cek Allowance'}
+                      </button>
+                    </div>
+                    {ethers.utils.isAddress(txApproveSpender.trim()) && (
+                      <div style={{ fontSize:'11px', marginTop:'8px', display:'flex', alignItems:'center', gap:'6px' }}>
+                        <span style={{ color:'#555' }}>Allowance saat ini:</span>
+                        {txAllowanceChecking ? (
+                          <span style={{ color:'#555' }}>mengecek...</span>
+                        ) : txAllowanceResult ? (
+                          <span style={{ fontFamily:'monospace', fontWeight:'bold', color: txAllowanceResult.isUnlimited ? '#ff9800' : (txAllowanceResult.raw.isZero() ? '#555' : '#4caf50') }}>
+                            {txAllowanceResult.isUnlimited ? '∞ Unlimited' : `${parseFloat(txAllowanceResult.formatted).toLocaleString('en-US', { maximumFractionDigits: 6 })} ${selectedTxToken.symbol}`}
+                          </span>
+                        ) : (
+                          <span style={{ color:'#333' }}>—</span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={{ marginBottom:'14px' }}>
+                    <label style={{ display:'flex', alignItems:'center', gap:'8px', cursor:'pointer', userSelect:'none', marginBottom:'8px' }}>
+                      <input type="checkbox" checked={txApproveUnlimited} onChange={e => setTxApproveUnlimited(e.target.checked)} style={{ width:'auto', margin:0, accentColor:'#01a2ff' }}/>
+                      <span style={{ fontSize:'12px', color: txApproveUnlimited ? '#01a2ff' : '#888' }}>Unlimited approval (MaxUint256)</span>
+                    </label>
+                    {!txApproveUnlimited && (
+                      <input type="number" placeholder={`Jumlah ${selectedTxToken.symbol} yang diizinkan`} min="0" value={txApproveAmt}
+                        onChange={e => setTxApproveAmt(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
+                    )}
+                  </div>
+
+                  <button onClick={() => txApproveToken()}
+                    disabled={txApproving || !ethers.utils.isAddress(txApproveSpender.trim()) || (!txApproveUnlimited && !txApproveAmt)}
+                    style={{ width:'100%', padding:'12px', background: txApproving ? '#1a1a2a' : (selectedNetwork?.color ?? '#01a2ff'), color:'#000', border:'none', cursor:'pointer', fontSize:'13px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
+                      opacity: (!ethers.utils.isAddress(txApproveSpender.trim()) || (!txApproveUnlimited && !txApproveAmt)) ? 0.5 : 1 }}>
+                    {txApproving
+                      ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Memproses...</>
+                      : <><FaCheckCircle/> Approve {selectedTxToken.symbol}</>}
+                  </button>
+
+                  {txApproveStatus.type !== 'idle' && (
+                    <div style={{ background:'#0a0a0a', border:`1px solid ${approveStatusColor}44`, borderLeft:`3px solid ${approveStatusColor}`, padding:'10px 12px', fontSize:'12px', fontFamily:'monospace', color:approveStatusColor, marginTop:'12px' }}>
+                      {txApproveStatus.type === 'pending' && <span style={{ marginRight:'6px', animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
+                      {txApproveStatus.type === 'success' && '✓ '}
+                      {txApproveStatus.type === 'error'   && '✗ '}
+                      {txApproveStatus.msg}
+                      {txApproveStatus.hash && selectedNetwork?.explorerUrl && (
+                        <div style={{ marginTop:'6px' }}>
+                          <a href={`${selectedNetwork.explorerUrl}/tx/${txApproveStatus.hash}`} target="_blank" rel="noreferrer" style={{ color:'#01a2ff', fontSize:'11px' }}>
+                            Lihat di {selectedNetwork.name} Explorer ↗
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {approvalHistory.length > 0 && (
+                    <div style={{ marginTop:'18px', paddingTop:'14px', borderTop:'1px solid #161616' }}>
+                      <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px' }}>
+                        Approval Tersimpan di Wallet Ini ({approvalHistory.length})
+                      </div>
+                      <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+                        {approvalHistory.map(a => (
+                          <div key={a.spender} style={{ display:'flex', alignItems:'center', gap:'8px', background:'#0a0a0a', border:'1px solid #161616', padding:'8px 10px' }}>
+                            <div style={{ flex:1, minWidth:0 }}>
+                              <div style={{ fontSize:'11px', fontFamily:'monospace', color:'#ccc', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                                {a.spender}
+                              </div>
+                              <div style={{ fontSize:'10px', color: a.unlimited ? '#ff9800' : '#555', marginTop:'2px' }}>
+                                {a.unlimited ? '∞ Unlimited' : `${a.lastAmount} ${selectedTxToken.symbol}`} · {new Date(a.timestamp).toLocaleDateString('id-ID')}
+                              </div>
+                            </div>
+                            <button onClick={() => { setTxApproveSpender(a.spender); txCheckAllowance(a.spender); }} title="Isi ke form di atas"
+                              style={{ background:'none', border:'1px solid #333', color:'#666', padding:'5px 8px', cursor:'pointer', fontSize:'10px', flexShrink:0 }}>
+                              <FaPlug size={10}/>
+                            </button>
+                            <button onClick={() => txRevokeApproval(a.spender)} disabled={txApproving} title="Revoke (cabut izin)"
+                              style={{ background:'none', border:'1px solid #f4433650', color: txRevokingSpender===a.spender ? '#555' : '#f44336', padding:'5px 10px', cursor: txApproving ? 'not-allowed' : 'pointer', fontSize:'10px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'5px', flexShrink:0 }}>
+                              {txRevokingSpender===a.spender ? <FaSpinner style={{ animation:'spin 1s linear infinite' }} size={10}/> : <><FaTrash size={9}/> Revoke</>}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+                );
+              })()}
+
               <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'18px' }}>
                 <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px', gap:'8px', flexWrap:'wrap' }}>
                   <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'flex', alignItems:'center', gap:'6px' }}>
