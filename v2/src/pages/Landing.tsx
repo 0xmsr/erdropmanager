@@ -129,7 +129,7 @@ const DonationSection: React.FC = () => {
         <FaHeart style={{ color: '#ff4466', fontSize: '20px', animation: 'pulse-border 1.5s infinite' }} />
         Traktir Developer
       </h2>
-      <p style={{ fontSize: '12px', color: '#555', marginBottom: '24px', lineHeight: 1.8, maxWidth: '480px', margin: '0 auto 24px' }}>
+      <p style={{ fontSize: '12px', color: '#555', lineHeight: 1.8, maxWidth: '480px', margin: '0 auto 24px' }}>
         Jika aplikasi ini membantu aktivitas airdrop kamu, pertimbangkan untuk donasi. Setiap kontribusi sangat berarti untuk pengembangan fitur baru!
       </p>
 
@@ -187,6 +187,22 @@ const DonationSection: React.FC = () => {
   );
 };
 
+function handleTiltMove(e: React.MouseEvent<HTMLDivElement>) {
+  const card = e.currentTarget;
+  const rect = card.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const rotateY = ((x - rect.width / 2) / (rect.width / 2)) * 7;
+  const rotateX = -((y - rect.height / 2) / (rect.height / 2)) * 7;
+  card.style.transform = `perspective(700px) rotateX(${rotateX}deg) rotateY(${rotateY}deg) translateZ(4px)`;
+  card.style.setProperty('--shine-x', `${(x / rect.width) * 100}%`);
+  card.style.setProperty('--shine-y', `${(y / rect.height) * 100}%`);
+}
+
+function handleTiltLeave(e: React.MouseEvent<HTMLDivElement>) {
+  e.currentTarget.style.transform = 'perspective(700px) rotateX(0deg) rotateY(0deg) translateZ(0px)';
+}
+
 export const Landing: React.FC = () => {
   const heroLine1 = useTypingEffect('E R D R O P', 50, 200);
   const heroLine2 = useTypingEffect('MANAGER_', 50, 900);
@@ -233,18 +249,46 @@ export const Landing: React.FC = () => {
           50% { transform: translateY(-6px); }
         }
         .feature-card {
-          transition: transform 0.25s ease, box-shadow 0.25s ease;
+          transition: transform 0.15s ease, box-shadow 0.25s ease;
+          transform-style: preserve-3d;
+          will-change: transform;
+          position: relative;
+          overflow: hidden;
+        }
+        .feature-card::before {
+          content: '';
+          position: absolute;
+          inset: 0;
+          background: radial-gradient(circle at var(--shine-x, 50%) var(--shine-y, 50%), rgba(255,255,255,0.10), transparent 55%);
+          opacity: 0;
+          transition: opacity 0.2s ease;
+          pointer-events: none;
+        }
+        .feature-card:hover::before {
+          opacity: 1;
         }
         .feature-card:hover {
-          transform: translateY(-4px);
-          box-shadow: 0 8px 32px rgba(0,0,0,0.6) !important;
+          box-shadow: 0 20px 36px -14px rgba(0,0,0,0.75), 0 0 0 1px rgba(255,255,255,0.05);
         }
         .cta-btn {
           transition: all 0.2s ease;
         }
         .cta-btn:hover {
-          transform: scale(1.04);
-          filter: brightness(1.15);
+          filter: brightness(1.12);
+        }
+        /* Tombol 3D neo-brutalist: shadow padat yang "menekan flush" saat
+           diklik — pola yang sama dipakai di .open-link (App.css), di sini
+           dibuat reusable via currentColor supaya otomatis nyambung ke
+           warna teks/border tiap tombol. */
+        .btn-3d {
+          transition: transform 0.12s ease, box-shadow 0.12s ease;
+        }
+        .btn-3d:hover {
+          transform: translate(-2px, -2px);
+        }
+        .btn-3d:active {
+          transform: translate(2px, 2px) !important;
+          box-shadow: 0 0 0 0 transparent !important;
         }
         .fade-in-card {
           opacity: 0;
@@ -253,7 +297,66 @@ export const Landing: React.FC = () => {
         .fade-in-card.visible {
           animation: fadeSlideUp 0.5s ease forwards;
         }
+
+        /* Terminal chrome dots — highlight tipis biar kesannya glossy/3D. */
+        .term-dot {
+          box-shadow: inset 0 1px 1px rgba(255,255,255,0.45), 0 1px 2px rgba(0,0,0,0.5);
+        }
+
+        /* Kubus wireframe 3D murni CSS, dekorasi di pojok hero. */
+        .cube-3d-wrap {
+          position: absolute;
+          top: 22px;
+          right: 24px;
+          width: 54px;
+          height: 54px;
+          perspective: 380px;
+          display: none;
+          pointer-events: none;
+        }
+        @media (min-width: 640px) {
+          .cube-3d-wrap { display: block; }
+        }
+        .cube-3d {
+          width: 100%;
+          height: 100%;
+          position: relative;
+          transform-style: preserve-3d;
+          animation: cubeSpin 14s linear infinite;
+        }
+        .cube-3d .face {
+          position: absolute;
+          width: 54px;
+          height: 54px;
+          border: 1px solid rgba(1,162,255,0.55);
+          background: rgba(1,162,255,0.05);
+        }
+        .cube-3d .face.front  { transform: translateZ(27px); }
+        .cube-3d .face.back   { transform: translateZ(-27px) rotateY(180deg); }
+        .cube-3d .face.right  { transform: rotateY(90deg) translateZ(27px); }
+        .cube-3d .face.left   { transform: rotateY(-90deg) translateZ(27px); }
+        .cube-3d .face.top    { transform: rotateX(90deg) translateZ(27px); }
+        .cube-3d .face.bottom { transform: rotateX(-90deg) translateZ(27px); }
+        @keyframes cubeSpin {
+          from { transform: rotateX(0deg) rotateY(0deg); }
+          to   { transform: rotateX(360deg) rotateY(360deg); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .cube-3d { animation: none; }
+        }
       `}</style>
+
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: '7px',
+        padding: '10px 16px', background: '#0a0a0a', borderBottom: '1px solid #1e1e1e',
+      }}>
+        <span className="term-dot" style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#ff5f56' }} />
+        <span className="term-dot" style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#ffbd2e' }} />
+        <span className="term-dot" style={{ width: '10px', height: '10px', borderRadius: '50%', background: '#27c93f' }} />
+        <span style={{ marginLeft: '8px', fontSize: '10px', color: '#555', letterSpacing: '1px', fontFamily: '"Courier New", monospace' }}>
+          ~/erdrop-manager — zsh
+        </span>
+      </div>
 
       <div style={{
         position: 'relative',
@@ -274,6 +377,16 @@ export const Landing: React.FC = () => {
           background: 'radial-gradient(ellipse, rgba(1,162,255,0.12) 0%, transparent 70%)',
           pointerEvents: 'none',
         }} />
+        <div className="cube-3d-wrap" aria-hidden="true">
+          <div className="cube-3d">
+            <div className="face front" />
+            <div className="face back" />
+            <div className="face right" />
+            <div className="face left" />
+            <div className="face top" />
+            <div className="face bottom" />
+          </div>
+        </div>
         <div style={{ position: 'relative', textAlign: 'center', maxWidth: '800px', margin: '0 auto' }}>
           <div style={{
             display: 'inline-flex', alignItems: 'center', gap: '8px',
@@ -328,23 +441,25 @@ export const Landing: React.FC = () => {
             animation: 'fadeSlideUp 0.5s ease 1.8s both',
           }}>
             <Link to="/home" style={{ textDecoration: 'none' }}>
-              <button className="cta-btn" style={{
+              <button className="cta-btn btn-3d" style={{
                 background: '#fff', color: '#000', border: 'none',
                 padding: '12px 28px', fontFamily: '"Courier New", monospace',
                 fontWeight: 'bold', fontSize: '12px', letterSpacing: '2px',
                 textTransform: 'uppercase', cursor: 'pointer',
                 display: 'flex', alignItems: 'center', gap: '8px',
+                boxShadow: '4px 4px 0 0 #01a2ff',
               }}>
                 <FaRocket /> Mulai Sekarang
               </button>
             </Link>
             <a href="https://t.me/airdropiac" target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
-              <button className="cta-btn" style={{
+              <button className="cta-btn btn-3d" style={{
                 background: 'transparent', color: '#01a2ff', border: '1px solid #01a2ff',
                 padding: '12px 28px', fontFamily: '"Courier New", monospace',
                 fontWeight: 'bold', fontSize: '12px', letterSpacing: '2px',
                 textTransform: 'uppercase', cursor: 'pointer',
                 display: 'flex', alignItems: 'center', gap: '8px',
+                boxShadow: '4px 4px 0 0 currentColor',
               }}>
                 <FaTelegram /> Join Channel
               </button>
@@ -389,11 +504,15 @@ export const Landing: React.FC = () => {
             { icon: <FaDownload />, title: 'Export & Import', desc: 'Backup semua data ke file .txt terenkripsi. Pindah device kapan saja tanpa kehilangan catatan airdrop.', color: '#ffffff' },
             { icon: <FaUpload />, title: 'Zero Signup', desc: 'Langsung pakai tanpa registrasi, email, atau password. Buka browser, buka app, mulai catat.', color: '#ffffff' },
           ].map((item, i) => (
-            <div key={i} style={{
-              background: '#0d0d0d', border: '1px solid #1a1a1a',
-              borderTop: `2px solid ${item.color}`, padding: '20px',
-              display: 'flex', flexDirection: 'column', gap: '10px',
-            }}>
+            <div key={i}
+              className="feature-card"
+              onMouseMove={handleTiltMove}
+              onMouseLeave={handleTiltLeave}
+              style={{
+                background: '#0d0d0d', border: '1px solid #1a1a1a',
+                borderTop: `2px solid ${item.color}`, padding: '20px',
+                display: 'flex', flexDirection: 'column', gap: '10px',
+              }}>
               <span style={{ color: item.color, fontSize: '20px' }}>{item.icon}</span>
               <strong style={{ fontSize: '12px', letterSpacing: '1px', textTransform: 'uppercase' }}>{item.title}</strong>
               <p style={{ fontSize: '12px', color: '#666', lineHeight: 1.7, margin: 0 }}>{item.desc}</p>
@@ -417,6 +536,8 @@ export const Landing: React.FC = () => {
               id={`feat-${i}`}
               ref={el => { cardRefs.current[i] = el; }}
               className={`feature-card fade-in-card ${visible.has(`feat-${i}`) ? 'visible' : ''}`}
+              onMouseMove={handleTiltMove}
+              onMouseLeave={handleTiltLeave}
               style={{
                 background: '#0d0d0d',
                 border: '1px solid #1a1a1a',
@@ -453,14 +574,14 @@ export const Landing: React.FC = () => {
               </ul>
 
               <Link to={f.path} style={{ textDecoration: 'none' }}>
-                <button style={{
+                <button className="btn-3d" style={{
                   width: '100%', background: 'transparent',
                   border: `1px solid ${f.color}55`, color: f.color,
                   padding: '8px 0', fontSize: '10px', letterSpacing: '1.5px',
                   textTransform: 'uppercase', cursor: 'pointer',
                   fontFamily: '"Courier New", monospace',
                   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px',
-                  transition: 'all 0.2s',
+                  boxShadow: '3px 3px 0 0 currentColor',
                 }}>
                   Coba Fitur <FaArrowRight style={{ fontSize: '9px' }} />
                 </button>
@@ -478,7 +599,11 @@ export const Landing: React.FC = () => {
           CARA PAKAI
         </p>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0', position: 'relative' }}>
+          <div style={{
+            position: 'absolute', left: '23px', top: '22px', bottom: '22px', width: '1px',
+            background: 'linear-gradient(#1e1e1e, #333 15%, #333 85%, #1e1e1e)',
+          }} />
           {[
             { step: '01', title: 'Tambah Garapan', desc: 'Buka halaman Home. Isi nama project, tugas, link, dan jumlah akun. Klik tambah — garapan langsung tersimpan.', color: '#01a2ff' },
             { step: '02', title: 'Tandai Progress Harian', desc: 'Setiap hari, klik ✓ pada kolom "Hari Ini" untuk setiap garapan yang sudah dikerjakan. Status akan reset otomatis jam 07.00 WIB.', color: '#00e676' },
@@ -492,9 +617,12 @@ export const Landing: React.FC = () => {
               borderBottom: i < 4 ? '1px solid #0f0f0f' : 'none',
             }}>
               <div style={{
+                position: 'relative', zIndex: 1,
                 fontFamily: '"Courier New", monospace',
                 fontSize: '32px', fontWeight: 'bold',
-                color: s.color, opacity: 0.25,
+                color: 'transparent',
+                WebkitTextStroke: `1.2px ${s.color}`,
+                textShadow: `2px 2px 0 ${s.color}33`,
                 lineHeight: 1, flexShrink: 0, width: '48px',
               }}>
                 {s.step}
@@ -545,24 +673,26 @@ export const Landing: React.FC = () => {
           </p>
           <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
             <a href="https://t.me/airdropiac" target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
-              <button style={{
+              <button className="btn-3d" style={{
                 background: '#0088cc', color: '#fff', border: 'none',
                 padding: '12px 24px', fontFamily: '"Courier New", monospace',
                 fontWeight: 'bold', fontSize: '11px', letterSpacing: '2px',
                 textTransform: 'uppercase', cursor: 'pointer',
                 display: 'flex', alignItems: 'center', gap: '8px',
                 animation: 'pulse-border 2s infinite',
+                boxShadow: '4px 4px 0 0 #ffffff',
               }}>
                 <FaTelegram /> Telegram Channel
               </button>
             </a>
             <a href="https://twitter.com/intent/follow?screen_name=iaccommunity_" target="_blank" rel="noreferrer" style={{ textDecoration: 'none' }}>
-              <button style={{
+              <button className="btn-3d" style={{
                 background: 'transparent', color: '#fff', border: '1px solid #333',
                 padding: '12px 24px', fontFamily: '"Courier New", monospace',
                 fontWeight: 'bold', fontSize: '11px', letterSpacing: '2px',
                 textTransform: 'uppercase', cursor: 'pointer',
                 display: 'flex', alignItems: 'center', gap: '8px',
+                boxShadow: '4px 4px 0 0 currentColor',
               }}>
                 <FaTwitter /> Follow X
               </button>
