@@ -6,17 +6,16 @@ export default defineConfig({
   plugins: [
     react(),
     nodePolyfills({
-      // Sertukan polyfill spesifik yang dibutuhkan
-      include: ['buffer', 'process', 'util', 'stream'],
+      // gramjs (Telegram MTProto client)
+      include: ['buffer', 'process', 'util', 'stream', 'crypto', 'events'],
       globals: {
-        Buffer: true, // Menyediakan global Buffer di window/globalThis
+        Buffer: true,
         global: true,
         process: true,
       },
     }),
   ],
   define: {
-    // Fallback opsional jika masih dibutuhkan oleh library legacy
     'process.env': {},
   },
 });
