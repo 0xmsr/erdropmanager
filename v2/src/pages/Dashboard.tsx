@@ -29,7 +29,6 @@ export const Dashboard: React.FC = () => {
   const completedToday = ongoingTasks.filter(t => t.selesaiHariIni).length;
   const totalOngoing   = ongoingTasks.length;
   const progressToday  = totalOngoing > 0 ? Math.round((completedToday / totalOngoing) * 100) : 0;
-  // copyright 0xmsr
   const upcomingDeadlines = tasks
     .filter(t => {
       if (!t.deadline || t.status === 'END') return false;
@@ -55,7 +54,6 @@ export const Dashboard: React.FC = () => {
   const totalIncome  = transactions.filter(t => t.type === 'income').reduce((a, b) => a + b.amount, 0);
   const totalExpense = transactions.filter(t => t.type === 'expense').reduce((a, b) => a + b.amount, 0);
   const netProfit    = totalIncome - totalExpense;
-  // copyright 0xmsr
   const networkStats: Record<string, { income: number; count: number }> = {};
   transactions.filter(t => t.type === 'income').forEach(t => {
     const net = t.network.toUpperCase();
