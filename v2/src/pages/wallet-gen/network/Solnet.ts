@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
 import {
-  Keypair as SolKeypair, Connection, PublicKey,
+  Keypair as SolKeypair, Connection, PublicKey, SystemProgram, LAMPORTS_PER_SOL,
   Transaction as SolTransaction, sendAndConfirmTransaction,
 } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID } from '@solana/spl-token';
@@ -23,6 +23,44 @@ export function deriveSolanaAddress(mnemonic: string, index: number): { address:
   };
 }
 
+
+export function isValidSolanaAddress(address: string): boolean {
+  try { new PublicKey(address.trim()); return true; } catch { return false; }
+}
+
+// ── Kirim SOL native — dipakai oleh AI Multi-Chain Agent (v2.4) selain form ──
+// Send manual di Walletgenerator.tsx. Sengaja dibuat sebagai fungsi berdiri
+// sendiri (bukan bagian dari komponen) supaya bisa dipanggil langsung dari
+// executor skill AI, sama seperti sendSui/sendAptos/sendAtom/dst.
+export async function sendSolNative(
+  net: SolNetworkCfg,
+  privateKeyHex: string,
+  toAddress: string,
+  amountSol: number,
+): Promise<string> {
+  if (!isValidSolanaAddress(toAddress)) {
+    throw new Error('Address Solana tujuan tidak valid.');
+  }
+  if (!(amountSol > 0)) {
+    throw new Error('Jumlah SOL yang dikirim harus lebih dari 0.');
+  }
+  let keypair: SolKeypair;
+  try {
+    keypair = SolKeypair.fromSecretKey(bs58.decode(privateKeyHex.trim()));
+  } catch {
+    throw new Error('Private Key Solana tidak valid (harus base58, hasil dari WalletGen).');
+  }
+  const toPubkey = new PublicKey(toAddress.trim());
+  const connection = await getSolanaConnection(net);
+  const tx = new SolTransaction().add(
+    SystemProgram.transfer({
+      fromPubkey: keypair.publicKey,
+      toPubkey,
+      lamports: Math.round(amountSol * LAMPORTS_PER_SOL),
+    }),
+  );
+  return await sendAndConfirmTransactionSafe(connection, tx, [keypair]);
+}
 
 export function getMetadataPda(mint: PublicKey): PublicKey {
   const [pda] = PublicKey.findProgramAddressSync(
@@ -98,19 +136,6 @@ export async function getSolanaConnection(net: SolNetworkCfg): Promise<Connectio
   throw new Error(`Tidak dapat connect ke ${net.name}. Cek koneksi / RPC.`);
 }
 
-
-// ── Kirim + konfirmasi TX Solana dengan aman terhadap "block height exceeded". ──
-// sendAndConfirmTransaction bawaan web3.js polling konfirmasi memakai window
-// validitas blockhash (~150 block / 60-90 detik). Kalau RPC lambat / network padat,
-// window itu bisa habis DULUAN sebelum RPC sempat lihat tx-nya confirmed — padahal
-// tx itu sendiri sudah tervalidasi & landed on-chain. Bug ini bikin transfer yang
-// SEBENARNYA BERHASIL malah dilaporkan gagal ke user.
-//
-// Fix: begitu error TransactionExpiredBlockheightExceededError muncul, jangan
-// langsung anggap gagal — cross-check langsung ke chain pakai getSignatureStatus.
-// Signature transaksi sudah tersedia di tx.signature karena signing terjadi
-// SEBELUM broadcast (di dalam sendAndConfirmTransaction/sendTransaction), jadi
-// kita tetap bisa melacaknya walau pemanggilnya keburu throw.
 export async function sendAndConfirmTransactionSafe(
   connection: Connection,
   tx: SolTransaction,
