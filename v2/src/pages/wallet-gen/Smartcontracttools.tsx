@@ -29,6 +29,64 @@ export interface DeployedErc20Token {
   createdAt: number;
 }
 
+export interface DeployedCustomContract {
+  id: string;
+  chainId: number;
+  networkId: string;
+  networkName: string;
+  address: string;
+  contractName: string;
+  deployer: string;
+  txHash: string;
+  constructorArgs: string;
+  createdAt: number;
+}
+
+// Cek apakah sebuah ABI beneran ERC-20-compliant, bukan cuma "punya fungsi transfer() doang".
+// Dipakai buat mutusin kontrak kustom yang baru dideploy masuk ke list "Token" atau list
+// "Kontrak Kustom" — supaya kontrak non-token (kayak vault/bank) nggak ke-label token cuma
+// karena bytecode-nya berhasil ke-deploy.
+//
+// Syarat minimal standar ERC-20 (EIP-20): fungsi view name/symbol/decimals/totalSupply/
+// balanceOf(address), fungsi transfer(address,uint256) & transferFrom(address,address,uint256)
+// & approve(address,uint256) yang SEMUANYA return bool, allowance(address,address), dan
+// event Transfer(address indexed,address indexed,uint256) + Approval(address indexed,address indexed,uint256).
+export function isErc20CompliantAbi(abi: any[]): boolean {
+  if (!Array.isArray(abi)) return false;
+
+  const fn = (name: string, inputTypes: string[], outputTypes: string[]) =>
+    abi.some((item: any) =>
+      item?.type === 'function' &&
+      item?.name === name &&
+      Array.isArray(item?.inputs) &&
+      item.inputs.length === inputTypes.length &&
+      item.inputs.every((inp: any, i: number) => inp?.type === inputTypes[i]) &&
+      Array.isArray(item?.outputs) &&
+      item.outputs.length === outputTypes.length &&
+      item.outputs.every((out: any, i: number) => out?.type === outputTypes[i])
+    );
+
+  const ev = (name: string, inputTypes: string[], indexedFlags: boolean[]) =>
+    abi.some((item: any) =>
+      item?.type === 'event' &&
+      item?.name === name &&
+      Array.isArray(item?.inputs) &&
+      item.inputs.length === inputTypes.length &&
+      item.inputs.every((inp: any, i: number) => inp?.type === inputTypes[i] && !!inp?.indexed === indexedFlags[i])
+    );
+
+  return (
+    fn('totalSupply', [], ['uint256']) &&
+    fn('balanceOf', ['address'], ['uint256']) &&
+    fn('transfer', ['address', 'uint256'], ['bool']) &&
+    fn('transferFrom', ['address', 'address', 'uint256'], ['bool']) &&
+    fn('approve', ['address', 'uint256'], ['bool']) &&
+    fn('allowance', ['address', 'address'], ['uint256']) &&
+    ev('Transfer', ['address', 'address', 'uint256'], [true, true, false]) &&
+    ev('Approval', ['address', 'address', 'uint256'], [true, true, false])
+  );
+}
+
 export interface CreatedSplToken {
   id: string;
   mint: string;
