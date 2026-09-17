@@ -211,9 +211,13 @@ export interface ParsedTx {
   fee?:              bigint;
 }
 
+// BUG FIX: sebelumnya cuma satu rpcUrl dipakai, tanpa fallback — kalau RPC itu
+// down/di-rate-limit, decode langsung gagal walau network lain di daftar
+// networks[] (lihat TxDecoderProps) masih hidup. rpcCandidates sekarang boleh
+// diisi lebih dari satu URL (semua RPC network yang sama) dan dicoba bergantian.
 async function fetchAndParseTx(
   hashOrRaw: string,
-  rpcUrl: string,
+  rpcCandidates: string[],
   onLog?: (msg: string) => void,
 ): Promise<ParsedTx> {
   const log = onLog ?? (() => {});
@@ -230,16 +234,44 @@ async function fetchAndParseTx(
     throw new Error('Input harus berupa tx hash (0x…64 hex) atau raw RLP hex');
   }
 
-  log(`Fetching tx dari RPC: ${rpcUrl}…`);
-  const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+  const candidates = (rpcCandidates || []).filter((u, i, arr) => u && arr.indexOf(u) === i);
+  if (candidates.length === 0) throw new Error('RPC URL belum diisi.');
 
-  const [txRaw, receipt] = await Promise.allSettled([
-    provider.send('eth_getTransactionByHash', [trimmed]),
-    provider.send('eth_getTransactionReceipt', [trimmed]),
-  ]);
+  let txRaw: PromiseSettledResult<any> | null = null;
+  let receipt: PromiseSettledResult<any> | null = null;
+  let provider: ethers.providers.JsonRpcProvider | null = null;
+  let lastErr: any = null;
 
-  const tx      = txRaw.status === 'fulfilled' ? txRaw.value : null;
-  const rcpt    = receipt.status === 'fulfilled' ? receipt.value : null;
+  for (const rpcUrl of candidates) {
+    log(`Fetching tx dari RPC: ${rpcUrl}…`);
+    try {
+      const p = new ethers.providers.JsonRpcProvider(rpcUrl);
+      const [txResult, receiptResult] = await Promise.race([
+        Promise.allSettled([
+          p.send('eth_getTransactionByHash', [trimmed]),
+          p.send('eth_getTransactionReceipt', [trimmed]),
+        ]),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), 8000)),
+      ]);
+      if (txResult.status === 'rejected' && receiptResult.status === 'rejected') {
+        throw txResult.reason;
+      }
+      provider = p; txRaw = txResult; receipt = receiptResult;
+      break;
+    } catch (e) {
+      lastErr = e;
+      log(`RPC ${rpcUrl} gagal, coba RPC berikutnya…`);
+    }
+  }
+
+  if (!provider || !txRaw || !receipt) {
+    throw new Error(`Semua RPC gagal dihubungi (dicoba ${candidates.length}). ${lastErr?.message || 'Cek koneksi atau ganti RPC.'}`);
+  }
+
+  const [txRawFinal, receiptFinal] = [txRaw, receipt];
+
+  const tx      = txRawFinal.status === 'fulfilled' ? txRawFinal.value : null;
+  const rcpt    = receiptFinal.status === 'fulfilled' ? receiptFinal.value : null;
 
   if (!tx) throw new Error('Transaksi tidak ditemukan di RPC');
   log('Tx ditemukan, parsing…');
@@ -247,7 +279,7 @@ async function fetchAndParseTx(
   let timestamp: number | null = null;
   if (tx.blockHash) {
     try {
-      const block = await provider.send('eth_getBlockByHash', [tx.blockHash, false]);
+      const block = await provider!.send('eth_getBlockByHash', [tx.blockHash, false]);
       timestamp   = block?.timestamp ? parseInt(block.timestamp, 16) : null;
     } catch {  }
   }
@@ -1045,7 +1077,16 @@ interface TxDecoderProps {
 
 export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.llamarpc.com', networks = [] }) => {
   const [input,    setInput]    = useState('');
-  const [rpc,      setRpc]      = useState(defaultRpc);
+  // BUG FIX: dulu — dropdown ini milih SATU rpcUrl mentah, jadi kalau RPC itu
+  // lagi down/rate-limit, decode langsung gagal walau network yang sama punya
+  // RPC cadangan lain di rpcUrls[]. Sekarang dropdown milih NETWORK-nya (by id),
+  // dan semua rpcUrls network itu dikirim sebagai kandidat fallback ke
+  // fetchAndParseTx (custom RPC manual tetap didukung lewat mode input teks).
+  const [selectedNetId, setSelectedNetId] = useState<string>(networks[0]?.id || '');
+  const [customRpc, setCustomRpc] = useState(defaultRpc);
+  const rpcCandidates = networks.length > 0
+    ? (networks.find(n => n.id === selectedNetId)?.rpcUrls || networks[0]?.rpcUrls || [])
+    : [customRpc];
   const [loading,  setLoading]  = useState(false);
   const [logs,     setLogs]     = useState<string[]>([]);
   const [result,   setResult]   = useState<ParsedTx | null>(null);
@@ -1070,13 +1111,13 @@ export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.
     setResult(null);
     setLogs([]);
     try {
-      const tx = await fetchAndParseTx(input.trim(), rpc, addLog);
+      const tx = await fetchAndParseTx(input.trim(), rpcCandidates, addLog);
       setResult(tx);
     } catch (e: any) {
       setError(e?.message ?? 'Error tidak diketahui');
     }
     setLoading(false);
-  }, [input, rpc]);
+  }, [input, rpcCandidates]);
 
   const decodeCalldata2 = () => {
     if (!calldataInput.trim()) return;
@@ -1122,14 +1163,14 @@ export const TxDecoder: React.FC<TxDecoderProps> = ({ defaultRpc = 'https://eth.
           <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
             <span style={{ fontSize: '11px', color: COLORS.muted, flexShrink: 0 }}>RPC:</span>
             {networks.length > 0 ? (
-              <select value={rpc} onChange={e => setRpc(e.target.value)}
+              <select value={selectedNetId} onChange={e => setSelectedNetId(e.target.value)}
                 style={{ flex: 1, background: '#0d0d0d', border: `1px solid ${COLORS.border}`, color: COLORS.text, padding: '5px 10px', fontSize: '12px', fontFamily: COLORS.mono }}>
-                {networks.map(n => n.rpcUrls.map((url, i) => (
-                  <option key={`${n.id}_${i}`} value={url}>[{n.name}] {url}</option>
-                )))}
+                {networks.map(n => (
+                  <option key={n.id} value={n.id}>[{n.name}] {n.rpcUrls.length} RPC{n.rpcUrls.length > 1 ? ` (fallback otomatis)` : ''}</option>
+                ))}
               </select>
             ) : (
-              <input value={rpc} onChange={e => setRpc(e.target.value)}
+              <input value={customRpc} onChange={e => setCustomRpc(e.target.value)}
                 style={{ flex: 1, background: '#0d0d0d', border: `1px solid ${COLORS.border}`, color: COLORS.muted, padding: '5px 10px', fontSize: '12px', fontFamily: COLORS.mono, outline: 'none' }} />
             )}
           </div>
