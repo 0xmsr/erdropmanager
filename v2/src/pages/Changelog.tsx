@@ -21,6 +21,28 @@ interface Version {
 
 const CHANGELOG: Version[] = [
   {
+    version: '2.4.0',
+    date: '17 Sep 2026',
+    title: 'Multi-Chain Agent — Rekt AI Kini Kuasai 7 Chain Baru',
+    changes: [
+      { type: 'feature', text: 'AI Assistant "Rekt" sekarang punya Multi-Chain Agent: cek saldo & kirim token native langsung dari chat untuk Solana, Sui, Aptos, Tron, Cosmos Hub, Axiome, dan Gram (TON) — di luar EVM yang sudah ada' },
+      { type: 'feature', text: 'Mode Autopilot aksi kecil/rutin: transaksi kirim di bawah threshold per-chain (bisa diatur sendiri per chain) otomatis dieksekusi tanpa klik konfirmasi; nominal di atas threshold tetap wajib approval manual' },
+      { type: 'feature', text: 'Panel baru 🌐 Multi-Chain Agent di halaman AI Assistant — isi Private Key per chain, pilih network (mainnet/testnet), lihat address hasil derivasi, atur threshold autopilot, dan task log lengkap dengan link explorer' },
+      { type: 'improvement', text: 'Private key Multi-Chain Agent 100% signing lokal di browser, tidak pernah dikirim ke AI/OpenCode — konsisten dengan arsitektur EVM Agent yang sudah ada' },
+      { type: 'improvement', text: 'BalanceSkill (cek saldo) selalu auto-jalan tanpa klik karena read-only; hanya PaymentSkill (kirim dana) yang tunduk ke aturan autopilot/threshold' },
+      { type: 'improvement', text: 'Menambahkan sendSolNative ke Solnet.ts sebagai fungsi transfer SOL native yang berdiri sendiri, dipakai bersama Multi-Chain Agent maupun form Send manual di WalletGen' },
+    ],
+  },
+  {
+    version: '2.3.2',
+    date: '10 Sep 2026',
+    title: 'Update v2.3.1',
+    changes: [
+      { type: 'feature', text: 'Menambahkan 2 Faucet Baru' },
+      { type: 'fix', text: 'Memperbaiki bug di 2 network (Sui & APT) ~input yang tidak merespon' },
+    ],
+  }, 
+  {
     version: '2.3.1',
     date: '10 Sep 2026',
     title: 'Update v2.3.1',
