@@ -12,6 +12,7 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     FaShieldAlt, FaSync, FaTrash, FaWallet, activeTab, addressCount, balCheckNetId, balCheckChain, setBalCheckChain, balChecking, 
     balResults, chainView, checkAllAtomBalances, checkAllAxmBalances, checkAllBalances, checkAllGramBalances, 
     checkAllSolBalances, checkAllTronBalances, checkAllSuiBalances, checkAllAptBalances, copiedKey, copyText, csvExporting, customMnemonic, 
+    mnemonicSuggestions, handleMnemonicChange, applyMnemonicSuggestion,
     deleteWallet, deriveMore, entropyBits, expandedId, exportAllCSV, exportWallet, filteredWallets, 
     generateWallet, generating, handleAtomWalletSel, handleAxmWalletSel, 
     handleSolWalletSel, handleTronWalletSel, handleTxWalletSel, handleSuiWalletSel, handleAptWalletSel, gramConnectWithWallet, importMode, networks, openPortfolio, 
@@ -147,17 +148,33 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
             </div>
 
             {importMode && (
-              <div style={{ marginTop:'12px' }}>
+              <div style={{ marginTop:'12px', position:'relative' }}>
                 <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Mnemonic Phrase</label>
                 <textarea
                   placeholder={tonImportMode
                     ? 'Masukkan 24 kata mnemonic dari Telegram Wallet / Tonkeeper, dipisah spasi...'
                     : 'Masukkan mnemonic phrase (12/15/18/21/24 kata, dipisah spasi)...'}
                   value={customMnemonic}
-                  onChange={e => setCustomMnemonic(e.target.value)}
+                  onChange={e => handleMnemonicChange(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Tab' && mnemonicSuggestions.length > 0) {
+                      e.preventDefault();
+                      applyMnemonicSuggestion(mnemonicSuggestions[0]);
+                    }
+                  }}
                   rows={3}
                   style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', resize:'vertical' }}
                 />
+                {mnemonicSuggestions.length > 0 && (
+                  <div style={{ display:'flex', flexWrap:'wrap', gap:'6px', marginTop:'8px' }}>
+                    {mnemonicSuggestions.map(word => (
+                      <button key={word} type="button" onClick={() => applyMnemonicSuggestion(word)}
+                        style={{ background:'#0d0d0d', border:'1px solid #01a2ff', color:'#01a2ff', padding:'4px 10px', fontSize:'12px', fontFamily:'monospace', cursor:'pointer' }}>
+                        {word}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
