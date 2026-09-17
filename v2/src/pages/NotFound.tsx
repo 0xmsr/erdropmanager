@@ -1,16 +1,15 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { Navbar } from '../components/Navbar';
+import { FaHome, FaExclamationTriangle } from 'react-icons/fa';
 
 export const NotFound: React.FC = () => {
   return (
     <div className="app-container" style={{ textAlign: 'center', minHeight: '80vh', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
-      <header><h1>404 - ERROR</h1></header>
+      <header><h1><FaExclamationTriangle style={{color: '#ff3333', marginRight: '10px'}}/>404 - ERROR</h1></header>
       <Navbar />
       
       <div style={{ padding: '20px', position: 'relative' }}>
-        
-        {/* Kontainer Dino dan Speech Bubble */}
         <div style={{ 
           display: 'inline-block', 
           fontFamily: 'monospace', 
@@ -20,8 +19,7 @@ export const NotFound: React.FC = () => {
           marginBottom: '30px',
           textAlign: 'left'
         }}>
-          {/* Gelembung Teks */}
-          <div style={{ 
+          <div className="bounce-animation" style={{ 
             border: '2px solid #fff', 
             padding: '10px', 
             borderRadius: '15px', 
@@ -31,7 +29,6 @@ export const NotFound: React.FC = () => {
             color: '#fff',
             display: 'inline-block',
             fontWeight: 'bold',
-            animation: 'bounce 2s infinite'
           }}>
              RAWWRR! 404 NOT FOUND!
           </div>
@@ -70,15 +67,20 @@ export const NotFound: React.FC = () => {
             backgroundColor: '#fff',
             color: '#000',
             border: 'none',
-            fontWeight: 'bold'
+            fontWeight: 'bold',
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: '10px'
           }}>
-            KEMBALI KE HOME
+            <FaHome /> KEMBALI KE HOME
           </button>
         </Link>
       </div>
 
-      {/* Tambahkan sedikit CSS animasi langsung di file ini */}
       <style>{`
+        .bounce-animation {
+          animation: bounce 2s infinite;
+        }
         @keyframes bounce {
           0%, 100% { transform: translateY(0); }
           50% { transform: translateY(-10px); }
