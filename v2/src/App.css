@@ -949,4 +949,135 @@ th {
   align-items: center;
   z-index: 1000;
   padding: 16px;
+  overflow-y: auto;
 }
+
+/* ==========================================================================
+   FIX: Konten "keluar layar" / kepotong di HP
+   Root cause-nya 2 hal klasik di CSS Grid & Flexbox:
+   1. Anak grid/flex punya default min-width:auto, jadi kalau isinya input
+      atau teks panjang (address, hash), dia menolak menyusut dan mendorong
+      row jadi lebih lebar dari layar.
+   2. Card grid pakai minmax(300px+, 1fr) — di HP kecil (320-360px), satu
+      kolom minimum itu sudah lebih lebar dari area konten yang tersedia.
+   Karena body punya overflow-x:hidden, kelebihan lebar ini bukan jadi
+   scroll horizontal, tapi kepotong / ketutup di sisi kanan layar.
+   ========================================================================== */
+
+html {
+  overflow-x: hidden;
+  width: 100%;
+}
+
+#root {
+  overflow-x: hidden;
+  width: 100%;
+}
+
+/* Izinkan semua anak grid/flex inline untuk menyusut sesuai track/space-nya,
+   bukan berdasarkan ukuran konten aslinya. Aman dipakai luas: track dengan
+   lebar fixed (mis. "60px") tetap segitu, cuma anaknya jadi boleh menyusut
+   kalau perlu, bukan malah mendorong keluar. */
+.app-container [style*="display:grid"] > *,
+.app-container [style*="display: grid"] > *,
+.app-container [style*="display:flex"] > [style*="flex:1"],
+.app-container [style*="display: flex"] > [style*="flex: 1"],
+.app-container [style*="flex:1"],
+.app-container [style*="flex: 1"] {
+  min-width: 0;
+}
+
+input, select, textarea {
+  min-width: 0;
+}
+
+/* Card grid dengan minmax besar (300-340px) dipaksa 1 kolom di layar sempit,
+   supaya tidak ada satupun kolom yang lebih lebar dari layar HP. */
+@media (max-width: 480px) {
+  .app-container [style*="minmax(340px"],
+  .app-container [style*="minmax(300px"],
+  .app-container [style*="minmax(280px"],
+  .app-container [style*="minmax(260px"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Gambar/SVG/video/iframe yang lupa dikasih batas lebar tidak akan lagi
+   mendorong halaman melebar. */
+img, svg, video, canvas, iframe {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Modal generik (.modal-content, dipakai di beberapa popup Home) belum
+   punya pengaman tinggi — di layar pendek/landscape bisa terpotong di atas
+   atau bawah tanpa cara scroll. */
+.modal-content {
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+/* Modal utama (alert/confirm/prompt/tx-confirm) juga dikasih pengaman
+   tinggi yang sama, untuk konten panjang di layar pendek. */
+.custom-modal-box {
+  max-height: calc(100vh - 32px);
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+/* ==========================================================================
+   Rapi-rapi UI/UX tambahan
+   ========================================================================== */
+
+/* Panah dropdown custom untuk <select>, karena appearance:none di atas
+   menghilangkan panah bawaan browser — tanpa ini select jadi terlihat
+   seperti input teks biasa dan kurang jelas kalau itu dropdown. */
+select {
+  background-image:
+    linear-gradient(45deg, transparent 50%, #888 50%),
+    linear-gradient(135deg, #888 50%, transparent 50%);
+  background-position:
+    calc(100% - 18px) calc(50% - 2px),
+    calc(100% - 13px) calc(50% - 2px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 34px !important;
+}
+
+select:focus {
+  background-image:
+    linear-gradient(45deg, transparent 50%, #646cff 50%),
+    linear-gradient(135deg, #646cff 50%, transparent 50%);
+}
+
+/* Aksesibilitas: outline fokus yang konsisten & terlihat untuk keyboard nav,
+   tanpa mengganggu klik/tap mouse biasa. */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #01a2ff;
+  outline-offset: 2px;
+}
+
+/* Scroll lebih halus saat pindah section/anchor. */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Link tanpa style eksplisit (mis. di dalam paragraf) ikut tema monospace
+   dan tidak meninggalkan highlight biru bawaan saat di-tap di HP. */
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Teks panjang tanpa spasi (hash, address) yang lolos dari wordBreak
+   manual tetap dipaksa wrap, bukan mendorong lebar layar. */
+.app-container code,
+.app-container pre {
+  overflow-wrap: break-word;
+}
+
+/* blacktouying ganti kubus jadi roket */
