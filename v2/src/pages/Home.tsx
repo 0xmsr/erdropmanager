@@ -436,7 +436,7 @@ export const Home: React.FC = () => {
         message={promptData.message}
         inputType={promptData.inputType}
         onCancel={() => setPromptData({ ...promptData, isOpen: false })}
-        onConfirm={(val) => {
+        onConfirm={(val: string) => {
           if (promptData.onConfirmAction) promptData.onConfirmAction(val);
         }}
       />
