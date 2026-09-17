@@ -149,7 +149,6 @@ useEffect(() => {
 
   const getNetworkColor = (network: string) => {
     const net = network.toLowerCase();
-    // 0xmsr menggunakan warna kode hex 
     if (net.includes('btc')) return '#F7931A';
     if (net.includes('sol')) return '#9945FF';
     if (net.includes('eth')) return '#627eea';
@@ -166,7 +165,7 @@ useEffect(() => {
     if (net.includes('ink')) return '#7037FF';
     if (net.includes('octra')) return '#0000FF';
     if (net.includes('avax')) return '#E84142';
-    if (net.includes('pharos')) return '#0000D7'; // King Pharos
+    if (net.includes('pharos')) return '#0000D7';
     return '#ffffff';
   };
 
