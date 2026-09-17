@@ -74,7 +74,6 @@ interface TxResult {
   methodGuess: string | null;
   logs: TxLog[];
   totalLogs: number;
-  // ── detail tambahan ala Etherscan ──
   confirmations: number | null;
   transactionIndex: number | null;
   feeNative: string | null;
@@ -82,7 +81,6 @@ interface TxResult {
   maxPriorityFeePerGas: string | null;
   inputData: string;
   decodedParams: DecodedParam[];
-  // ── raw JSON ala tab "Raw" di Etherscan — TX & receipt mentah dari RPC ──
   rawTxJson: string;
   rawReceiptJson: string | null;
   logsBloom: string | null;
@@ -138,16 +136,14 @@ interface ContractInfo {
   abi?: any[] | null;
 }
 
-// ── Token Page ala Etherscan/Blockscout — dipakai kalau address yang dicari
-//    ternyata kontrak token (ERC-20/721/1155), bukan kontrak biasa. ──
 interface TokenInfo {
   address: string;
   name: string | null;
   symbol: string | null;
   decimals: number | null;
-  totalSupply: string | null;      // sudah dibagi decimals (formatted)
-  totalSupplyRaw: string | null;   // angka mentah (belum dibagi decimals)
-  standard: string;                // 'ERC-20' | 'ERC-721' | 'ERC-1155' | 'Unknown'
+  totalSupply: string | null;
+  totalSupplyRaw: string | null;
+  standard: string;
   holdersCount: number | null;
   iconUrl: string | null;
   priceUsd: number | null;
@@ -157,7 +153,7 @@ interface TokenInfo {
 
 interface TokenHolder {
   address: string;
-  balance: string;        // formatted (sudah dibagi decimals kalau diketahui)
+  balance: string;
   percentage: number | null;
 }
 
@@ -165,16 +161,13 @@ interface TokenTransfer {
   hash: string;
   from: string;
   to: string;
-  amount: string;          // formatted amount, atau "Token ID #x" untuk NFT
+  amount: string;
   timestamp: number | null;
   isNft: boolean;
 }
 
 type DataSource = 'blockscout' | 'rpc' | null;
 
-// ── Info kontrak Jetton (ala Token Page di sisi EVM, tapi buat GRAM/TON) —
-//    dipakai kalau address yang dicari di chain GRAM ternyata Jetton Master
-//    contract, bukan sekadar wallet biasa. ──
 interface GramJettonInfo {
   address: string;
   name: string | null;
@@ -194,10 +187,6 @@ interface GramJettonHolder {
   percentage: number | null;
 }
 
-// ── Entri "Top Jetton" — leaderboard Jetton TON yang lagi trending, diambil
-//    dari GeckoTerminal (agregator DEX), bukan TonCenter, karena TonCenter
-//    sendiri gak punya endpoint ranking populer/volume seperti ini.
-//    Cuma tersedia buat TON mainnet -- GeckoTerminal gak nge-index testnet. ──
 interface GramTopJetton {
   poolAddress: string;
   tokenAddress: string | null;
@@ -211,11 +200,9 @@ interface GramTopJetton {
   fdvUsd: number | null;
   dexName: string | null;
   poolUrl: string;
-  poolCreatedAt: number | null; // unix seconds, dipakai khusus di panel "Jetton Baru"
+  poolCreatedAt: number | null;
 }
 
-// ── Ticker harga TON native — ditampilkan persisten di status bar GRAM
-//    (mirip semangatnya harga native token di sisi EVM), sumber CoinGecko.
 interface GramTonTicker {
   priceUsd: number | null;
   changePct24h: number | null;
@@ -223,7 +210,6 @@ interface GramTonTicker {
   volumeUsd24h: number | null;
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────
 function shortHash(h: string, front = 10, back = 8) {
   return h && h.length > front + back ? `${h.slice(0, front)}…${h.slice(-back)}` : h;
 }
@@ -240,46 +226,20 @@ function copyToClipboard(text: string) {
   navigator.clipboard.writeText(text).catch(() => {});
 }
 
-// -- Wrapper aman untuk gramAddressFormats -- dipakai buat nampilin address
-//    GRAM (From/To di TX, counterparty di list) dalam format "friendly"
-//    (Non-bounceable, UQ.../0Q...) yang sama dengan yang dipakai Tonscan &
-//    explorer publik lain, bukan cuma format raw (0:...). Dibungkus try/catch
-//    karena beberapa address non-standar (mis. anycast/masterchain khusus)
-//    bisa gagal di-convert -- kalau gagal, fallback ke raw seperti biasa.
 function safeGramFmt(addr: string | null | undefined, net: GramNetworkCfg) {
   if (!addr) return null;
   try { return gramAddressFormats(addr, net); } catch { return null; }
 }
 
-// -- Deteksi apakah config network GRAM yang dipilih itu testnet atau bukan.
-//    Dipakai di beberapa tempat: nebak base URL TonCenter (gramToncenterBase)
-//    & nentuin apakah panel "Top Jetton" (sumber data GeckoTerminal, cuma
-//    ng-index TON mainnet) boleh ditampilkan atau tidak.
 function isGramTestnet(net: GramNetworkCfg): boolean {
   const s = `${(net as any).id ?? ''} ${net.name ?? ''} ${net.explorerUrl ?? ''}`.toLowerCase();
   return s.includes('testnet');
 }
 
-// -- Tebak base URL TonCenter (mainnet vs testnet) dari config network GRAM yang
-//    dipilih. Explorer ini belum expose flag testnet eksplisit dari GramNetworkCfg,
-//    jadi dicek dari id/nama/explorerUrl-nya -- konsisten dengan cara komentar lain
-//    di file ini nyebut "TonCenter" sebagai sumber data GRAM (tx history, dsb).
 function gramToncenterBase(net: GramNetworkCfg): string {
   return isGramTestnet(net) ? 'https://testnet.toncenter.com' : 'https://toncenter.com';
 }
 
-// ── Antrian + retry buat request ke TonCenter ───────────────────────────────
-// API publik TonCenter (mainnet & testnet) rate-limit ketat (kerap 429 kalau
-// >1 request/detik dari IP yang sama). Explorer ini bisa nembak beberapa
-// request TonCenter nyaris bersamaan waktu search 1 address (account state,
-// balance, riwayat tx, portfolio Jetton, cek apakah address ini Jetton
-// Master, dst), jadi gampang kena 429 satu-dua di antaranya.
-//
-// `runTonCenterRequest` menyerialkan pemanggilnya lewat 1 antrian
-// module-level (jadi tetap efektif meski dipanggil dari beberapa tempat
-// berbeda / komponen di-remount) dengan jeda minimum antar-request, dan
-// otomatis retry pakai backoff eksponensial + jitter kalau tetap kena 429.
-// Kalau errornya bukan soal rate limit, langsung dilempar tanpa retry.
 const TONCENTER_MIN_GAP_MS = 1100;
 let tonCenterQueue: Promise<void> = Promise.resolve();
 let tonCenterLastRequestAt = 0;
@@ -293,12 +253,43 @@ function isRateLimitError(e: any): boolean {
   return /429|rate.?limit|too many request/i.test(msg);
 }
 
+// Nerjemahin error mentah dari ethers/RPC/wallet jadi kalimat pendek yang gampang
+// dimengerti, misalnya "could not detect network (event=\"noNetwork\", code=NETWORK_ERROR,
+// version=providers/5.8.0)" jadi cukup "Gagal konek ke RPC.". Kalau gak kenal polanya,
+// balik ke pesan fallback yang sudah manusiawi (bukan raw error).
+function friendlyRpcError(e: any, fallback: string): string {
+  const raw = String(e?.error?.message || e?.message || e || '');
+  if (/could not detect network|no.?network|network.?error/i.test(raw)) {
+    return 'Gagal konek ke RPC. Coba ganti RPC atau network lain.';
+  }
+  if (/timeout|timed out/i.test(raw)) {
+    return 'RPC tidak merespons (timeout). Coba lagi sebentar lagi.';
+  }
+  if (isRateLimitError(e)) {
+    return 'RPC lagi dibatasi (rate limit). Tunggu sebentar lalu coba lagi.';
+  }
+  if (/failed to fetch|networkerror when attempting to fetch|load failed/i.test(raw)) {
+    return 'Gagal konek ke server. Cek koneksi internet kamu.';
+  }
+  if (/insufficient funds/i.test(raw)) {
+    return 'Saldo tidak cukup untuk bayar gas.';
+  }
+  if (/user rejected|action_rejected/i.test(raw)) {
+    return 'Transaksi dibatalkan di wallet.';
+  }
+  if (/invalid address/i.test(raw)) {
+    return 'Format address tidak valid.';
+  }
+  // Revert reason dari contract (kalau ada) biasanya udah jelas, jadi ditampilkan apa adanya
+  if (typeof e?.reason === 'string' && e.reason) return e.reason;
+  if (/call_exception|execution reverted|missing revert data/i.test(raw)) {
+    return 'Panggilan ke contract gagal (revert).';
+  }
+  return fallback;
+}
+
 function runTonCenterRequest<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    // Callback ini SENGAJA tidak pernah throw (semua jalur resolve/reject ke
-    // promise pemanggil di atas) — supaya `tonCenterQueue` sendiri gak pernah
-    // reject, dan request berikutnya di antrian tetap jalan walau request
-    // ini akhirnya gagal.
     tonCenterQueue = tonCenterQueue.then(async () => {
       const wait = TONCENTER_MIN_GAP_MS - (Date.now() - tonCenterLastRequestAt);
       if (wait > 0) await sleep(wait);
@@ -322,12 +313,6 @@ function runTonCenterRequest<T>(fn: () => Promise<T>, retries = 3): Promise<T> {
   });
 }
 
-// -- Ambil metadata Jetton Master (name/symbol/decimals/total supply/admin) lewat
-//    endpoint indexer TonCenter v3, bukan decode BOC manual -- sama semangatnya
-//    dengan fetchAddressContractInfo di sisi EVM yang pakai REST Blockscout.
-//    Kalau address yang dicari bukan Jetton Master (mis. wallet biasa), endpoint
-//    ini balikin array kosong -- return null, bukan error, supaya panel Jetton
-//    Info cuma nongol kalau memang relevan.
 async function fetchGramJettonInfo(address: string, net: GramNetworkCfg): Promise<GramJettonInfo | null> {
   const base = gramToncenterBase(net);
   const json = await runTonCenterRequest(async () => {
@@ -341,7 +326,7 @@ async function fetchGramJettonInfo(address: string, net: GramNetworkCfg): Promis
   const content = m.jetton_content ?? m.content ?? {};
   const decimalsRaw = content.decimals;
   const decimals = decimalsRaw != null && !isNaN(parseInt(String(decimalsRaw), 10))
-    ? parseInt(String(decimalsRaw), 10) : 9; // default 9 -- lazimnya Jetton di TON
+    ? parseInt(String(decimalsRaw), 10) : 9;
 
   const totalSupplyRaw = String(m.total_supply ?? '0');
   let totalSupplyFormatted = totalSupplyRaw;
@@ -361,10 +346,6 @@ async function fetchGramJettonInfo(address: string, net: GramNetworkCfg): Promis
   };
 }
 
-// -- Daftar holder terbesar suatu Jetton, diambil dari daftar jetton wallet-nya
-//    lalu diurutkan berdasarkan balance mentah (BigInt, biar aman dari presisi
-//    float untuk angka gede). Best-effort: kalau field API beda dari yang
-//    diasumsikan, fallback ke array kosong lewat try/catch di pemanggil.
 async function fetchGramJettonHolders(jettonAddress: string, net: GramNetworkCfg, decimals: number, totalSupplyRaw: string): Promise<GramJettonHolder[]> {
   const base = gramToncenterBase(net);
   const json = await runTonCenterRequest(async () => {
@@ -397,10 +378,6 @@ async function fetchGramJettonHolders(jettonAddress: string, net: GramNetworkCfg
     }));
 }
 
-// -- Mapper bersama buat respons "pool" GeckoTerminal (dipakai baik oleh
-//    trending_pools maupun new_pools -- bentuk datanya identik, cuma beda
-//    endpoint/urutan). Dipisah dari fetcher-nya supaya gak duplikasi logic
-//    antara "Top Jetton" (trending) & "Jetton Baru" (new_pools). --
 function mapGeckoTonPools(json: any, limit: number): GramTopJetton[] {
   const pools: any[] = Array.isArray(json?.data) ? json.data : [];
   const included: any[] = Array.isArray(json?.included) ? json.included : [];
@@ -419,7 +396,7 @@ function mapGeckoTonPools(json: any, limit: number): GramTopJetton[] {
       const baseToken = baseTokenId ? byId.get(baseTokenId) : null;
       const dex = dexId ? byId.get(dexId) : null;
       const baseAttrs = baseToken?.attributes ?? {};
-      if (!baseAttrs?.address) return null; // data pool gak lengkap, skip
+      if (!baseAttrs?.address) return null;
 
       const createdAtRaw = attrs.pool_created_at;
       const createdAtMs = createdAtRaw ? Date.parse(createdAtRaw) : NaN;
@@ -444,16 +421,6 @@ function mapGeckoTonPools(json: any, limit: number): GramTopJetton[] {
     .slice(0, limit);
 }
 
-// -- Daftar "Top Jetton" (token TON yang lagi trending) -- diambil dari
-//    GeckoTerminal (agregator DEX on-chain, dipakai gratis tanpa API key),
-//    BUKAN TonCenter, karena TonCenter sendiri gak expose endpoint ranking
-//    populer/volume kayak gini -- yang ada cuma daftar mentah semua Jetton
-//    Master tanpa urutan (`/api/v3/jetton/masters`).
-//
-//    GeckoTerminal ngasih ranking berdasar pool DEX (trending_pools), jadi
-//    yang dipakai di sini adalah base_token dari tiap pool trending (pola
-//    penamaan pool di GeckoTerminal selalu "JETTON / TON", base_token = si
-//    Jetton, quote_token = TON native).
 async function fetchGramTopJettons(): Promise<GramTopJetton[]> {
   const res = await fetch('https://api.geckoterminal.com/api/v2/networks/ton/trending_pools?include=base_token,quote_token,dex');
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -461,11 +428,6 @@ async function fetchGramTopJettons(): Promise<GramTopJetton[]> {
   return mapGeckoTonPools(json, 20);
 }
 
-// -- Daftar "Jetton Baru" (pool DEX TON yang baru aja dibuat) -- sumber &
-//    bentuk data sama kayak fetchGramTopJettons, cuma endpoint-nya
-//    new_pools (diurut dari yang paling baru dibuat), bukan trending_pools.
-//    Berguna buat pemburu airdrop yang mau tau proyek Jetton baru listing
-//    duluan sebelum rame. ──
 async function fetchGramNewJettonPools(): Promise<GramTopJetton[]> {
   const res = await fetch('https://api.geckoterminal.com/api/v2/networks/ton/new_pools?include=base_token,quote_token,dex');
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -473,10 +435,6 @@ async function fetchGramNewJettonPools(): Promise<GramTopJetton[]> {
   return mapGeckoTonPools(json, 20);
 }
 
-// -- Ticker harga TON native (persisten, gak butuh search) -- sumber
-//    CoinGecko `simple/price`, sama endpoint dasarnya dengan
-//    fetchNativeTokenPrice di atas, tapi minta field tambahan (24h change,
-//    market cap, volume) buat ditampilkan di status bar GRAM Explorer. ──
 async function fetchGramTonTicker(): Promise<GramTonTicker> {
   const res = await fetch(
     'https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd&include_24hr_change=true&include_24hr_vol=true&include_market_cap=true'
@@ -496,11 +454,6 @@ function isAddress(v: string) { return /^0x[0-9a-fA-F]{40}$/.test(v); }
 function isTxOrBlockHash(v: string) { return /^0x[0-9a-fA-F]{64}$/.test(v); }
 function isBlockNumber(v: string) { return /^\d+$/.test(v); }
 
-// -- Bentuk objek TX/receipt "mentah" ala tab Raw di Etherscan, dengan semua
-//    BigNumber dikonversi ke string desimal biasa (bukan {type:"BigNumber",hex})
-//    supaya enak dibaca & di-copy. Field yang dipilih sengaja dibatasi ke yang
-//    relevan -- bukan dump seluruh objek ethers.js (ada referensi provider &
-//    fungsi internal di dalamnya yang bisa bikin JSON.stringify meledak / sirkular).
 function buildRawTxJson(tx: ethers.providers.TransactionResponse): string {
   const raw: Record<string, unknown> = {
     hash: tx.hash,
@@ -526,9 +479,6 @@ function buildRawTxJson(tx: ethers.providers.TransactionResponse): string {
   return JSON.stringify(raw, null, 2);
 }
 
-// Tipe minimal yang kita butuhkan dari hasil provider.getBlockWithTransactions() --
-// didefinisikan sendiri (bukan import ethers.providers.BlockWithTransactions) karena
-// nama export itu tidak selalu tersedia di semua versi @ethersproject/providers.
 interface BlockWithTxsLike {
   number: number;
   hash: string;
@@ -592,12 +542,6 @@ function buildRawReceiptJson(receipt: ethers.providers.TransactionReceipt | null
   return JSON.stringify(raw, null, 2);
 }
 
-// -- Decode input params dari calldata, berdasarkan signature yang dikenal di
-//    KNOWN_4BYTE (mis. "transfer(address,uint256)"). Hanya bisa decode param
-//    yang tipenya static (address/uint/int/bool/bytesN) -- param dynamic
-//    (string/bytes/array) ditandai sebagai "dynamic" karena butuh ABI decoder
-//    penuh untuk offset-nya, bukan sekadar baca per-slot 32 byte. Logika ini
-//    sama dengan yang dipakai di halaman Tx Decoder.
 function decodeCalldataSlot(hex32: string, abiType: string): string {
   try {
     const h = hex32.replace(/^0x/, '').padStart(64, '0');
@@ -651,11 +595,6 @@ function decodeCalldataParams(inputData: string, knownSig: string | null): Decod
   return params;
 }
 
-// -- Ambil alasan revert dari TX yang gagal, dengan cara mensimulasikan ulang
-//    (eth_call) tepat di block tempat TX itu di-mine. Butuh RPC yang masih
-//    menyimpan state historis untuk block tsb (archive node) -- kalau RPC
-//    publiknya bukan archive node atau block-nya sudah terlalu lama, akan
-//    gagal dan kita tampilkan pesan generik alih-alih error mentah.
 function decodeRevertData(data: string): string | null {
   if (!data || data === '0x') return null;
   try {
@@ -695,20 +634,11 @@ async function fetchRevertReason(
       const decoded = decodeRevertData(rawData);
       if (decoded) return decoded;
     }
-    return null; // RPC tidak mendukung call historis / archive -- biarkan null, tampilkan fallback di UI
+    return null;
   }
 }
 
 
-// ── Detail tambahan (token holdings, riwayat TX, info kontrak) idealnya diambil
-//    dari instance Blockscout publik — sama seperti yang dipakai halaman Wallet
-//    Gen untuk fitur "Portofolio Token" — karena datanya lebih lengkap (ada
-//    indexer alamat). TAPI datanya TIDAK SELALU dari Blockscout: kalau network
-//    yang dipilih belum ada instance Blockscout publiknya, atau requestnya
-//    gagal/timeout, otomatis fallback ke scan langsung via RPC (eth_getLogs
-//    untuk transfer token + baca storage slot proxy EIP-1967) supaya network
-//    apa pun tetap bisa menampilkan detail ala Etherscan. Setiap panel diberi
-//    label kecil "via Blockscout" / "via RPC" supaya sumber datanya jelas.
 async function fetchAddressRecentTxs(address: string, networkId: string): Promise<RecentTx[]> {
   const host = BLOCKSCOUT_HOSTS[networkId];
   if (!host) {
@@ -770,17 +700,10 @@ async function fetchAddressContractInfo(address: string, networkId: string): Pro
   };
 }
 
-// ── Fallback berbasis RPC murni (dipakai untuk network yang belum punya
-//    instance Blockscout publik, ATAU sebagai cadangan kalau Blockscout
-//    error/timeout). Tanpa indexer alamat, jadi data ini didapat dengan cara
-//    berbeda dari Blockscout: scan event log Transfer ERC-20 & baca storage
-//    slot proxy langsung dari RPC — bukan query "lihat semua TX suatu alamat"
-//    yang memang tidak disediakan oleh RPC node biasa. Cakupannya dibatasi
-//    (RPC_SCAN_MAX_LOOKBACK block terakhir) supaya tidak membebani RPC publik. ──
 const ERC20_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const EIP1967_IMPL_SLOT = '0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bb';
-const RPC_SCAN_BLOCK_RANGE = 5000;   // ukuran per panggilan eth_getLogs
-const RPC_SCAN_MAX_LOOKBACK = 50000; // total block maksimal yang di-scan mundur
+const RPC_SCAN_BLOCK_RANGE = 5000;
+const RPC_SCAN_MAX_LOOKBACK = 50000;
 
 const ERC20_MINI_ABI = [
   'function decimals() view returns (uint8)',
@@ -792,10 +715,6 @@ function addressToTopic(addr: string) {
   return '0x' + addr.toLowerCase().replace(/^0x/, '').padStart(64, '0');
 }
 
-// Scan mundur eth_getLogs berdasarkan topic tertentu, berhenti begitu cukup
-// hasil ditemukan atau limit lookback tercapai. Kalau RPC menolak (limit
-// range per query beda-beda tiap provider), scan dihentikan dengan sopan
-// alih-alih melempar error ke seluruh fitur.
 async function scanLogsBackward(
   provider: ethers.providers.JsonRpcProvider,
   topics: (string | null)[],
@@ -812,7 +731,7 @@ async function scanLogsBackward(
       const logs = await provider.getLogs({ fromBlock: from, toBlock: to, topics });
       collected.push(...logs);
     } catch {
-      break; // provider menolak range ini — hentikan scan, tetap kembalikan yang sudah didapat
+      break;
     }
     to = from - 1;
   }
@@ -904,7 +823,7 @@ async function fetchTokenPortfolioViaRpc(
         balanceFormatted: balance.toLocaleString('en-US', { maximumFractionDigits: 6 }),
         usdPrice: null, usdValue: null,
       } as DetectedToken;
-    } catch { return null; } // token non-standar / call gagal — lewati
+    } catch { return null; }
   }));
 
   return results.filter((r: DetectedToken | null): r is DetectedToken => r !== null);
@@ -915,7 +834,6 @@ async function fetchAddressContractInfoViaRpc(
   address: string,
   code: string,
 ): Promise<ContractInfo> {
-  // EIP-1167 minimal proxy: pola bytecode tetap & alamat implementasi tersemat di tengah
   const isMinimalProxy = /^0x363d3d373d3d3d363d73[0-9a-fA-F]{40}5af43d82803e903d91602b57fd5bf3$/i.test(code);
 
   let implAddress: string | null = null;
@@ -949,12 +867,6 @@ async function fetchAddressContractInfoViaRpc(
   };
 }
 
-// ── Token Page — deteksi & ambil data token (ERC-20/721/1155) ala Etherscan/
-//    Blockscout. Sama seperti panel lain di Explorer ini: coba Blockscout dulu
-//    (datanya lebih lengkap — ikon, holders count, harga), fallback ke RPC
-//    langsung (name/symbol/decimals/totalSupply + ERC-165) kalau Blockscout
-//    tidak tersedia / gagal, supaya network apa pun tetap bisa menampilkan
-//    info token dasar. ──
 const ERC20_META_ABI = [
   'function name() view returns (string)',
   'function symbol() view returns (string)',
@@ -973,7 +885,6 @@ async function detectTokenViaRpc(
     c.decimals().catch(() => null),
     c.totalSupply().catch(() => null),
   ]);
-  // Tanpa name/symbol yang berhasil dibaca, ini kemungkinan bukan kontrak token
   if (name == null && symbol == null) return null;
 
   const decimals = decimalsRaw != null ? Number(decimalsRaw) : null;
@@ -1065,9 +976,6 @@ async function fetchTokenTransfersBlockscout(
   }).filter(t => t.hash);
 }
 
-// Fallback RPC murni: scan eth_getLogs langsung dari kontrak token itu sendiri
-// (bukan dari address wallet seperti fetchAddressRecentTxsViaRpc), dibatasi
-// RPC_SCAN_MAX_LOOKBACK block terakhir sama seperti panel lain.
 async function fetchTokenTransfersViaRpc(
   provider: ethers.providers.JsonRpcProvider,
   tokenAddress: string,
@@ -1109,9 +1017,6 @@ async function fetchTokenTransfersViaRpc(
   return results.filter((r): r is TokenTransfer => r !== null);
 }
 
-// Mapping symbol native token → CoinGecko id, dipakai untuk menampilkan nilai
-// USD dari balance address (best-effort, gagal diam-diam kalau symbol tidak
-// dikenal atau CoinGecko tidak bisa diakses — bukan bagian kritis dari fitur).
 const NATIVE_SYMBOL_TO_COINGECKO_ID: Record<string, string> = {
   ETH: 'ethereum', BNB: 'binancecoin', MATIC: 'matic-network', POL: 'matic-network',
   AVAX: 'avalanche-2', RON: 'ronin', FTM: 'fantom', ONE: 'harmony-2',
@@ -1134,12 +1039,9 @@ async function fetchNativeTokenPrice(symbol: string): Promise<number | null> {
 const EXPLORER_REFRESH_STORAGE_KEY = 'explorerAutoRefreshSettings';
 const BIP39_WALLETS_STORAGE_KEY = 'bip39Wallets';
 
-// ── Wallet tersimpan dari halaman Wallet Generator — dibaca dari localStorage
-//    yang sama (bip39Wallets) supaya bisa dipakai langsung untuk Write Contract
-//    tanpa perlu install/connect wallet browser terpisah. ──
 interface WalletGenAccount {
-  key: string;         // walletId-index, unik
-  label: string;       // "[Nama Wallet] 0x1234…5678 (#0)"
+  key: string;
+  label: string;
   address: string;
   privateKey: string;
 }
@@ -1171,18 +1073,13 @@ const COLORS = {
   muted: '#666', text: '#ddd', green: '#4caf50', red: '#f44336', amber: '#ffaa00',
 };
 
-// ─────────────────────────────────────────────────────────────────────────
-// Read / Write Contract — ala Etherscan. Butuh ABI (otomatis dari Blockscout
-// kalau kontrak sudah verified, atau paste manual). Read pakai RPC (getProvider,
-// tanpa wallet). Write butuh wallet browser (window.ethereum) untuk sign & kirim TX.
-// ─────────────────────────────────────────────────────────────────────────
 interface AbiFunctionEntry {
-  key: string;           // signature unik (nama+tipe input) untuk key React & state
+  key: string;
   name: string;
   inputs: { name: string; type: string }[];
   outputs: { name: string; type: string }[];
   stateMutability: string;
-  isRead: boolean;       // view/pure
+  isRead: boolean;
 }
 
 function extractAbiFunctions(abi: any[]): AbiFunctionEntry[] {
@@ -1204,9 +1101,6 @@ function extractAbiFunctions(abi: any[]): AbiFunctionEntry[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-// Parse nilai input mentah (string dari form) sesuai tipe ABI-nya. Tipe
-// numerik/address/bytes/string dikirim apa adanya (ethers.js yang urus
-// encoding); array/tuple diharapkan dalam format JSON.
 function parseAbiArgValue(type: string, raw: string): any {
   const t = raw.trim();
   if (type.endsWith('[]') || type.startsWith('tuple')) {
@@ -1223,7 +1117,7 @@ function formatAbiResult(val: any): string {
   if (typeof val === 'object') {
     const plain: Record<string, any> = {};
     Object.keys(val).forEach(k => {
-      if (/^\d+$/.test(k)) return; // buang index numerik duplikat dari ethers struct result
+      if (/^\d+$/.test(k)) return;
       plain[k] = val[k]?._isBigNumber ? val[k].toString() : val[k];
     });
     return JSON.stringify(plain, null, 2);
@@ -1294,7 +1188,7 @@ function ContractInteractionPanel({
       const res = await contract[fn.name](...argVals);
       setResults(prev => ({ ...prev, [fn.key]: { loading: false, value: formatAbiResult(res) } }));
     } catch (e: any) {
-      setResults(prev => ({ ...prev, [fn.key]: { loading: false, error: e?.reason || e?.message || 'Gagal membaca contract.' } }));
+      setResults(prev => ({ ...prev, [fn.key]: { loading: false, error: friendlyRpcError(e, 'Gagal membaca contract.') } }));
     }
   };
 
@@ -1314,7 +1208,7 @@ function ContractInteractionPanel({
         const tx = await contract[fn.name](...argVals, overrides);
         setResults(prev => ({ ...prev, [fn.key]: { loading: false, txHash: tx.hash } }));
       } catch (e: any) {
-        setResults(prev => ({ ...prev, [fn.key]: { loading: false, error: e?.reason || e?.message || 'Transaksi gagal.' } }));
+        setResults(prev => ({ ...prev, [fn.key]: { loading: false, error: friendlyRpcError(e, 'Transaksi gagal.') } }));
       }
       return;
     }
@@ -1342,7 +1236,7 @@ function ContractInteractionPanel({
       const tx = await contract[fn.name](...argVals, overrides);
       setResults(prev => ({ ...prev, [fn.key]: { loading: false, txHash: tx.hash } }));
     } catch (e: any) {
-      setResults(prev => ({ ...prev, [fn.key]: { loading: false, error: e?.reason || e?.message || 'Transaksi gagal.' } }));
+      setResults(prev => ({ ...prev, [fn.key]: { loading: false, error: friendlyRpcError(e, 'Transaksi gagal.') } }));
     }
   };
 
@@ -1522,16 +1416,8 @@ function ContractInteractionPanel({
 }
 
 export const Explorer: React.FC = () => {
-  // ── Deep-link: /explorer/tx/:value & /explorer/address/:value -- dibaca sekali
-  //    di awal buat auto-search, dan di-update tiap kali pencarian sukses (lihat
-  //    handleSearch & handleGramSearch) supaya link hasil pencarian bisa di-share
-  //    langsung ke orang lain / dibuka ulang tanpa perlu ngetik manual lagi. ──
   const navigate = useNavigate();
   const { type: urlType, value: urlValue } = useParams<{ type?: string; value?: string }>();
-  // ── Deep-link network: /explorer/address/0x...?network=base -- dipakai
-  //    supaya link dari tempat lain (mis. tab Kirim/Terima Wallet Gen) bisa
-  //    langsung buka Explorer di network yang sama persis dengan yang lagi
-  //    dipakai user, bukan selalu jatuh ke network pertama di daftar. ──
   const [searchParams] = useSearchParams();
 
   const [networks, setNetworks] = useState<RPCNetwork[]>(() => {
@@ -1542,7 +1428,6 @@ export const Explorer: React.FC = () => {
     } catch { return DEFAULT_NETWORKS; }
   });
 
-  // ── Sinkron kalau daftar network diubah di tab/halaman lain (mis. Wallet Gen) ──
   useEffect(() => {
     const onStorage = (e: StorageEvent) => {
       if (e.key !== RPC_NETWORKS_STORAGE_KEY) return;
@@ -1555,8 +1440,6 @@ export const Explorer: React.FC = () => {
     return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  // ── Wallet tersimpan dari Wallet Generator, dipakai sebagai opsi signer
-  //    untuk Write Contract (alternatif dari wallet browser / MetaMask). ──
   const [walletGenAccounts, setWalletGenAccounts] = useState<WalletGenAccount[]>(() => loadWalletGenAccounts());
 
   useEffect(() => {
@@ -1572,17 +1455,11 @@ export const Explorer: React.FC = () => {
     if (fromUrl && networks.some(n => n.id === fromUrl)) return fromUrl;
     return networks[0]?.id ?? DEFAULT_NETWORKS[0].id;
   });
-  // ── Kalau ?network= di URL berubah tanpa Explorer di-remount ulang (mis.
-  //    lompat dari satu deep-link ke deep-link lain di network berbeda saat
-  //    Explorer masih terbuka), sinkronkan dropdown-nya juga -- ini terpisah
-  //    dari inisialisasi awal di atas, yang sudah menangani kasus utama
-  //    (buka Explorer baru dari tab lain) tanpa risiko race sama sekali. ──
   useEffect(() => {
     const fromUrl = searchParams.get('network');
     if (fromUrl && networks.some(n => n.id === fromUrl) && fromUrl !== networkId) {
       setNetworkId(fromUrl);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams]);
 
   const [query, setQuery] = useState('');
@@ -1603,8 +1480,12 @@ export const Explorer: React.FC = () => {
   const [latestLoading, setLatestLoading] = useState(false);
   const [nativePriceUsd, setNativePriceUsd] = useState<number | null>(null);
 
-  // ── Pengaturan auto-refresh feed "Latest Blocks" — persist ke localStorage
-  //    supaya preferensi tetap kesimpen walau reload/pindah halaman. ──
+  interface GasTier { gwei: number; maxFeePerGas?: string; maxPriorityFeePerGas?: string }
+  interface GasTiers { isEip1559: boolean; baseFeeGwei: number | null; low: GasTier; standard: GasTier; fast: GasTier }
+  const [gasTiers, setGasTiers] = useState<GasTiers | null>(null);
+  const [gasLoading, setGasLoading] = useState(false);
+  const [gasError, setGasError] = useState<string | null>(null);
+
   const [refreshSettings, setRefreshSettings] = useState<{ enabled: boolean; intervalSec: 3 | 4 | 5 }>(() => {
     try {
       const s = localStorage.getItem(EXPLORER_REFRESH_STORAGE_KEY);
@@ -1622,7 +1503,6 @@ export const Explorer: React.FC = () => {
     localStorage.setItem(EXPLORER_REFRESH_STORAGE_KEY, JSON.stringify(refreshSettings));
   }, [refreshSettings]);
 
-  // ── Detail tambahan untuk ADDRESS: token holdings, riwayat TX, info kontrak ──
   const [tokenHoldings,   setTokenHoldings]   = useState<DetectedToken[]>([]);
   const [tokensLoading,   setTokensLoading]   = useState(false);
   const [tokensError,     setTokensError]     = useState<string | null>(null);
@@ -1638,7 +1518,6 @@ export const Explorer: React.FC = () => {
   const [manualAbiError, setManualAbiError] = useState<string | null>(null);
   const [showManualAbi, setShowManualAbi] = useState(false);
 
-  // ── Token Page (kalau address yang dicari adalah kontrak token) ──
   const [tokenInfo, setTokenInfo] = useState<TokenInfo | null>(null);
   const [tokenInfoLoading, setTokenInfoLoading] = useState(false);
   const [tokenHolders, setTokenHolders] = useState<TokenHolder[]>([]);
@@ -1650,10 +1529,6 @@ export const Explorer: React.FC = () => {
   const [tokenTransfersSource, setTokenTransfersSource] = useState<DataSource>(null);
   const [tokenTab, setTokenTab] = useState<'transfers' | 'holders'>('transfers');
 
-  // ── Chain toggle: EVM (mesin explorer existing, RPC/Blockscout) vs GRAM
-  //    (TON) — GRAM pakai mesin terpisah & lebih sederhana lewat Gramnet.ts
-  //    (TonCenter REST), karena model akun/tx TON beda total dari EVM
-  //    (bukan RPC eth_*, gak ada ABI/eth_getLogs, dst).
   const [chain, setChain] = useState<'evm' | 'gram'>('evm');
   const [gramNetId, setGramNetId] = useState(() => GRAM_NETWORKS[0].id);
   const gramNetwork = useMemo(
@@ -1669,7 +1544,6 @@ export const Explorer: React.FC = () => {
     balance: number;
     balanceUsd: number | null;
     activationNote: string | null;
-    // ── detail akun tambahan (ala tab "Contract"/"More Info" Tonscan) ──
     walletVersionGuess: string;
     seqno: number | null;
     codeHash: string | null;
@@ -1681,32 +1555,20 @@ export const Explorer: React.FC = () => {
   const [gramTxs, setGramTxs] = useState<GramTxHistoryEntry[]>([]);
   const [gramTxsLoading, setGramTxsLoading] = useState(false);
   const [gramTxsError, setGramTxsError] = useState<string | null>(null);
-  // Pagination riwayat tx — TonCenter balikin halaman dibatasi `limit`, lanjutin
-  // pakai `end_lt` (before_lt) dari item terakhir buat "Muat Lebih Banyak".
   const [gramTxNextBeforeLt, setGramTxNextBeforeLt] = useState<string | null>(null);
   const [gramTxLoadingMore, setGramTxLoadingMore] = useState(false);
-  // Holding Jetton (token TON) milik address yang dicari — dipakai buat kartu
-  // "Token Holdings", sama seperti tab Portfolio Jetton di Wallet Generator.
   const [gramTokens, setGramTokens] = useState<DetectedToken[]>([]);
   const [gramTokensLoading, setGramTokensLoading] = useState(false);
   const [gramTokensError, setGramTokensError] = useState<string | null>(null);
-  // Detail kontrak Jetton (kalau address yang dicari ternyata Jetton Master,
-  // bukan wallet biasa) — ala Token Page di sisi EVM, tapi buat GRAM/TON.
   const [gramJettonInfo, setGramJettonInfo] = useState<GramJettonInfo | null>(null);
   const [gramJettonInfoLoading, setGramJettonInfoLoading] = useState(false);
   const [gramJettonHolders, setGramJettonHolders] = useState<GramJettonHolder[]>([]);
   const [gramJettonHoldersLoading, setGramJettonHoldersLoading] = useState(false);
   const [gramJettonHoldersError, setGramJettonHoldersError] = useState<string | null>(null);
-  // Detail tx yang sudah didecode inline (bukan sekadar redirect ke Tonscan) —
-  // hasil fetchGramTxByHash: arah, jumlah, fee, status compute phase, exit code, raw JSON.
   const [gramTxDetail, setGramTxDetail] = useState<GramTxDetail | null>(null);
   const [gramTxNotFound, setGramTxNotFound] = useState<string | null>(null);
   const [showGramTxRaw, setShowGramTxRaw] = useState(false);
 
-  // ── Status jaringan GRAM (masterchain seqno terkini) — panel "live" ala
-  //    "Latest Blocks" di sisi EVM, tapi lebih ringan (cuma 1 angka seqno,
-  //    bukan daftar block) karena TON gak punya "block number" linear
-  //    tunggal seperti EVM. ──
   const [gramMcInfo, setGramMcInfo] = useState<GramMasterchainInfo | null>(null);
   const [gramMcLoading, setGramMcLoading] = useState(false);
 
@@ -1723,7 +1585,6 @@ export const Explorer: React.FC = () => {
 
   useEffect(() => {
     loadGramMcInfo();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gramNetId]);
 
   useEffect(() => {
@@ -1732,14 +1593,8 @@ export const Explorer: React.FC = () => {
     return () => clearInterval(id);
   }, [refreshSettings.enabled, refreshSettings.intervalSec, chain, loadGramMcInfo]);
 
-  // ── Detail Masterchain — panel collapsible (default TERTUTUP biar halaman
-  //    gak kepanjangan) yang isinya block masterchain terbaru (root/file
-  //    hash, gen_utime, LT range) & feed transaksi terbaru lintas workchain.
-  //    Beda dari gramMcInfo di atas (yang cuma 1 angka seqno buat status
-  //    bar) — ini daftar detail, baru di-fetch begitu panelnya dibuka. ──
   const [gramMcDetailOpen, setGramMcDetailOpen] = useState(false);
   const [gramMcDetailTab, setGramMcDetailTab] = useState<'blocks' | 'txs' | 'accounts'>('blocks');
-  // Filter tipe (klik badge di ringkasan distribusi buat toggle) — null = tampilkan semua.
   const [gramTxTypeFilter, setGramTxTypeFilter] = useState<string | null>(null);
   const [gramAccountTypeFilter, setGramAccountTypeFilter] = useState<string | null>(null);
 
@@ -1791,9 +1646,6 @@ export const Explorer: React.FC = () => {
     }
   }, [gramNetwork]);
 
-  // -- Fetch on-demand: baru narik data pas panel dibuka (bukan begitu tab
-  //    GRAM dibuka), biar gak nambah beban request kalau usernya gak minat
-  //    lihat detail block/tx/akun. Sekali dibuka, auto-refresh berjalan normal. --
   useEffect(() => {
     if (!gramMcDetailOpen || chain !== 'gram') return;
     loadGramLatestBlocks();
@@ -1806,12 +1658,8 @@ export const Explorer: React.FC = () => {
       loadGramLatestAccounts();
     }, refreshSettings.intervalSec * 1000);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gramMcDetailOpen, chain, gramNetId, refreshSettings.enabled, refreshSettings.intervalSec]);
 
-  // -- Ringkasan distribusi tipe (buat badge counter yg bisa diklik jadi
-  //    filter) & daftar yang udah difilter. Reset filter tiap ganti tab
-  //    biar gak nyangkut filter tipe akun pas pindah ke tab tx. --
   const gramTxTypeCounts = useMemo(() => {
     const m = new Map<string, number>();
     for (const t of gramLatestTxs) m.set(t.txType, (m.get(t.txType) ?? 0) + 1);
@@ -1831,13 +1679,6 @@ export const Explorer: React.FC = () => {
     [gramLatestAccounts, gramAccountTypeFilter]
   );
 
-  // ── Statistik jaringan turunan ala Tonscan/Tonviewer (TPS & rata-rata
-  //    block time) — dihitung LOKAL dari batch block/tx terbaru yang sudah
-  //    ditarik buat tab "Detail Masterchain" di atas, TANPA request
-  //    tambahan ke TonCenter. Bukan TPS resmi jaringan (TonCenter gak expose
-  //    endpoint statistik semacam itu), tapi acuan aktivitas terkini yang
-  //    sama semangatnya: transaksi/detik & jarak antar block dari sampel
-  //    terbaru yang sedang ditampilkan. ──
   const gramNetworkStats = useMemo(() => {
     let tps: number | null = null;
     if (gramLatestTxs.length >= 2) {
@@ -1863,13 +1704,6 @@ export const Explorer: React.FC = () => {
     };
   }, [gramLatestTxs, gramLatestBlocks, gramLatestAccounts]);
 
-  // ── Top Jetton — leaderboard token TON yang lagi trending (sumber:
-  //    GeckoTerminal, bukan TonCenter). Cuma relevan buat mainnet, jadi
-  //    di-skip kalau network yang dipilih testnet. Refresh-nya dibikin
-  //    interval sendiri yang cukup jarang (60 detik) — TERPISAH dari
-  //    pengaturan auto-refresh cepat punya "Masterchain Block"/"Latest
-  //    Blocks", karena GeckoTerminal API publik cuma toleran ~30
-  //    request/menit & datanya sendiri gak berubah tiap detik. ──
   const GRAM_TOP_JETTONS_REFRESH_MS = 60_000;
   const [gramTopJettons, setGramTopJettons] = useState<GramTopJetton[]>([]);
   const [gramTopJettonsLoading, setGramTopJettonsLoading] = useState(false);
@@ -1892,14 +1726,8 @@ export const Explorer: React.FC = () => {
     loadGramTopJettons();
     const id = setInterval(loadGramTopJettons, GRAM_TOP_JETTONS_REFRESH_MS);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chain, gramNetId, loadGramTopJettons]);
 
-  // -- Tab gabungan panel "Jetton TON" -- satu panel buat trending/gainer/
-  //    loser/volume (semua re-sort client-side dari `gramTopJettons`) DAN
-  //    "Baru Listing" (pakai `gramNewPools`, list terpisah). Digabung jadi
-  //    1 panel + tab biar halaman explorer gak kepanjangan gara-gara 2
-  //    panel besar berdampingan. --
   type GramJettonTab = 'trending' | 'gainers' | 'losers' | 'volume' | 'new';
   const [gramJettonTab, setGramJettonTab] = useState<GramJettonTab>('trending');
   const [gramJettonShowAll, setGramJettonShowAll] = useState(false);
@@ -1913,17 +1741,11 @@ export const Explorer: React.FC = () => {
       case 'volume':
         return list.sort((a, b) => (b.volumeUsd24h ?? -Infinity) - (a.volumeUsd24h ?? -Infinity));
       default:
-        return list; // 'trending' -- urutan asli dari GeckoTerminal, jangan diubah
+        return list;
     }
   }, [gramTopJettons, gramJettonTab]);
-  // -- Reset "tampilkan semua" tiap ganti tab, biar tab baru selalu mulai
-  //    ringkas (5 baris) — bukan kebawa expanded dari tab sebelumnya. --
   useEffect(() => { setGramJettonShowAll(false); }, [gramJettonTab]);
 
-  // ── Jetton Baru — pool DEX TON yang baru aja dibuat (sumber: GeckoTerminal
-  //    new_pools). Panel terpisah dari "Top Jetton", buat pemburu airdrop
-  //    yang mau tau proyek baru listing sebelum rame/trending. Sama kayak
-  //    Top Jetton: cuma mainnet, refresh tiap 60 detik. ──
   const [gramNewPools, setGramNewPools] = useState<GramTopJetton[]>([]);
   const [gramNewPoolsLoading, setGramNewPoolsLoading] = useState(false);
   const [gramNewPoolsError, setGramNewPoolsError] = useState<string | null>(null);
@@ -1945,21 +1767,13 @@ export const Explorer: React.FC = () => {
     loadGramNewPools();
     const id = setInterval(loadGramNewPools, GRAM_TOP_JETTONS_REFRESH_MS);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chain, gramNetId, loadGramNewPools]);
 
-  // -- Data & status gabungan buat panel "Jetton TON" sesuai tab aktif --
-  //    dipisah dari state mentahnya (gramTopJettons/gramNewPools) supaya
-  //    JSX render tinggal pakai 1 sumber, gak perlu if/else berulang. --
   const gramJettonPanelList = gramJettonTab === 'new' ? gramNewPools : sortedGramTopJettons;
   const gramJettonPanelVisible = gramJettonShowAll ? gramJettonPanelList : gramJettonPanelList.slice(0, 5);
   const gramJettonPanelLoading = gramJettonTab === 'new' ? gramNewPoolsLoading : gramTopJettonsLoading;
   const gramJettonPanelError = gramJettonTab === 'new' ? gramNewPoolsError : gramTopJettonsError;
 
-  // ── Ticker harga TON native — persisten di status bar GRAM (gak butuh
-  //    search dulu), sumber CoinGecko. Refresh tiap 60 detik juga, biar
-  //    seirama dengan Top Jetton / Jetton Baru & gak nambah beban CoinGecko
-  //    (yang dipakai juga oleh fetchNativeTokenPrice pas search address). ──
   const [gramTonTicker, setGramTonTicker] = useState<GramTonTicker | null>(null);
   const [gramTonTickerLoading, setGramTonTickerLoading] = useState(false);
 
@@ -1968,7 +1782,6 @@ export const Explorer: React.FC = () => {
     try {
       setGramTonTicker(await fetchGramTonTicker());
     } catch {
-      // best-effort, diam-diam gagal (bukan bagian kritis explorer)
     } finally {
       setGramTonTickerLoading(false);
     }
@@ -1979,14 +1792,8 @@ export const Explorer: React.FC = () => {
     loadGramTonTicker();
     const id = setInterval(loadGramTonTicker, GRAM_TOP_JETTONS_REFRESH_MS);
     return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chain, loadGramTonTicker]);
 
-  // -- Anchor buat auto-scroll ke area hasil pencarian GRAM (Address Result /
-  //    Jetton Info / dst) — dipasang tepat di atas blok-blok hasil itu.
-  //    Dipakai waktu user klik simbol Jetton dari panel "Jetton TON" (yang
-  //    posisinya ada DI ATAS area hasil), supaya hasil detail kontraknya
-  //    langsung kelihatan tanpa perlu scroll manual ke bawah. --
   const gramResultsAnchorRef = useRef<HTMLDivElement>(null);
   const scrollToGramResults = useCallback(() => {
     gramResultsAnchorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2011,10 +1818,6 @@ export const Explorer: React.FC = () => {
   };
 
   const handleGramSearch = async (eOrValue?: React.FormEvent | string) => {
-    // -- Sama seperti handleSearch (EVM): bisa dipanggil dengan FormEvent
-    //    (submit form, pakai state `gramQuery`) ATAU langsung dikasih string
-    //    value (klik dari row/link lain) supaya search kepicu SEKETIKA tanpa
-    //    lewat `setGramQuery(x)` + `setTimeout(...)` yang rawan balapan. ──
     const directValue = typeof eOrValue === 'string' ? eOrValue : undefined;
     if (typeof eOrValue !== 'string') eOrValue?.preventDefault();
     const q = (directValue ?? gramQuery).trim();
@@ -2027,7 +1830,7 @@ export const Explorer: React.FC = () => {
         const [state, balance, nativePrice] = await Promise.all([
           runTonCenterRequest(() => getGramAccountState(gramNetwork, q)),
           runTonCenterRequest(() => getGramBalanceWithFallback(gramNetwork, q)).catch(() => 0),
-          fetchNativeTokenPrice('GRAM').catch(() => null), // CoinGecko, bukan TonCenter — gak perlu diantrikan
+          fetchNativeTokenPrice('GRAM').catch(() => null),
         ]);
         setGramAddressResult({
           address: q, status: state.status, balance,
@@ -2051,9 +1854,6 @@ export const Explorer: React.FC = () => {
           .catch((e: any) => setGramTokensError(e?.message || 'Gagal ambil data Jetton.'))
           .finally(() => setGramTokensLoading(false));
 
-        // -- Cek apakah address ini kontrak Jetton Master. Kalau bukan (mis.
-        //    wallet biasa), fetchGramJettonInfo balikin null diam-diam --
-        //    panel "Jetton Contract Detail" cuma nongol kalau memang relevan.
         setGramJettonInfoLoading(true);
         fetchGramJettonInfo(q, gramNetwork)
           .then(info => {
@@ -2081,11 +1881,6 @@ export const Explorer: React.FC = () => {
     setGramLoading(false);
   };
 
-  // -- Dipanggil dari row-row panel "persisten" yang posisinya DI ATAS area
-  //    hasil pencarian (Jetton TON: klik simbol Jetton → address kontraknya;
-  //    Detail Masterchain tab Transaksi: klik hash → tx hash-nya) --
-  //    trigger search & sekalian auto-scroll ke area hasil, biar user gak
-  //    perlu geser manual ke bawah tiap klik. --
   const handleGramResultClick = (addressOrTxHash: string) => {
     handleGramSearch(addressOrTxHash);
     scrollToGramResults();
@@ -2110,10 +1905,19 @@ export const Explorer: React.FC = () => {
   );
   const rpcUrl = network.rpcUrls[0];
 
-  const getProvider = useCallback(
-    () => new ethers.providers.JsonRpcProvider(rpcUrl),
-    [rpcUrl]
+  // Provider di-cache 1 instance per rpcUrl+chainId (bukan dibikin baru tiap panggilan)
+  // dan chainId-nya dikasih tau di depan (network statis), supaya ethers gak perlu
+  // auto-detect network lewat eth_chainId tiap kali. Auto-detect inilah yang sering
+  // gagal / kena rate-limit di RPC publik dan muncul sebagai error
+  // "could not detect network" (event="noNetwork", code=NETWORK_ERROR) — apalagi kalau
+  // banyak request paralel (balance, gas tracker, latest blocks, dll) tiap-tiap bikin
+  // provider baru sendiri-sendiri.
+  const provider = useMemo(
+    () => new ethers.providers.JsonRpcProvider(rpcUrl, { chainId: network.chainId, name: network.name || 'unknown' }),
+    [rpcUrl, network.chainId, network.name]
   );
+
+  const getProvider = useCallback(() => provider, [provider]);
 
   const loadLatestBlocks = useCallback(async () => {
     setLatestLoading(true);
@@ -2136,15 +1940,160 @@ export const Explorer: React.FC = () => {
 
   useEffect(() => {
     loadLatestBlocks();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [networkId]);
 
-  // ── Auto-refresh feed "Latest Blocks" tiap 3-5 detik sesuai pengaturan ──
   useEffect(() => {
     if (!refreshSettings.enabled) return;
     const id = setInterval(() => { loadLatestBlocks(); }, refreshSettings.intervalSec * 1000);
     return () => clearInterval(id);
   }, [refreshSettings.enabled, refreshSettings.intervalSec, loadLatestBlocks]);
+
+  // ── Gas Tracker: estimasi tier Rendah / Standar / Cepat — full dari data RPC ──
+  // Gak pake angka tebakan/konstanta. Sumber data:
+  // 1) eth_feeHistory (standar EIP-1559, didukung hampir semua node modern): ambil
+  //    reward (priority fee) yang BENERAN dibayar tx-tx di beberapa block terakhir,
+  //    lalu ambil persentil 25/50/90 buat Rendah/Standar/Cepat — persis cara kerja
+  //    gas tracker Etherscan/MetaMask. baseFeePerGas terakhir dari feeHistory sudah
+  //    berupa proyeksi base fee block berikutnya (bukan block sekarang), jadi dipakai
+  //    langsung tanpa perlu kali-kali margin sendiri.
+  // 2) Kalau RPC gak dukung eth_feeHistory / network bukan EIP-1559 & gak ada reward
+  //    data: sampling gasPrice asli dari transaksi 3 block terakhir, lalu ambil
+  //    persentil yang sama (25/50/90) dari situ.
+  // 3) Kalau block terakhir kosong transaksi: fallback ke eth_gasPrice apa adanya
+  //    (masih murni saran dari node, bukan konstanta kita).
+  const FEE_HISTORY_BLOCK_COUNT = 20;
+  const TIER_PERCENTILES = [25, 50, 90] as const;
+
+  function percentile(sorted: ethers.BigNumber[], p: number): ethers.BigNumber {
+    if (sorted.length === 0) return ethers.constants.Zero;
+    const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil((p / 100) * sorted.length) - 1));
+    return sorted[idx];
+  }
+
+  const loadGasFees = useCallback(async () => {
+    setGasLoading(true);
+    try {
+      const provider = getProvider();
+
+      // 1) Coba eth_feeHistory dulu — data priority fee asli dari block-block terakhir.
+      try {
+        const feeHistory = await provider.send('eth_feeHistory', [
+          ethers.utils.hexValue(FEE_HISTORY_BLOCK_COUNT),
+          'latest',
+          TIER_PERCENTILES,
+        ]);
+        const rewardRows: string[][] = Array.isArray(feeHistory?.reward) ? feeHistory.reward : [];
+        const baseFees: string[] = Array.isArray(feeHistory?.baseFeePerGas) ? feeHistory.baseFeePerGas : [];
+        if (rewardRows.length === 0) throw new Error('feeHistory kosong / tidak didukung RPC ini.');
+
+        const avgAt = (col: number): ethers.BigNumber => {
+          const vals = rewardRows.map(r => ethers.BigNumber.from(r[col] ?? '0x0'));
+          const sum = vals.reduce((acc, v) => acc.add(v), ethers.constants.Zero);
+          return vals.length > 0 ? sum.div(vals.length) : ethers.constants.Zero;
+        };
+        const tipLow = avgAt(0);
+        const tipStandard = avgAt(1);
+        const tipFast = avgAt(2);
+
+        // Elemen terakhir baseFeePerGas dari feeHistory = proyeksi base fee block berikutnya.
+        const nextBaseFee = baseFees.length > 0 ? ethers.BigNumber.from(baseFees[baseFees.length - 1]) : ethers.constants.Zero;
+        const isEip1559 = nextBaseFee.gt(0);
+
+        if (isEip1559) {
+          const buildTier = (tip: ethers.BigNumber): GasTier => {
+            const maxFeeWei = nextBaseFee.add(tip);
+            return {
+              gwei: parseFloat(ethers.utils.formatUnits(maxFeeWei, 'gwei')),
+              maxFeePerGas: maxFeeWei.toString(),
+              maxPriorityFeePerGas: tip.toString(),
+            };
+          };
+          setGasTiers({
+            isEip1559: true,
+            baseFeeGwei: parseFloat(ethers.utils.formatUnits(nextBaseFee, 'gwei')),
+            low: buildTier(tipLow),
+            standard: buildTier(tipStandard),
+            fast: buildTier(tipFast),
+          });
+        } else {
+          // Network non-1559: "reward" dari feeHistory itu gasPrice efektif yg beneran
+          // dibayar tx-tx di block tsb, jadi langsung dipakai sebagai tier gas price.
+          setGasTiers({
+            isEip1559: false,
+            baseFeeGwei: null,
+            low: { gwei: parseFloat(ethers.utils.formatUnits(tipLow, 'gwei')) },
+            standard: { gwei: parseFloat(ethers.utils.formatUnits(tipStandard, 'gwei')) },
+            fast: { gwei: parseFloat(ethers.utils.formatUnits(tipFast, 'gwei')) },
+          });
+        }
+        setGasError(null);
+        return;
+      } catch {
+        // lanjut ke fallback di bawah kalau eth_feeHistory gak didukung RPC ini
+      }
+
+      // 2) Fallback: sampling gasPrice ASLI dari transaksi 3 block terakhir.
+      const head = await provider.getBlockNumber();
+      const blockNums = [head, head - 1, head - 2].filter(n => n >= 0);
+      const blocks = await Promise.all(blockNums.map(n => provider.getBlockWithTransactions(n).catch(() => null)));
+      const gasPrices: ethers.BigNumber[] = [];
+      blocks.forEach(b => {
+        if (!b) return;
+        b.transactions.forEach(tx => { if (tx.gasPrice) gasPrices.push(tx.gasPrice); });
+      });
+      gasPrices.sort((a, b) => (a.lt(b) ? -1 : a.gt(b) ? 1 : 0));
+
+      if (gasPrices.length > 0) {
+        setGasTiers({
+          isEip1559: false,
+          baseFeeGwei: null,
+          low: { gwei: parseFloat(ethers.utils.formatUnits(percentile(gasPrices, 25), 'gwei')) },
+          standard: { gwei: parseFloat(ethers.utils.formatUnits(percentile(gasPrices, 50), 'gwei')) },
+          fast: { gwei: parseFloat(ethers.utils.formatUnits(percentile(gasPrices, 90), 'gwei')) },
+        });
+        setGasError(null);
+        return;
+      }
+
+      // 3) Fallback terakhir: block-block terakhir gak ada transaksi sama sekali,
+      // pakai saran gasPrice polos dari node (masih data RPC asli, cuma gak ada spread tier).
+      const gasPrice = await provider.getGasPrice();
+      const gweiNum = parseFloat(ethers.utils.formatUnits(gasPrice, 'gwei'));
+      setGasTiers({
+        isEip1559: false,
+        baseFeeGwei: null,
+        low: { gwei: gweiNum },
+        standard: { gwei: gweiNum },
+        fast: { gwei: gweiNum },
+      });
+      setGasError(null);
+    } catch (e: any) {
+      setGasTiers(null);
+      setGasError(friendlyRpcError(e, 'Gagal mengambil data gas fee dari RPC.'));
+    } finally {
+      setGasLoading(false);
+    }
+  }, [getProvider]);
+
+  useEffect(() => {
+    loadGasFees();
+  }, [networkId]);
+
+  useEffect(() => {
+    if (!refreshSettings.enabled) return;
+    const id = setInterval(() => { loadGasFees(); }, refreshSettings.intervalSec * 1000);
+    return () => clearInterval(id);
+  }, [refreshSettings.enabled, refreshSettings.intervalSec, loadGasFees]);
+
+  // Native token price dipakai buat estimasi biaya gas dalam USD (gas tracker) &
+  // buat nilai USD saldo address di hasil pencarian.
+  useEffect(() => {
+    let cancelled = false;
+    fetchNativeTokenPrice(network.symbol).then(price => {
+      if (!cancelled) setNativePriceUsd(price);
+    });
+    return () => { cancelled = true; };
+  }, [network.symbol]);
 
   const resetResults = () => {
     setError(null);
@@ -2168,15 +2117,6 @@ export const Explorer: React.FC = () => {
     setTokenTab('transfers');
   };
 
-  // ── Load detail tambahan address (token holdings, riwayat TX, info kontrak)
-  //    secara terpisah dari loading utama, supaya hasil RPC utama (saldo/nonce)
-  //    langsung tampil duluan tanpa menunggu sumber lain selesai.
-  //
-  //    Blockscout dipakai duluan kalau tersedia untuk network ini (datanya lebih
-  //    lengkap karena ada indexer), tapi TIDAK WAJIB — kalau Blockscout tidak
-  //    tersedia untuk network tsb, atau request-nya gagal/timeout, otomatis
-  //    fallback ke scan langsung via RPC (eth_getLogs + baca storage slot),
-  //    supaya network apa pun tetap bisa menampilkan detail ala Etherscan. ──
   const loadAddressExtras = useCallback(async (addr: string, netId: string, isContract: boolean, code: string) => {
     const provider = getProvider();
     const hasBlockscout = !!BLOCKSCOUT_HOSTS[netId];
@@ -2189,14 +2129,13 @@ export const Explorer: React.FC = () => {
         setTokenHoldings(tokens);
         setTokensSource(hasBlockscout ? 'blockscout' : 'rpc');
       } catch {
-        // Blockscout gagal / tidak tersedia → coba lagi via RPC sebelum menyerah
         try {
           const tokens = await fetchTokenPortfolioViaRpc(provider, addr);
           tokens.sort((a, b) => (b.usdValue ?? -1) - (a.usdValue ?? -1));
           setTokenHoldings(tokens);
           setTokensSource('rpc');
         } catch (e: any) {
-          setTokensError(e?.message || 'Gagal mengambil token holdings dari Blockscout maupun RPC.');
+          setTokensError(friendlyRpcError(e, 'Gagal mengambil token holdings dari Blockscout maupun RPC.'));
         }
       } finally {
         setTokensLoading(false);
@@ -2215,7 +2154,7 @@ export const Explorer: React.FC = () => {
           setRecentTxs(txs);
           setRecentTxsSource('rpc');
         } catch (e: any) {
-          setRecentTxsError(e?.message || 'Gagal mengambil riwayat transaksi dari Blockscout maupun RPC.');
+          setRecentTxsError(friendlyRpcError(e, 'Gagal mengambil riwayat transaksi dari Blockscout maupun RPC.'));
         }
       } finally {
         setRecentTxsLoading(false);
@@ -2244,9 +2183,6 @@ export const Explorer: React.FC = () => {
     }
   }, [getProvider]);
 
-  // ── Load info Token Page (kalau address ini kontrak token) — dijalankan
-  //    terpisah dari loadAddressExtras supaya panel Contract Info / Token
-  //    Holdings tetap tampil normal tanpa menunggu deteksi token selesai. ──
   const loadTokenInfo = useCallback(async (addr: string, netId: string) => {
     const provider = getProvider();
     const host = BLOCKSCOUT_HOSTS[netId];
@@ -2261,7 +2197,7 @@ export const Explorer: React.FC = () => {
     }
     setTokenInfo(info);
     setTokenInfoLoading(false);
-    if (!info) return; // bukan kontrak token yang dikenal — tidak perlu load holders/transfers
+    if (!info) return;
 
     const isNft = info.standard.toUpperCase().includes('721') || info.standard.toUpperCase().includes('1155');
 
@@ -2271,7 +2207,7 @@ export const Explorer: React.FC = () => {
         if (!host) throw new Error('Daftar holders butuh instance Blockscout — belum tersedia untuk network ini.');
         setTokenHolders(await fetchTokenHoldersBlockscout(addr, host, info!.decimals));
       } catch (e: any) {
-        setTokenHoldersError(e?.message || 'Gagal mengambil daftar holders.');
+        setTokenHoldersError(friendlyRpcError(e, 'Gagal mengambil daftar holders.'));
       } finally {
         setTokenHoldersLoading(false);
       }
@@ -2291,7 +2227,7 @@ export const Explorer: React.FC = () => {
           setTokenTransfers(transfers);
           setTokenTransfersSource('rpc');
         } catch (e2: any) {
-          setTokenTransfersError(e2?.message || 'Gagal mengambil riwayat transfer token dari Blockscout maupun RPC.');
+          setTokenTransfersError(friendlyRpcError(e2, 'Gagal mengambil riwayat transfer token dari Blockscout maupun RPC.'));
         }
       } finally {
         setTokenTransfersLoading(false);
@@ -2312,17 +2248,11 @@ export const Explorer: React.FC = () => {
   };
 
   const handleSearch = async (eOrValue?: React.FormEvent | string) => {
-    // -- Dipanggil dari 2 cara: submit form (dikasih FormEvent, pakai state
-    //    `query` yang lagi diketik user) ATAU klik langsung dari row/link lain
-    //    (dikasih string value langsung) -- yang kedua ini supaya search-nya
-    //    kepicu SEKETIKA pakai value yang benar, bukan `setQuery(x)` diikuti
-    //    `setTimeout(() => handleSearch(), 0)` yang rawan balapan sama
-    //    closure `query` versi lama (belum ke-update) dari React.
     const directValue = typeof eOrValue === 'string' ? eOrValue : undefined;
     if (typeof eOrValue !== 'string') eOrValue?.preventDefault();
     const q = (directValue ?? query).trim();
     if (!q) return;
-    if (directValue !== undefined) setQuery(directValue); // biar search box ikut nampilin value-nya
+    if (directValue !== undefined) setQuery(directValue);
     resetResults();
     setLoading(true);
 
@@ -2376,7 +2306,6 @@ export const Explorer: React.FC = () => {
             };
           });
 
-          // Confirmations: selisih block terbaru vs block TX ini (0/null kalau masih pending)
           let confirmations: number | null = null;
           if (tx.blockNumber) {
             try {
@@ -2385,7 +2314,6 @@ export const Explorer: React.FC = () => {
             } catch {}
           }
 
-          // Effective gas price: pakai dari receipt (akurat untuk tx EIP-1559) kalau ada, fallback ke tx.gasPrice
           const effectiveGasPrice = (receipt as any)?.effectiveGasPrice ?? tx.gasPrice ?? null;
           const feeNative = receipt && effectiveGasPrice
             ? ethers.utils.formatEther(receipt.gasUsed.mul(effectiveGasPrice))
@@ -2422,8 +2350,6 @@ export const Explorer: React.FC = () => {
           setResultType('tx');
           navigate(`/explorer/tx/${tx.hash}`, { replace: true });
 
-          // Revert reason (best-effort, hanya untuk TX yang gagal) -- dijalankan
-          // terpisah supaya hasil utama TX langsung tampil tanpa menunggu simulasi ulang.
           if (receipt && receipt.status === 0) {
             setTxRevertLoading(true);
             fetchRevertReason(provider, tx).then(reason => {
@@ -2432,15 +2358,12 @@ export const Explorer: React.FC = () => {
             });
           }
 
-          // Decode token transfer di dalam log (ERC-20 amount / ERC-721 tokenId),
-          // best-effort & terpisah supaya tidak memblokir tampilan utama.
           if (logs.length > 0) {
             (async () => {
               const decimalsCache = new Map<string, { symbol: string; decimals: number } | null>();
               const decodedLogs = await Promise.all(logs.map(async (log): Promise<TxLog> => {
-                if (log.topic0 !== ERC20_TRANSFER_TOPIC.replace(/^0x/, '')) return log;
+                if (log.topic0 !== ERC20_TRANSFER_TOPIC) return log;
                 if (log.rawTopics.length === 4) {
-                  // ERC-721 Transfer: tokenId ada di topic ke-3 (indexed), bukan di data
                   return {
                     ...log, transferKind: 'erc721',
                     transferFrom: '0x' + log.rawTopics[1].slice(-40),
@@ -2449,7 +2372,6 @@ export const Explorer: React.FC = () => {
                   };
                 }
                 if (log.rawTopics.length === 3 && log.rawData && log.rawData !== '0x') {
-                  // ERC-20 Transfer: amount ada di data, symbol/decimals diambil dari kontrak token
                   let meta = decimalsCache.get(log.address);
                   if (meta === undefined) {
                     try {
@@ -2478,7 +2400,6 @@ export const Explorer: React.FC = () => {
             })();
           }
         } else {
-          // fallback: mungkin ini block hash
           const blk = await provider.getBlockWithTransactions(q).catch(() => null);
           if (!blk) throw new Error('Hash tidak ditemukan (bukan TX maupun Block hash yang valid di network ini)');
           setBlockResult({
@@ -2499,6 +2420,7 @@ export const Explorer: React.FC = () => {
             rawJson: buildRawBlockJson(blk),
           });
           setResultType('block');
+          navigate(`/explorer/block/${blk.number}`, { replace: true });
         }
       } else if (isBlockNumber(q)) {
         const blk = await provider.getBlockWithTransactions(parseInt(q, 10));
@@ -2521,11 +2443,12 @@ export const Explorer: React.FC = () => {
           rawJson: buildRawBlockJson(blk),
         });
         setResultType('block');
+        navigate(`/explorer/block/${blk.number}`, { replace: true });
       } else {
         throw new Error('Format tidak dikenali. Masukkan address (0x + 40 hex), TX hash / block hash (0x + 64 hex), atau nomor block.');
       }
     } catch (err: any) {
-      setError(err?.message || 'Gagal mengambil data dari RPC. Coba ganti RPC atau network.');
+      setError(friendlyRpcError(err, 'Gagal mengambil data dari RPC. Coba ganti RPC atau network.'));
     } finally {
       setLoading(false);
     }
@@ -2535,25 +2458,18 @@ export const Explorer: React.FC = () => {
     handleSearch(String(num));
   };
 
-  // ── Auto-search dari deep-link (/explorer/tx/:value atau /explorer/address/:value).
-  //    Format value dipakai buat nebak chain-nya: EVM selalu diawali "0x", GRAM
-  //    (address UQ.../EQ... atau tx hash 64 hex tanpa 0x) enggak. Cuma jalan sekali
-  //    per perubahan urlValue, biar gak infinite-loop karena handleSearch sendiri
-  //    juga nge-update URL lewat navigate({ replace: true }) di atas. ──
   useEffect(() => {
     if (!urlValue) return;
     const val = decodeURIComponent(urlValue);
-    if (val.startsWith('0x')) {
+    if (val.startsWith('0x') || (urlType === 'block' && isBlockNumber(val))) {
       setChain('evm');
       handleSearch(val);
     } else {
       setChain('gram');
       handleGramSearch(val);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlType, urlValue]);
 
-  // ── small building blocks ──────────────────────────────────────────────
   const Row = ({ label, value, mono = true, copy, link }: {
     label: string; value: React.ReactNode; mono?: boolean; copy?: string; link?: string;
   }) => (
@@ -2692,6 +2608,74 @@ export const Explorer: React.FC = () => {
           </label>
         </div>
       )}
+
+      {/* ── Gas Tracker — estimasi fee Rendah / Standar / Cepat ── */}
+      <div className="fade-in-up" style={{
+        background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderTop: `2px solid ${COLORS.amber}`,
+        padding: '16px 18px', marginBottom: '24px',
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '14px' }}>
+          <h3 style={{ margin: 0, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1.5px', color: COLORS.amber, display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <FaGasPump /> Gas Tracker — {network.name}
+            {refreshSettings.enabled && !gasLoading && gasTiers && (
+              <span style={{
+                fontSize: '9px', fontWeight: 'bold', color: COLORS.green, border: `1px solid ${COLORS.green}`,
+                padding: '2px 6px', display: 'flex', alignItems: 'center', gap: '4px', textTransform: 'none', letterSpacing: '0.3px',
+              }}>
+                <FaSyncAlt size={8} /> live · {refreshSettings.intervalSec}s
+              </span>
+            )}
+          </h3>
+          {gasLoading && <FaSpinner className="spin-icon" color={COLORS.amber} size={12} />}
+        </div>
+
+        {gasError && !gasTiers ? (
+          <p style={{ color: COLORS.red, fontSize: '11px', margin: 0 }}>{gasError}</p>
+        ) : !gasTiers ? (
+          <p style={{ color: '#333', fontSize: '12px', textAlign: 'center', padding: '10px 0', margin: 0 }}>
+            {gasLoading ? 'Memuat data gas fee…' : 'Tidak ada data (cek RPC).'}
+          </p>
+        ) : (
+          <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
+              {([
+                { key: 'low', label: 'Rendah', color: COLORS.green, icon: <FaClock size={11} />, eta: '~ 1-2 menit', tier: gasTiers.low },
+                { key: 'standard', label: 'Standar', color: COLORS.accent, icon: <FaGasPump size={11} />, eta: '~ 30 detik', tier: gasTiers.standard },
+                { key: 'fast', label: 'Cepat', color: COLORS.amber, icon: <FaBolt size={11} />, eta: '~ 15 detik', tier: gasTiers.fast },
+              ] as const).map(({ key, label, color, icon, eta, tier }) => {
+                const nativeCost = (tier.gwei * 21000) / 1e9;
+                const usdCost = nativePriceUsd != null ? nativeCost * nativePriceUsd : null;
+                return (
+                  <div key={key} style={{
+                    background: '#111', border: `1px solid ${color}40`, borderTop: `2px solid ${color}`,
+                    padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: '4px',
+                  }}>
+                    <span style={{
+                      fontSize: '10px', fontWeight: 'bold', color, textTransform: 'uppercase',
+                      letterSpacing: '1px', display: 'flex', alignItems: 'center', gap: '5px',
+                    }}>
+                      {icon} {label}
+                    </span>
+                    <span style={{ fontSize: '17px', fontFamily: 'monospace', fontWeight: 'bold', color: COLORS.text }}>
+                      {tier.gwei.toFixed(2)} <span style={{ fontSize: '11px', color: COLORS.muted, fontWeight: 'normal' }}>Gwei</span>
+                    </span>
+                    <span style={{ fontSize: '10px', color: COLORS.muted }}>{eta}</span>
+                    <span style={{ fontSize: '10px', color: COLORS.muted, fontFamily: 'monospace' }}>
+                      ≈ {nativeCost.toFixed(6)} {network.symbol}
+                      {usdCost != null && ` ($${usdCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            <p style={{ fontSize: '10px', color: COLORS.muted, margin: '10px 0 0' }}>
+              {gasTiers.isEip1559
+                ? `EIP-1559 · Base Fee saat ini ${gasTiers.baseFeeGwei?.toFixed(2)} Gwei · estimasi biaya di atas untuk transfer native standar (21.000 gas).`
+                : `Legacy gas price (network ini belum EIP-1559) · estimasi biaya di atas untuk transfer native standar (21.000 gas).`}
+            </p>
+          </>
+        )}
+      </div>
 
       {/* ── Search bar ── */}
       <form onSubmit={handleSearch} style={{ marginBottom: '24px' }}>
