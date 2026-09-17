@@ -100,8 +100,9 @@ import {
   parseArgWithAbiType,
   parseTxError,
   compileSolidity,
+  isErc20CompliantAbi,
 } from './Smartcontracttools';
-import type { DeployedErc20Token, CreatedSplToken, CompiledContract } from './Smartcontracttools';
+import type { DeployedErc20Token, DeployedCustomContract, CreatedSplToken, CompiledContract } from './Smartcontracttools';
 
 import type {
   BIP39Wallet, RPCNetwork, AirdropTask, TxQueueItem, AutoContractCall, ChainKind, DetectedToken,
@@ -114,7 +115,7 @@ import {
   BLOCKSCOUT_HOSTS, TOKEN_METADATA_TYPE_SIZE, TOKEN_METADATA_LENGTH_SIZE,
 } from './constants';
 import {
-  encodeAutoAbi, parseAbiFunc, shortAddr, weiToEthStr, ethToHex, generateMnemonic, deriveAddress,
+  encodeAutoAbi, parseAbiFunc, shortAddr, weiToEthStr, ethToHex, generateMnemonic, deriveAddress, getBip39Suggestions,
   pinataUploadFile, pinataUploadJson, getProvider, fetchEvmTokenPortfolioWithFallback, toIpfsUri,
   fetchChainlistChains, chainlistChainToNetForm, fetchEvmAddressTxHistory, fetchEvmTokenDetail,
   fetchFiatPrice, formatGasFiat, getEvmTokenStandardLabel,
@@ -505,6 +506,7 @@ export const WalletGenerator: React.FC = () => {
   const [addressCount,   setAddressCount]   = useState(1);
   const [walletName,     setWalletName]     = useState('');
   const [customMnemonic, setCustomMnemonic] = useState('');
+  const [mnemonicSuggestions, setMnemonicSuggestions] = useState<string[]>([]);
   const [importMode,     setImportMode]     = useState(false);
   const [tonImportMode,      setTonImportMode]      = useState(false);
   const [revealedIds,    setRevealedIds]    = useState<Set<string>>(new Set());
@@ -572,6 +574,22 @@ export const WalletGenerator: React.FC = () => {
   const [txTokenDetail,          setTxTokenDetail]          = useState<EvmTokenDetail|null>(null);
   const [txTokenDetailLoading,   setTxTokenDetailLoading]   = useState(false);
   const [txTokenDetailError,     setTxTokenDetailError]     = useState<string|null>(null);
+  // ── ERC-20 Approve / Allowance / Revoke ──
+  const [txApproveSpender,   setTxApproveSpender]   = useState('');
+  const [txApproveAmt,       setTxApproveAmt]       = useState('');
+  const [txApproveUnlimited, setTxApproveUnlimited] = useState(true);
+  const [txApproving,        setTxApproving]        = useState(false);
+  const [txRevokingSpender,  setTxRevokingSpender]  = useState<string | null>(null); // spender yang lagi diproses revoke (dari riwayat)
+  const [txApproveStatus,    setTxApproveStatus]    = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
+  const [txAllowanceResult,  setTxAllowanceResult]  = useState<{ raw: ethers.BigNumber; formatted: string; isUnlimited: boolean } | null>(null);
+  const [txAllowanceChecking,setTxAllowanceChecking]= useState(false);
+  // Riwayat approval per token (disimpan lokal, per address kontrak token) — supaya user
+  // bisa lihat & revoke spender yang PERNAH di-approve tanpa harus inget/tempel manual lagi.
+  // Key: `${chainId}:${tokenAddress}:${ownerAddress}` → daftar spender yang pernah di-approve.
+  const [txApprovalHistory, setTxApprovalHistory] = useState<Record<string, { spender: string; label?: string; lastAmount: string; unlimited: boolean; timestamp: number }[]>>(() => {
+    try { return JSON.parse(localStorage.getItem('txApprovalHistory') || '{}'); } catch { return {}; }
+  });
+  useEffect(() => { localStorage.setItem('txApprovalHistory', JSON.stringify(txApprovalHistory)); }, [txApprovalHistory]);
   const [txGasMode,     setTxGasMode]     = useState<'slow'|'standard'|'fast'|'manual'>('standard');
   const [txGasPrices,   setTxGasPrices]   = useState<{slow:number;standard:number;fast:number}|null>(null);
   const [txGasManual,   setTxGasManual]   = useState('');
@@ -1088,6 +1106,12 @@ export const WalletGenerator: React.FC = () => {
   const [erc20Tokens,  setErc20Tokens]  = useState<DeployedErc20Token[]>(() => {
     try { return JSON.parse(localStorage.getItem('erc20DeployedTokens') || '[]'); } catch { return []; }
   });
+  // Kontrak kustom (mode "Custom Calldata/Solidity") yang berhasil dideploy TAPI ABI-nya
+  // nggak lolos cek ERC-20-compliant (lihat isErc20CompliantAbi) — dipisah dari erc20Tokens
+  // supaya kontrak non-token (vault, bank, dsb) nggak ke-label "Token".
+  const [customContracts, setCustomContracts] = useState<DeployedCustomContract[]>(() => {
+    try { return JSON.parse(localStorage.getItem('customDeployedContracts') || '[]'); } catch { return []; }
+  });
 
 
   const [tcEvmMode,        setTcEvmMode]        = useState<'template'|'custom'>('template');
@@ -1133,6 +1157,7 @@ export const WalletGenerator: React.FC = () => {
   });
 
   useEffect(() => { localStorage.setItem('erc20DeployedTokens', JSON.stringify(erc20Tokens)); }, [erc20Tokens]);
+  useEffect(() => { localStorage.setItem('customDeployedContracts', JSON.stringify(customContracts)); }, [customContracts]);
   useEffect(() => { localStorage.setItem('splCreatedTokens',   JSON.stringify(splTokens));   }, [splTokens]);
   useEffect(() => { localStorage.setItem('tcSolPinataJwt',     tcSolPinataJwt);              }, [tcSolPinataJwt]);
   const [execNetId,     setExecNetId]     = useState<string>('sepolia');
@@ -2501,6 +2526,22 @@ export const WalletGenerator: React.FC = () => {
     setTimeout(() => setCopiedKey(''), 1500);
   };
 
+  const handleMnemonicChange = (value: string) => {
+    setCustomMnemonic(value);
+    const endsWithSpace = /\s$/.test(value);
+    const words = value.trimStart().split(/\s+/);
+    const currentWord = endsWithSpace ? '' : (words[words.length - 1] || '');
+    setMnemonicSuggestions(currentWord.length >= 1 ? getBip39Suggestions(currentWord, 6) : []);
+  };
+
+  const applyMnemonicSuggestion = (word: string) => {
+    const parts = customMnemonic.trimEnd().split(/\s+/).filter(Boolean);
+    if (/\s$/.test(customMnemonic) || parts.length === 0) parts.push(word);
+    else parts[parts.length - 1] = word;
+    setCustomMnemonic(parts.join(' ') + ' ');
+    setMnemonicSuggestions([]);
+  };
+
   const generateWallet = async () => {
     setGenerating(true);
     try {
@@ -2528,7 +2569,7 @@ export const WalletGenerator: React.FC = () => {
         setWallets(prev => [newWallet, ...prev]);
         setExpandedId(newWallet.id);
         showAlert('Wallet Telegram Wallet / Tonkeeper berhasil diimpor!', 'success');
-        setWalletName(''); setCustomMnemonic(''); setImportMode(false); setTonImportMode(false);
+        setWalletName(''); setCustomMnemonic(''); setMnemonicSuggestions([]); setImportMode(false); setTonImportMode(false);
         setGenerating(false);
         return;
       }
@@ -2584,7 +2625,7 @@ export const WalletGenerator: React.FC = () => {
       setWallets(prev => [newWallet, ...prev]);
       setExpandedId(newWallet.id);
       showAlert(importMode ? 'Mnemonic berhasil diimpor!' : 'Wallet BIP39 berhasil dibuat!', 'success');
-      setWalletName(''); setCustomMnemonic(''); setImportMode(false);
+      setWalletName(''); setCustomMnemonic(''); setMnemonicSuggestions([]); setImportMode(false);
     } catch (e: any) { showAlert('Gagal generate: ' + e.message, 'error'); }
     setGenerating(false);
   };
@@ -2883,6 +2924,146 @@ export const WalletGenerator: React.FC = () => {
     if (txAsset.toLowerCase() === address.toLowerCase()) setTxAsset('native');
     setTxTokens(prev => prev.filter(t => t.address.toLowerCase() !== address.toLowerCase()));
   };
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ── ERC-20 Approve / Allowance / Revoke ──
+  // Threshold buat nganggep sebuah allowance "Unlimited" — approve tak-terbatas
+  // biasanya minta MaxUint256 persis, tapi beberapa dApp/wallet approve angka besar
+  // custom yang bukan MaxUint256 persis. Pakai ambang batas (>= 2^250) biar tetap
+  // ke-detect "unlimited" walau bukan MaxUint256 harfiah, tanpa salah label allowance
+  // biasa yang cuma "sangat besar" (misal approve 1 miliar token 18 desimal).
+  // ══════════════════════════════════════════════════════════════════════
+  const ERC20_UNLIMITED_THRESHOLD = ethers.BigNumber.from(2).pow(250);
+
+  const txApprovalHistoryKey = (tokenAddress: string) =>
+    `${selectedNetwork?.chainId ?? 0}:${tokenAddress.toLowerCase()}:${txAddress.toLowerCase()}`;
+
+  const txApprovalHistoryForToken = (tokenAddress: string) =>
+    txApprovalHistory[txApprovalHistoryKey(tokenAddress)] ?? [];
+
+  const txRecordApproval = (tokenAddress: string, spender: string, lastAmount: string, unlimited: boolean) => {
+    const key = txApprovalHistoryKey(tokenAddress);
+    setTxApprovalHistory(prev => {
+      const list = (prev[key] ?? []).filter(e => e.spender.toLowerCase() !== spender.toLowerCase());
+      return { ...prev, [key]: [{ spender, lastAmount, unlimited, timestamp: Date.now() }, ...list].slice(0, 20) };
+    });
+  };
+
+  const txCheckAllowance = async (spenderOverride?: string) => {
+    const provider = txProviderRef.current;
+    const spender  = (spenderOverride ?? txApproveSpender).trim();
+    if (!provider || !selectedTxToken || !txAddress) return;
+    if (!ethers.utils.isAddress(spender)) { setTxAllowanceResult(null); return; }
+    setTxAllowanceChecking(true);
+    try {
+      const c = new ethers.Contract(selectedTxToken.address, ERC20_ABI, provider);
+      const raw: ethers.BigNumber = await c.allowance(txAddress, spender);
+      setTxAllowanceResult({
+        raw, formatted: ethers.utils.formatUnits(raw, selectedTxToken.decimals),
+        isUnlimited: raw.gte(ERC20_UNLIMITED_THRESHOLD),
+      });
+    } catch { setTxAllowanceResult(null); }
+    setTxAllowanceChecking(false);
+  };
+
+  // Debounce cek allowance tiap kali spender / token aktif berubah — pola sama seperti
+  // estimasi fee di chain lain (Tron/Atom/dst), biar gak nembak RPC tiap ketikan.
+  useEffect(() => {
+    setTxAllowanceResult(null);
+    if (!txConnected || !selectedTxToken) return;
+    const spender = txApproveSpender.trim();
+    if (!ethers.utils.isAddress(spender)) return;
+    let cancelled = false;
+    const timer = setTimeout(() => { if (!cancelled) txCheckAllowance(spender); }, 500);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [txApproveSpender, selectedTxToken?.address, txConnected, txAddress]);
+
+  // amount === undefined & unlimited === false → dipakai buat revoke cepat dari
+  // riwayat (langsung approve 0, gak perlu isi ulang form Approve di atas).
+  const txApproveToken = async (spenderInput?: string, amountInput?: string, unlimitedInput?: boolean) => {
+    const wallet = txWalletRef.current;
+    if (!wallet || !selectedTxToken) { showAlert('Connect wallet & pilih token dulu.', 'error'); return; }
+    const spender = (spenderInput ?? txApproveSpender).trim();
+    if (!ethers.utils.isAddress(spender)) { showAlert('Address spender tidak valid.', 'error'); return; }
+    const unlimited = unlimitedInput ?? txApproveUnlimited;
+    const amountStr = amountInput ?? txApproveAmt;
+
+    let amountBN: ethers.BigNumber;
+    let amountLabel: string;
+    if (unlimited) {
+      amountBN = ethers.constants.MaxUint256;
+      amountLabel = 'Unlimited';
+    } else {
+      const amt = parseFloat(amountStr);
+      if (isNaN(amt) || amt < 0) { showAlert('Jumlah approve tidak valid.', 'error'); return; }
+      try { amountBN = ethers.utils.parseUnits(amountStr || '0', selectedTxToken.decimals); }
+      catch { showAlert('Jumlah approve tidak valid.', 'error'); return; }
+      amountLabel = `${amountStr || '0'} ${selectedTxToken.symbol}`;
+    }
+    const isRevoke = amountBN.isZero();
+
+    const okApprove = await requestTxConfirm({
+      title: isRevoke ? `Revoke Approval ${selectedTxToken.symbol}` : `Approve Token ${selectedTxToken.symbol}`,
+      network: selectedNetwork?.name,
+      to: spender,
+      value: isRevoke ? `Cabut izin (set allowance ke 0)` : `Izinkan spender pakai hingga ${amountLabel}`,
+      extra: isRevoke
+        ? undefined
+        : 'Approve memberi izin ke address di atas untuk MENARIK token ini dari wallet kamu (dipakai kontrak DEX/dApp lain buat transferFrom). Jangan approve ke address yang tidak kamu percaya.',
+    });
+    if (!okApprove) return;
+
+    setTxApproving(true);
+    if (isRevoke) setTxRevokingSpender(spender);
+    setTxApproveStatus({ type: 'pending', msg: `${isRevoke ? 'Mencabut' : 'Meng-approve'} ${selectedTxToken.symbol} untuk ${shortAddr(spender)}...` });
+    try {
+      const c = new ethers.Contract(selectedTxToken.address, ERC20_ABI, wallet);
+      const gasLimit = await txEstimateSafeGasLimit(
+        wallet.provider!,
+        { from: wallet.address, to: selectedTxToken.address, data: c.interface.encodeFunctionData('approve', [spender, amountBN]) },
+        { manualGasLimit: parseInt(txGasLimit) || 0, minGasLimit: 45000 },
+      );
+      const gp = txGetGasPrice();
+      const overrides: ethers.PayableOverrides = { gasLimit };
+      if (gp) overrides.gasPrice = gp;
+      const tx = await c.approve(spender, amountBN, overrides);
+      setTxApproveStatus({ type: 'pending', msg: 'TX terkirim! Menunggu konfirmasi...', hash: tx.hash });
+      const receipt = await tx.wait();
+      setTxApproveStatus({
+        type: 'success',
+        msg: isRevoke
+          ? `Approval dicabut di block #${receipt.blockNumber}`
+          : `Approve berhasil di block #${receipt.blockNumber}`,
+        hash: tx.hash,
+      });
+      saveTxHistory({
+        taskName: isRevoke ? 'Revoke Approval' : 'Approve Token',
+        description: isRevoke
+          ? `Revoke approval ${selectedTxToken.symbol} untuk ${shortAddr(spender)} di ${selectedNetwork?.name ?? ''}`
+          : `Approve ${amountLabel} ${selectedTxToken.symbol} untuk ${shortAddr(spender)} di ${selectedNetwork?.name ?? ''}`,
+        to: spender, value: isRevoke ? '0' : amountLabel, data: '0x',
+        status: 'success', txHash: tx.hash, timestamp: Date.now(),
+        networkId: selectedNetwork?.id,
+      });
+      if (isRevoke) {
+        // Revoke sukses — hapus dari riwayat lokal biar list gak nampilin approval yang udah dicabut.
+        setTxApprovalHistory(prev => {
+          const key = txApprovalHistoryKey(selectedTxToken.address);
+          return { ...prev, [key]: (prev[key] ?? []).filter(e => e.spender.toLowerCase() !== spender.toLowerCase()) };
+        });
+      } else {
+        txRecordApproval(selectedTxToken.address, spender, unlimited ? 'Unlimited' : (amountStr || '0'), unlimited);
+      }
+      await txCheckAllowance(spender);
+    } catch (e: any) {
+      setTxApproveStatus({ type: 'error', msg: e.message });
+    }
+    setTxApproving(false);
+    setTxRevokingSpender(null);
+  };
+
+  const txRevokeApproval = (spender: string) => txApproveToken(spender, '0', false);
 
   // ── ERC-20: deteksi otomatis token yang dipegang address aktif, dipakai
   //    buat isi picker "Pilih Token" mode Token — pola sama kayak
@@ -6493,30 +6674,50 @@ export const WalletGenerator: React.FC = () => {
         setTcDeployStatus({ type: 'pending', msg: `TX terkirim: ${contract.deployTransaction.hash.slice(0,12)}... menunggu konfirmasi...` });
         await contract.deployed();
 
-        // Coba baca name()/symbol()/decimals() kalau kontrak menyediakannya (standar ERC-20-like);
-        // kalau tidak ada, fallback ke label manual dari form (tcName/tcSymbol/tcDecimals).
-        let readName = tcName.trim() || tcCompiled.contractName;
-        let readSymbol = tcSymbol.trim().toUpperCase() || 'TOKEN';
-        let readDecimals = parseInt(tcDecimals || '18', 10);
-        try { readName = await contract.name(); } catch {}
-        try { readSymbol = await contract.symbol(); } catch {}
-        try { readDecimals = await contract.decimals(); } catch {}
+        // Kontrak ini "token" beneran cuma kalau ABI-nya lolos cek ERC-20-compliant (lihat
+        // isErc20CompliantAbi) — bukan cuma karena user pernah nulis nama fungsi mirip-mirip.
+        // Kalau nggak lolos (mis. kontrak vault/bank kayak SimpleBank), dicatat terpisah di
+        // "Kontrak Kustom" supaya nggak salah label jadi Token.
+        if (isErc20CompliantAbi(tcCompiled.abi)) {
+          let readName = tcName.trim() || tcCompiled.contractName;
+          let readSymbol = tcSymbol.trim().toUpperCase() || 'TOKEN';
+          let readDecimals = parseInt(tcDecimals || '18', 10);
+          let readSupply = tcSupply.trim() || '-';
+          try { readName = await contract.name(); } catch {}
+          try { readSymbol = await contract.symbol(); } catch {}
+          try { readDecimals = await contract.decimals(); } catch {}
+          try { readSupply = ethers.utils.formatUnits(await contract.totalSupply(), readDecimals); } catch {}
 
-        const newToken: DeployedErc20Token = {
-          id: Date.now().toString(),
-          chainId: tcSelectedNetwork.chainId,
-          networkId: tcSelectedNetwork.id,
-          networkName: tcSelectedNetwork.name,
-          address: contract.address,
-          name: readName,
-          symbol: readSymbol,
-          decimals: readDecimals,
-          initialSupply: tcSupply.trim() || '-',
-          deployer: wallet.address,
-          txHash: contract.deployTransaction.hash,
-          createdAt: Date.now(),
-        };
-        setErc20Tokens(prev => [newToken, ...prev]);
+          const newToken: DeployedErc20Token = {
+            id: Date.now().toString(),
+            chainId: tcSelectedNetwork.chainId,
+            networkId: tcSelectedNetwork.id,
+            networkName: tcSelectedNetwork.name,
+            address: contract.address,
+            name: readName,
+            symbol: readSymbol,
+            decimals: readDecimals,
+            initialSupply: readSupply,
+            deployer: wallet.address,
+            txHash: contract.deployTransaction.hash,
+            createdAt: Date.now(),
+          };
+          setErc20Tokens(prev => [newToken, ...prev]);
+        } else {
+          const newContract: DeployedCustomContract = {
+            id: Date.now().toString(),
+            chainId: tcSelectedNetwork.chainId,
+            networkId: tcSelectedNetwork.id,
+            networkName: tcSelectedNetwork.name,
+            address: contract.address,
+            contractName: tcCompiled.contractName,
+            deployer: wallet.address,
+            txHash: contract.deployTransaction.hash,
+            constructorArgs: tcCustomCtorArgs || '[]',
+            createdAt: Date.now(),
+          };
+          setCustomContracts(prev => [newContract, ...prev]);
+        }
         setTcDeployStatus({ type: 'success', msg: `Kontrak berhasil dideploy di ${contract.address}` });
         showAlert(`Kontrak "${tcCompiled.contractName}" berhasil dideploy!`, 'success');
         setTcCustomSolidity(''); setTcCompiled(null); setTcCustomCtorArgs('[]');
@@ -6853,6 +7054,14 @@ export const WalletGenerator: React.FC = () => {
     });
   };
 
+  const deleteCustomContract = (id: string) => {
+    setConfirmData({
+      isOpen: true, title: 'HAPUS DARI DAFTAR?',
+      message: 'Ini hanya menghapus catatan lokal — kontrak tetap ada di blockchain.',
+      action: () => { setCustomContracts(prev => prev.filter(c => c.id !== id)); showAlert('Catatan kontrak dihapus.', 'hapus'); },
+    });
+  };
+
   const deleteSplToken = (id: string) => {
     setConfirmData({
       isOpen: true, title: 'HAPUS DARI DAFTAR?',
@@ -7039,8 +7248,14 @@ export const WalletGenerator: React.FC = () => {
       if (gwei === null || !isFinite(gwei) || gwei <= 0) return null;
       const feeEth = (gwei * effGasLimit) / 1e9;
       if (feeEth === 0) return null;
-      // Tampilkan lebih banyak desimal kalau nilainya sangat kecil.
-      const decimals = feeEth < 0.0001 ? 8 : feeEth < 0.01 ? 6 : 4;
+      // Tampilkan lebih banyak desimal kalau nilainya sangat kecil, sampai maksimal
+      // 18 digit (presisi native ETH) — KHUSUS di estimasi fee EVM ini saja, bukan
+      // format angka di bagian lain (Token Creator, Cosmos, dll tetap pakai skala sendiri).
+      const decimals =
+        feeEth < 0.000000000001 ? 18 :
+        feeEth < 0.000001       ? 12 :
+        feeEth < 0.0001         ? 9  :
+        feeEth < 0.01           ? 6  : 4;
       return feeEth.toFixed(decimals);
     };
 
@@ -7050,7 +7265,7 @@ export const WalletGenerator: React.FC = () => {
       : estimateFeeEth(currentGwei);
 
     return (
-      <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px' }}>
+      <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px', maxWidth:'480px', width:'100%', boxSizing:'border-box', margin:'0 auto' }}>
         <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:'8px', flexWrap:'wrap' }}>
           <div style={{ display:'flex', alignItems:'center', gap:'8px', fontSize:'12px', color:'#888', flexWrap:'wrap' }}>
             <FaGasPump size={11} color="#f3ba2f"/>
@@ -7078,7 +7293,7 @@ export const WalletGenerator: React.FC = () => {
                 <FaSync size={9} style={{ animation:txFetchingGas?'spin 1s linear infinite':undefined }}/> {txFetchingGas ? 'Fetching...' : 'Refresh Gas'}
               </button>
             </div>
-            <div style={{ display:'grid', gridTemplateColumns:'repeat(4,1fr)', gap:'6px', marginBottom:'10px' }}>
+            <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(92px,1fr))', gap:'6px', marginBottom:'10px' }}>
               {(['slow','standard','fast','manual'] as const).map(mode => {
                 const gpVal = txGasPrices ? {
                   slow: txGasPrices.slow, standard: txGasPrices.standard, fast: txGasPrices.fast, manual: null,
@@ -7089,13 +7304,15 @@ export const WalletGenerator: React.FC = () => {
                     border:`1px solid ${txGasMode===mode ? '#f3ba2f' : '#1e1e1e'}`,
                     color: txGasMode===mode ? '#f3ba2f' : '#555',
                     cursor:'pointer', fontSize:'11px', textAlign:'center', transition:'all 0.15s',
+                    minWidth:0, overflow:'hidden',
                   }}>
                     <div style={{ fontWeight:'bold', marginBottom:'2px' }}>{modeLabels[mode]}</div>
                     {mode !== 'manual' && gpVal !== null && (
                       <>
-                        <div style={{ fontSize:'10px', color:'#888', fontFamily:'monospace' }}>{gpVal.toFixed(2)} Gwei</div>
+                        <div style={{ fontSize:'10px', color:'#888', fontFamily:'monospace', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>{gpVal.toFixed(2)} Gwei</div>
                         {estimateFeeEth(gpVal) !== null && (
-                          <div style={{ fontSize:'9px', color:'#4caf50', fontFamily:'monospace', marginTop:'1px' }}>
+                          <div title={`≈${estimateFeeEth(gpVal)} ${nativeSymbol}`}
+                            style={{ fontSize:'9px', color:'#4caf50', fontFamily:'monospace', marginTop:'1px', whiteSpace:'nowrap', overflow:'hidden', textOverflow:'ellipsis' }}>
                             ≈{estimateFeeEth(gpVal)} {nativeSymbol}
                           </div>
                         )}
@@ -7282,7 +7499,7 @@ export const WalletGenerator: React.FC = () => {
     gramSwapPickerOpen, setGramSwapPickerOpen, gramSwapPickerSearch, setGramSwapPickerSearch, 
     gramSwapPickAsset, gramSwapFlip, gramExecuteSwap, gramSwapMaxLoading, gramSwapSetMaxAmount, 
     checkAllBalances, checkAllSolBalances, checkAllTronBalances, checkAllSuiBalances, checkAllAptBalances, compileTcCustomContract, copiedKey, copyText, 
-    createSplToken, csvExporting, customMnemonic, deleteAirdropTask, deleteErc20Token, deleteSplToken, 
+    createSplToken, csvExporting, customContracts, customMnemonic, mnemonicSuggestions, handleMnemonicChange, applyMnemonicSuggestion, deleteAirdropTask, deleteCustomContract, deleteErc20Token, deleteSplToken, 
     deleteWallet, deployErc20Token, deployTrc20Token, deriveMore, editAirdropTask, entropyBits, erc20Tokens, 
     estimateTcEvmGas, estimateTcSolFee, estimateTcTronFee, ethers, execContract, execGasLimit, execLog, execMode, 
     execNetId, execPrivKey, execRawData, execRawTo, execRawVal, execReadResult, execRunning, execSimFailed, 
@@ -7356,6 +7573,10 @@ export const WalletGenerator: React.FC = () => {
     txSendTo, txSending, txSetMaxAmount, txStatus, txStatusColor, txWalletSel, txSendAssetMode, 
     txWalletHistory, txWalletHistoryLoading, txWalletHistoryError, txLoadWalletHistory,
     txTokenDetail, txTokenDetailLoading, txTokenDetailError,
+    txApproveSpender, setTxApproveSpender, txApproveAmt, setTxApproveAmt,
+    txApproveUnlimited, setTxApproveUnlimited, txApproving, txRevokingSpender,
+    txApproveStatus, setTxApproveStatus, txAllowanceResult, txAllowanceChecking,
+    txCheckAllowance, txApproveToken, txRevokeApproval, txApprovalHistoryForToken,
     walletName, wallets,
     SUI_NETWORK, SUI_NETWORKS, suiAddress, suiBalance, suiConnect, suiConnected, suiConnecting, suiDisconnect,
     suiLoadingBal, suiMaxLoading, suiNetId, suiPrivKey, setSuiPrivKey, suiRefreshBalance, suiSend, suiSendAmt, setSuiSendAmt, suiSendTo, setSuiSendTo, suiSending,
