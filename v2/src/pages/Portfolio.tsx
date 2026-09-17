@@ -8,7 +8,6 @@ import {
   FaExchangeAlt, FaTimes, FaArrowRight,
 } from 'react-icons/fa';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
 const STATUS_COLORS: Record<PortfolioToken['status'], string> = {
   holding: '#4caf50', sold: '#888', vesting: '#f3ba2f',
 };
@@ -21,7 +20,6 @@ const emptyForm: Omit<PortfolioToken, 'id'> = {
   status: 'holding', catatan: '',
 };
 
-// ─── Ref ID & Timestamp helpers ──────────────────────────────────────────────
 function generateRefId(): string {
   const now = new Date();
   const date = now.toISOString().slice(0, 10).replace(/-/g, '');
@@ -36,7 +34,6 @@ function generateTimestamp(): string {
   });
 }
 
-// ─── CoinGecko helpers ────────────────────────────────────────────────────────
 const SYMBOL_TO_ID: Record<string, string> = {
   BTC: 'bitcoin', ETH: 'ethereum', BNB: 'binancecoin', SOL: 'solana',
   MATIC: 'matic-network', POL: 'matic-network', ARB: 'arbitrum',
@@ -84,7 +81,6 @@ async function fetchLivePrices(symbols: string[]): Promise<LivePriceMap> {
   return result;
 }
 
-// ─── CoinGecko search suggestion type ────────────────────────────────────────
 interface CoinSuggestion {
   id: string;
   name: string;
@@ -102,7 +98,6 @@ async function searchCoins(query: string): Promise<CoinSuggestion[]> {
   } catch { return []; }
 }
 
-// ─── CoinSearchInput component ────────────────────────────────────────────────
 interface CoinSearchInputProps {
   value: string;
   onChange: (symbol: string) => void;
@@ -121,7 +116,6 @@ const CoinSearchInput: React.FC<CoinSearchInputProps> = ({
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
-  // Debounced search
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     if (!value || value.length < 1) { setSuggestions([]); setOpen(false); return; }
@@ -135,7 +129,6 @@ const CoinSearchInput: React.FC<CoinSearchInputProps> = ({
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
   }, [value]);
 
-  // Close on outside click
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (wrapperRef.current && !wrapperRef.current.contains(e.target as Node)) setOpen(false);
@@ -242,14 +235,12 @@ const CoinSearchInput: React.FC<CoinSearchInputProps> = ({
   );
 };
 
-// ─── Swap History type ────────────────────────────────────────────────────────
 interface SwapRecord {
   id: string; tanggal: string; timestamp: string; refId: string; memo: string;
   fromSymbol: string; fromAmount: number; fromPriceUsd: number;
   toSymbol: string; toAmount: number; toPriceUsd: number; valueUsd: number;
 }
 
-// ─── SwapModal ────────────────────────────────────────────────────────────────
 interface SwapModalProps {
   tokens: PortfolioToken[];
   livePrices: LivePriceMap;
@@ -301,7 +292,6 @@ const SwapModal: React.FC<SwapModalProps> = ({ tokens, livePrices, onClose, onSw
     setToSymbolInput(sym);
     setToProjectInput(coin.name);
     setToPriceFetched(null); setToPriceError(''); setUseManualPrice(false);
-    // Auto-fetch price after selection
     setTimeout(() => handleFetchToPrice(sym), 100);
   };
 
@@ -468,7 +458,6 @@ const SwapModal: React.FC<SwapModalProps> = ({ tokens, livePrices, onClose, onSw
   );
 };
 
-// ─── Export CSV helper ────────────────────────────────────────────────────────
 function exportSwapCSV(history: SwapRecord[]) {
   const headers = ['Ref ID', 'Timestamp', 'Tanggal', 'Dari', 'Jumlah Dari', 'Harga Dari (USD)', 'Ke', 'Jumlah Ke', 'Harga Ke (USD)', 'Nilai (USD)', 'Memo'];
   const rows = history.map(s => [
@@ -501,7 +490,6 @@ function exportTokenCSV(tokens: PortfolioToken[]) {
   a.click(); URL.revokeObjectURL(url);
 }
 
-// ─── SwapHistoryModal ─────────────────────────────────────────────────────────
 const SwapHistoryModal: React.FC<{ history: SwapRecord[]; onClose: () => void; onClear: () => void; }> = ({ history, onClose, onClear }) => (
   <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
     <div style={{ background: '#111', border: '1px solid #2a2a2a', padding: '24px', width: '100%', maxWidth: '600px', maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
@@ -560,7 +548,6 @@ const SwapHistoryModal: React.FC<{ history: SwapRecord[]; onClose: () => void; o
   </div>
 );
 
-// ─── Main Portfolio Component ─────────────────────────────────────────────────
 export const Portfolio: React.FC = () => {
   const [tokens, setTokens] = useState<PortfolioToken[]>(() => {
     try { return JSON.parse(localStorage.getItem('portfolioTokens') || '[]'); } catch { return []; }
@@ -612,7 +599,6 @@ export const Portfolio: React.FC = () => {
     return () => clearInterval(interval);
   }, [fetchPrices]);
 
-  // ── Swap handler ───────────────────────────────────────────────────────────
   const handleSwap = (
     fromId: string, fromAmountUsed: number,
     toSymbol: string, toProjectName: string, toNetwork: string,
@@ -699,12 +685,11 @@ export const Portfolio: React.FC = () => {
     setPinnedIds(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; });
   };
 
-  // CoinGecko autofill for add form
   const handleFormCoinSelect = (coin: CoinSuggestion) => {
     setForm(p => ({
       ...p,
       tokenSymbol: coin.symbol.toUpperCase(),
-      projectName: p.projectName || coin.name, // only autofill if empty
+      projectName: p.projectName || coin.name,
     }));
     setCheckedPrice(null);
     setCheckPriceError('');
