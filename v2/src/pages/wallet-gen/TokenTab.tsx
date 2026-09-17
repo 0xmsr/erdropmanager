@@ -7,10 +7,10 @@ import { getEvmTokenStandardLabel } from './helpers';
 
 export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
   const {
-    FaCheckCircle, FaCode, FaCoins, FaCopy, FaFileCode, FaGasPump, FaGlobe, FaHashtag, FaInfoCircle, 
+    FaCalendarAlt, FaCheckCircle, FaChevronDown, FaChevronUp, FaCode, FaCoins, FaCopy, FaFileCode, FaGasPump, FaGlobe, FaHashtag, FaInfoCircle, 
     FaKey, FaLink, FaList, FaRocket, FaSpinner, FaSync, FaTerminal, FaTrash, FaUpload, 
     LAMPORTS_PER_SOL, SOLANA_NETWORKS, TRON_NETWORKS, activeTab, compileTcCustomContract, copiedKey, 
-    copyText, createSplToken, deleteErc20Token, deleteSplToken, deployErc20Token, deployTrc20Token, 
+    copyText, createSplToken, customContracts = [], deleteCustomContract = () => {}, deleteErc20Token, deleteSplToken, deployErc20Token, deployTrc20Token, 
     erc20Tokens, estimateTcEvmGas, estimateTcSolFee, estimateTcTronFee, handleTcSolImageFile, 
     handleTcSolWalletSel, handleTcTronWalletSel, handleTcWalletSel, networks, refreshPendingTrc20, 
     setTcChain, setTcCompileError, setTcCompiled, setTcCustomCtorArgs, setTcCustomSolidity, 
@@ -36,6 +36,13 @@ export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     tcGramImageUrl, setTcGramImageUrl, handleTcGramImageFile, tcGramImageUploading, tcGramCreating, tcGramStatus,
     tcGramFeeGram, tcGramFeeDetail, tcGramFeeLoading, tcGramFeeError, tcGramSelectedNetwork, tcGramMetaPreview,
   } = ctx;
+
+  // Detail deploy (deployer, tx hash, tanggal, chain id) di-collapse per-kartu supaya
+  // list token yang sudah dideploy nggak kepanjangan — user tinggal klik "Detail" buat expand.
+  const [expandedTokenIds, setExpandedTokenIds] = React.useState<Record<string, boolean>>({});
+  const toggleTokenDetail = (id: string) => setExpandedTokenIds(prev => ({ ...prev, [id]: !prev[id] }));
+  const [expandedContractIds, setExpandedContractIds] = React.useState<Record<string, boolean>>({});
+  const toggleContractDetail = (id: string) => setExpandedContractIds(prev => ({ ...prev, [id]: !prev[id] }));
 
   return (
         <>
@@ -338,31 +345,209 @@ export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                   <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))', gap:'12px' }}>
                     {erc20Tokens.map(t => {
                       const net = networks.find(n => n.id === t.networkId);
+                      const isExpanded = !!expandedTokenIds[t.id];
                       return (
                         <div key={t.id} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:`3px solid #01a2ff`, padding:'14px', display:'flex', flexDirection:'column', gap:'8px' }}>
                           <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
                             <div>
                               <div style={{ fontWeight:'bold', fontSize:'13px' }}>{t.name} <span style={{ color:'#555' }}>({t.symbol})</span></div>
-                              <div style={{ fontSize:'10px', color:'#444', marginTop:'2px' }}>{t.networkName} · {t.decimals} dec · supply {Number(t.initialSupply).toLocaleString()}</div>
+                              <div style={{ fontSize:'10px', color:'#444', marginTop:'2px' }}>
+                                {t.networkName} <span style={{ color:'#2a2a2a' }}>·</span> Chain ID {t.chainId} <span style={{ color:'#2a2a2a' }}>·</span> {t.decimals} dec <span style={{ color:'#2a2a2a' }}>·</span> supply {Number(t.initialSupply).toLocaleString()}
+                              </div>
                             </div>
                             <button onClick={() => deleteErc20Token(t.id)} title="Hapus catatan"
-                              style={{ background:'none', border:'1px solid #333', color:'#f44336', padding:'4px 7px', cursor:'pointer', fontSize:'11px' }}><FaTrash/></button>
+                              style={{ background:'none', border:'1px solid #333', color:'#f44336', padding:'4px 7px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}><FaTrash/></button>
                           </div>
-                          <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
-                            <code style={{ flex:1, fontSize:'10px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'5px 8px', border:'1px solid #141414' }}>
-                              {t.address}
-                            </code>
-                            <button onClick={() => copyText(t.address, `erc20_${t.id}`)} title="Salin address"
-                              style={{ background:'none', border:'none', color:copiedKey===`erc20_${t.id}`?'#4caf50':'#333', cursor:'pointer', padding:'3px', flexShrink:0 }}>
-                              {copiedKey===`erc20_${t.id}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
-                            </button>
+
+                          <div>
+                            <div style={{ fontSize:'9px', color:'#3a3a3a', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'3px' }}>Contract Address</div>
+                            <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                              <code style={{ flex:1, fontSize:'10px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'5px 8px', border:'1px solid #141414' }}>
+                                {t.address}
+                              </code>
+                              <button onClick={() => copyText(t.address, `erc20_${t.id}`)} title="Salin address"
+                                style={{ background:'none', border:'none', color:copiedKey===`erc20_${t.id}`?'#4caf50':'#333', cursor:'pointer', padding:'3px', flexShrink:0 }}>
+                                {copiedKey===`erc20_${t.id}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
+                              </button>
+                            </div>
                           </div>
-                          {net?.explorerUrl && (
-                            <a href={`${net.explorerUrl}/address/${t.address}`} target="_blank" rel="noreferrer"
-                              style={{ fontSize:'11px', color:'#01a2ff', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px' }}>
-                              <FaLink size={10}/> Lihat di Explorer
-                            </a>
+
+                          {isExpanded && (
+                            <div style={{ display:'flex', flexDirection:'column', gap:'8px', paddingTop:'8px', borderTop:'1px solid #1a1a1a' }}>
+                              <div>
+                                <div style={{ fontSize:'9px', color:'#3a3a3a', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'3px' }}>
+                                  <FaKey style={{ marginRight:'4px' }} size={8}/>Deployer
+                                </div>
+                                <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                                  <code style={{ flex:1, fontSize:'10px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'5px 8px', border:'1px solid #141414' }}>
+                                    {t.deployer || '-'}
+                                  </code>
+                                  {t.deployer && (
+                                    <button onClick={() => copyText(t.deployer, `erc20deployer_${t.id}`)} title="Salin address deployer"
+                                      style={{ background:'none', border:'none', color:copiedKey===`erc20deployer_${t.id}`?'#4caf50':'#333', cursor:'pointer', padding:'3px', flexShrink:0 }}>
+                                      {copiedKey===`erc20deployer_${t.id}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div>
+                                <div style={{ fontSize:'9px', color:'#3a3a3a', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'3px' }}>
+                                  <FaHashtag style={{ marginRight:'4px' }} size={8}/>TX Hash Deploy
+                                </div>
+                                <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                                  <code style={{ flex:1, fontSize:'10px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'5px 8px', border:'1px solid #141414' }}>
+                                    {t.txHash || '-'}
+                                  </code>
+                                  {t.txHash && (
+                                    <button onClick={() => copyText(t.txHash, `erc20tx_${t.id}`)} title="Salin TX hash"
+                                      style={{ background:'none', border:'none', color:copiedKey===`erc20tx_${t.id}`?'#4caf50':'#333', cursor:'pointer', padding:'3px', flexShrink:0 }}>
+                                      {copiedKey===`erc20tx_${t.id}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div style={{ fontSize:'10px', color:'#555', display:'flex', alignItems:'center', gap:'5px' }}>
+                                <FaCalendarAlt size={10}/> Dideploy {new Date(t.createdAt).toLocaleString('id-ID')}
+                              </div>
+                            </div>
                           )}
+
+                          <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop: isExpanded ? '0' : '2px' }}>
+                            <button onClick={() => toggleTokenDetail(t.id)}
+                              style={{ fontSize:'11px', color:'#888', border:'1px solid #1e1e1e', padding:'5px 10px', cursor:'pointer', background:'none', display:'flex', alignItems:'center', gap:'4px' }}>
+                              {isExpanded ? <><FaChevronUp size={9}/> Tutup Detail</> : <><FaChevronDown size={9}/> Detail</>}
+                            </button>
+                            {net?.explorerUrl && (
+                              <a href={`${net.explorerUrl}/address/${t.address}`} target="_blank" rel="noreferrer"
+                                style={{ fontSize:'11px', color:'#01a2ff', textDecoration:'none', border:'1px solid #01a2ff30', padding:'5px 10px', display:'flex', alignItems:'center', gap:'4px' }}>
+                                <FaLink size={10}/> Explorer
+                              </a>
+                            )}
+                            {net?.explorerUrl && t.txHash && (
+                              <a href={`${net.explorerUrl}/tx/${t.txHash}`} target="_blank" rel="noreferrer"
+                                style={{ fontSize:'11px', color:'#4caf50', textDecoration:'none', border:'1px solid #4caf5030', padding:'5px 10px', display:'flex', alignItems:'center', gap:'4px' }}>
+                                <FaLink size={10}/> TX Deploy
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {customContracts.length > 0 && (
+                <div style={{ marginBottom:'20px' }}>
+                  <h3 style={{ fontSize:'11px', textTransform:'uppercase', letterSpacing:'1.5px', color:'#ffaa00', marginBottom:'4px' }}>
+                    <FaFileCode style={{ marginRight:'6px' }}/>Kontrak Kustom yang Sudah Dideploy ({customContracts.length})
+                  </h3>
+                  <p style={{ fontSize:'10px', color:'#444', marginTop:0, marginBottom:'10px' }}>
+                    Kontrak di sini bukan token ERC-20 (ABI-nya nggak lolos cek standar) — misalnya vault, bank, atau kontrak custom lain.
+                  </p>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))', gap:'12px' }}>
+                    {customContracts.map(c => {
+                      const net = networks.find(n => n.id === c.networkId);
+                      const isExpanded = !!expandedContractIds[c.id];
+                      return (
+                        <div key={c.id} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:`3px solid #ffaa00`, padding:'14px', display:'flex', flexDirection:'column', gap:'8px' }}>
+                          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start' }}>
+                            <div>
+                              <div style={{ fontWeight:'bold', fontSize:'13px' }}>{c.contractName} <span style={{ color:'#555', fontWeight:'normal' }}>(Custom Contract)</span></div>
+                              <div style={{ fontSize:'10px', color:'#444', marginTop:'2px' }}>
+                                {c.networkName} <span style={{ color:'#2a2a2a' }}>·</span> Chain ID {c.chainId}
+                              </div>
+                            </div>
+                            <button onClick={() => deleteCustomContract(c.id)} title="Hapus catatan"
+                              style={{ background:'none', border:'1px solid #333', color:'#f44336', padding:'4px 7px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}><FaTrash/></button>
+                          </div>
+
+                          <div>
+                            <div style={{ fontSize:'9px', color:'#3a3a3a', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'3px' }}>Contract Address</div>
+                            <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                              <code style={{ flex:1, fontSize:'10px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'5px 8px', border:'1px solid #141414' }}>
+                                {c.address}
+                              </code>
+                              <button onClick={() => copyText(c.address, `customc_${c.id}`)} title="Salin address"
+                                style={{ background:'none', border:'none', color:copiedKey===`customc_${c.id}`?'#4caf50':'#333', cursor:'pointer', padding:'3px', flexShrink:0 }}>
+                                {copiedKey===`customc_${c.id}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
+                              </button>
+                            </div>
+                          </div>
+
+                          {isExpanded && (
+                            <div style={{ display:'flex', flexDirection:'column', gap:'8px', paddingTop:'8px', borderTop:'1px solid #1a1a1a' }}>
+                              <div>
+                                <div style={{ fontSize:'9px', color:'#3a3a3a', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'3px' }}>
+                                  <FaKey style={{ marginRight:'4px' }} size={8}/>Deployer
+                                </div>
+                                <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                                  <code style={{ flex:1, fontSize:'10px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'5px 8px', border:'1px solid #141414' }}>
+                                    {c.deployer || '-'}
+                                  </code>
+                                  {c.deployer && (
+                                    <button onClick={() => copyText(c.deployer, `customcdeployer_${c.id}`)} title="Salin address deployer"
+                                      style={{ background:'none', border:'none', color:copiedKey===`customcdeployer_${c.id}`?'#4caf50':'#333', cursor:'pointer', padding:'3px', flexShrink:0 }}>
+                                      {copiedKey===`customcdeployer_${c.id}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div>
+                                <div style={{ fontSize:'9px', color:'#3a3a3a', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'3px' }}>
+                                  <FaHashtag style={{ marginRight:'4px' }} size={8}/>TX Hash Deploy
+                                </div>
+                                <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                                  <code style={{ flex:1, fontSize:'10px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'5px 8px', border:'1px solid #141414' }}>
+                                    {c.txHash || '-'}
+                                  </code>
+                                  {c.txHash && (
+                                    <button onClick={() => copyText(c.txHash, `customctx_${c.id}`)} title="Salin TX hash"
+                                      style={{ background:'none', border:'none', color:copiedKey===`customctx_${c.id}`?'#4caf50':'#333', cursor:'pointer', padding:'3px', flexShrink:0 }}>
+                                      {copiedKey===`customctx_${c.id}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {c.constructorArgs && c.constructorArgs !== '[]' && (
+                                <div>
+                                  <div style={{ fontSize:'9px', color:'#3a3a3a', textTransform:'uppercase', letterSpacing:'0.5px', marginBottom:'3px' }}>
+                                    <FaCode style={{ marginRight:'4px' }} size={8}/>Constructor Args
+                                  </div>
+                                  <code style={{ display:'block', fontSize:'10px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'5px 8px', border:'1px solid #141414' }}>
+                                    {c.constructorArgs}
+                                  </code>
+                                </div>
+                              )}
+
+                              <div style={{ fontSize:'10px', color:'#555', display:'flex', alignItems:'center', gap:'5px' }}>
+                                <FaCalendarAlt size={10}/> Dideploy {new Date(c.createdAt).toLocaleString('id-ID')}
+                              </div>
+                            </div>
+                          )}
+
+                          <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginTop: isExpanded ? '0' : '2px' }}>
+                            <button onClick={() => toggleContractDetail(c.id)}
+                              style={{ fontSize:'11px', color:'#888', border:'1px solid #1e1e1e', padding:'5px 10px', cursor:'pointer', background:'none', display:'flex', alignItems:'center', gap:'4px' }}>
+                              {isExpanded ? <><FaChevronUp size={9}/> Tutup Detail</> : <><FaChevronDown size={9}/> Detail</>}
+                            </button>
+                            {net?.explorerUrl && (
+                              <a href={`${net.explorerUrl}/address/${c.address}`} target="_blank" rel="noreferrer"
+                                style={{ fontSize:'11px', color:'#01a2ff', textDecoration:'none', border:'1px solid #01a2ff30', padding:'5px 10px', display:'flex', alignItems:'center', gap:'4px' }}>
+                                <FaLink size={10}/> Explorer
+                              </a>
+                            )}
+                            {net?.explorerUrl && c.txHash && (
+                              <a href={`${net.explorerUrl}/tx/${c.txHash}`} target="_blank" rel="noreferrer"
+                                style={{ fontSize:'11px', color:'#4caf50', textDecoration:'none', border:'1px solid #4caf5030', padding:'5px 10px', display:'flex', alignItems:'center', gap:'4px' }}>
+                                <FaLink size={10}/> TX Deploy
+                              </a>
+                            )}
+                          </div>
                         </div>
                       );
                     })}
