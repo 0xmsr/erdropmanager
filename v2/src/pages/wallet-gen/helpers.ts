@@ -134,6 +134,30 @@ export function generateMnemonic(bits: 128|160|192|224|256): string {
   return ethers.utils.entropyToMnemonic(entropy);
 }
 
+let bip39WordListCache: string[] | null = null;
+
+export function getBip39WordList(): string[] {
+  if (bip39WordListCache) return bip39WordListCache;
+  const wordlist = ethers.wordlists.en;
+  const words: string[] = [];
+  for (let i = 0; i < 2048; i++) words.push(wordlist.getWord(i));
+  bip39WordListCache = words;
+  return words;
+}
+
+export function getBip39Suggestions(prefix: string, limit = 6): string[] {
+  const p = prefix.trim().toLowerCase();
+  if (!p) return [];
+  const out: string[] = [];
+  for (const word of getBip39WordList()) {
+    if (word.startsWith(p)) {
+      out.push(word);
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
+}
+
 export function deriveAddress(mnemonic: string, index: number): { address: string; privateKey: string } {
   const hdNode = ethers.utils.HDNode.fromMnemonic(mnemonic);
   const child  = hdNode.derivePath(`m/44'/60'/0'/0/${index}`);
