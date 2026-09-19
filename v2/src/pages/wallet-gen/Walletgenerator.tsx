@@ -65,6 +65,11 @@ import {
   sendAptos, aptFriendlyError, APTOS_GAS_BUFFER, type AptosNetworkCfg,
 } from './network/Aptosnet';
 import {
+  deriveAsentumAddress, ASENTUM_NETWORKS, getAsentumBalanceWithFallback, isValidAsentumAddress,
+  sendAsentum, aseFriendlyError, ASENTUM_GAS_BUFFER, asentumAddressFromPrivateKey, requestAsentumFaucet, migrateAsentumAddresses,
+  estimateAsentumFee, type AsentumNetworkCfg, type AsentumFeeEstimate,
+} from './network/Asentumnet';
+import {
   deriveGramAddress, GRAM_NETWORKS, GRAM_WALLET_VERSIONS, getGramBalanceWithFallback,
   isValidGramAddress, gramAddressFromPrivateKey, sendGram, gramFriendlyError,
   estimateGramFee, estimateGramMaxSendable, type GramNetworkCfg, type GramFeeEstimate,
@@ -480,6 +485,19 @@ export const WalletGenerator: React.FC = () => {
           } catch { next = { ...next, aptAddresses: next.aptAddresses || [] }; }
         }
 
+        if (!next.aseAddresses || next.aseAddresses.length === 0) {
+          try {
+            const aseAddresses = next.addresses.map(a => ({ index: a.index, ...deriveAsentumAddress(next.mnemonic, a.index) }));
+            next = { ...next, aseAddresses };
+          } catch { next = { ...next, aseAddresses: next.aseAddresses || [] }; }
+        }
+
+        // Migrasi paksa: key ASE lama ("secret:public") → seed 64 hex (recovery key).
+        if (!next.isTonNative && next.aseAddresses && next.aseAddresses.length > 0) {
+          const mig = migrateAsentumAddresses(next.mnemonic, next.aseAddresses);
+          if (mig.changed) next = { ...next, aseAddresses: mig.list };
+        }
+
         if (next.gramAddress === undefined || (!gramNativeDerivFixed && next.gramAddress)) {
           next = { ...next, gramAddress: undefined };
         }
@@ -781,6 +799,25 @@ export const WalletGenerator: React.FC = () => {
   const [aptMaxLoading, setAptMaxLoading] = useState(false);
   const [aptWalletSel,  setAptWalletSel]  = useState('');
   const [aptStatus,     setAptStatus]     = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
+
+  const [aseNetId,       setAseNetId]       = useState('testnet');
+  const ASENTUM_NETWORK = ASENTUM_NETWORKS.find(n => n.id === aseNetId) ?? ASENTUM_NETWORKS[0];
+  const [asePrivKey,    setAsePrivKey]    = useState('');
+  const [aseConnected,  setAseConnected]  = useState(false);
+  const [aseConnecting, setAseConnecting] = useState(false);
+  const [aseAddress,    setAseAddress]    = useState('');
+  const [aseBalance,    setAseBalance]    = useState('—');
+  const [aseLoadingBal, setAseLoadingBal] = useState(false);
+  const [aseSendTo,     setAseSendTo]     = useState('');
+  const [aseSendAmt,    setAseSendAmt]    = useState('');
+  const [aseSending,    setAseSending]    = useState(false);
+  const [aseMaxLoading, setAseMaxLoading] = useState(false);
+  const [aseWalletSel,  setAseWalletSel]  = useState('');
+  const [aseStatus,     setAseStatus]     = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
+  const [aseFaucetLoading, setAseFaucetLoading] = useState(false);
+  const [aseFeeEstimate,      setAseFeeEstimate]      = useState<AsentumFeeEstimate | null>(null);
+  const [aseFeeEstimating,    setAseFeeEstimating]    = useState(false);
+  const [aseFeeEstimateError, setAseFeeEstimateError] = useState<string | null>(null);
 
   const [atomNetId,       setAtomNetId]       = useState('cosmoshub-mainnet');
   const COSMOS_NETWORK = COSMOS_NETWORKS.find(n => n.id === atomNetId) ?? COSMOS_NETWORKS[0];
@@ -2138,6 +2175,31 @@ export const WalletGenerator: React.FC = () => {
     setBalChecking(false);
   };
 
+  const checkAllAseBalances = async () => {
+    const allAse = wallets.flatMap(w => (w.aseAddresses || []).map(a => ({ walletName: w.name, ...a })));
+    if (allAse.length === 0) { showAlert('Belum ada address Asentum untuk dicek.', 'error'); return; }
+    setBalChecking(true);
+    const init: Record<string, { balance: string; loading: boolean; error: boolean }> = {};
+    allAse.forEach(a => { init[a.address] = { balance: '...', loading: true, error: false }; });
+    setBalResults(prev => ({ ...prev, ...init }));
+    const net = ASENTUM_NETWORKS[0];
+    const CONCURRENCY = 5;
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < allAse.length) {
+        const a = allAse[cursor++];
+        try {
+          const ase = await getAsentumBalanceWithFallback(net, a.address);
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: ase.toFixed(6) + ' ASE', loading: false, error: false } }));
+        } catch {
+          setBalResults(prev => ({ ...prev, [a.address]: { balance: 'Error', loading: false, error: true } }));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, allAse.length) }, worker));
+    setBalChecking(false);
+  };
+
   const checkAllGramBalances = async () => {
     // PENTING: sebelumnya fungsi ini SELALU pakai w.gramAddress.address apa
     // adanya — yaitu address sesuai versi (v4/v5r1) yang KEBETULAN tersimpan
@@ -2503,6 +2565,7 @@ export const WalletGenerator: React.FC = () => {
       pushRows('ATOM', w.atomAddresses || []);
       pushRows('SUI', w.suiAddresses || []);
       pushRows('APT', w.aptAddresses || []);
+      pushRows('ASE', w.aseAddresses || []);
       pushRows('GRAM', w.gramAddress ? [{ index: 0, address: w.gramAddress.address, privateKey: w.gramAddress.privateKey }] : []);
     });
     const csv = rows.map(r => r.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -2563,7 +2626,7 @@ export const WalletGenerator: React.FC = () => {
         const derivedGram = await deriveGramFromTonMnemonic(words, gramVersion);
         const newWallet: BIP39Wallet = {
           id: Date.now().toString(), name: walletName.trim() || `Wallet TON #${wallets.length + 1}`,
-          mnemonic: words.join(' '), addresses: [], solAddresses: [], tronAddresses: [], axmAddresses: [], atomAddresses: [], suiAddresses: [], aptAddresses: [],
+          mnemonic: words.join(' '), addresses: [], solAddresses: [], tronAddresses: [], axmAddresses: [], atomAddresses: [], suiAddresses: [], aptAddresses: [], aseAddresses: [],
           gramAddress: derivedGram, isTonNative: true, createdAt: Date.now(), tags: [], note: '',
         };
         setWallets(prev => [newWallet, ...prev]);
@@ -2600,6 +2663,7 @@ export const WalletGenerator: React.FC = () => {
       const atomAddresses: BIP39Wallet['addresses'] = [];
       const suiAddresses: BIP39Wallet['addresses'] = [];
       const aptAddresses: BIP39Wallet['addresses'] = [];
+      const aseAddresses: BIP39Wallet['addresses'] = [];
       for (let i = 0; i < addressCount; i++) {
         const { address, privateKey } = deriveAddress(mnemonic, i);
         addresses.push({ index: i, address, privateKey });
@@ -2615,12 +2679,14 @@ export const WalletGenerator: React.FC = () => {
         suiAddresses.push({ index: i, address: sui.address, privateKey: sui.privateKey });
         const apt = deriveAptosAddress(mnemonic, i);
         aptAddresses.push({ index: i, address: apt.address, privateKey: apt.privateKey });
+        const ase = deriveAsentumAddress(mnemonic, i);
+        aseAddresses.push({ index: i, address: ase.address, privateKey: ase.privateKey });
       }
       // Gram (TON): cuma 1 keypair per wallet (bukan per-index) — lihat catatan di Gramnet.ts.
       const derivedGram = await deriveGramAddress(mnemonic, 0, gramVersion);
       const newWallet: BIP39Wallet = {
         id: Date.now().toString(), name: walletName.trim() || `Wallet #${wallets.length + 1}`,
-        mnemonic, addresses, solAddresses, tronAddresses, axmAddresses, atomAddresses, suiAddresses, aptAddresses, gramAddress: derivedGram, createdAt: Date.now(), tags: [], note: '',
+        mnemonic, addresses, solAddresses, tronAddresses, axmAddresses, atomAddresses, suiAddresses, aptAddresses, aseAddresses, gramAddress: derivedGram, createdAt: Date.now(), tags: [], note: '',
       };
       setWallets(prev => [newWallet, ...prev]);
       setExpandedId(newWallet.id);
@@ -2653,6 +2719,8 @@ export const WalletGenerator: React.FC = () => {
       const existingSui = new Set(newSuiAddrs.map(a => a.index));
       const newAptAddrs = [...(w.aptAddresses || [])];
       const existingApt = new Set(newAptAddrs.map(a => a.index));
+      const newAseAddrs = [...(w.aseAddresses || [])];
+      const existingAse = new Set(newAseAddrs.map(a => a.index));
       for (let i = 0; i <= nextIndex; i++) {
         if (!existing.has(i)) {
           const { address, privateKey } = deriveAddress(w.mnemonic, i);
@@ -2682,6 +2750,10 @@ export const WalletGenerator: React.FC = () => {
           const apt = deriveAptosAddress(w.mnemonic, i);
           newAptAddrs.push({ index: i, address: apt.address, privateKey: apt.privateKey });
         }
+        if (!existingAse.has(i)) {
+          const ase = deriveAsentumAddress(w.mnemonic, i);
+          newAseAddrs.push({ index: i, address: ase.address, privateKey: ase.privateKey });
+        }
       }
       newAddrs.sort((a, b) => a.index - b.index);
       newSolAddrs.sort((a, b) => a.index - b.index);
@@ -2690,9 +2762,10 @@ export const WalletGenerator: React.FC = () => {
       newAtomAddrs.sort((a, b) => a.index - b.index);
       newSuiAddrs.sort((a, b) => a.index - b.index);
       newAptAddrs.sort((a, b) => a.index - b.index);
+      newAseAddrs.sort((a, b) => a.index - b.index);
       // TON tidak ikut "turunkan address" di sini — algoritma native TON cuma menghasilkan
       // 1 keypair per mnemonic (persis seperti Tonkeeper), bukan banyak address per index.
-      setWallets(prev => prev.map(x => x.id === walletId ? { ...x, addresses: newAddrs, solAddresses: newSolAddrs, tronAddresses: newTronAddrs, axmAddresses: newAxmAddrs, atomAddresses: newAtomAddrs, suiAddresses: newSuiAddrs, aptAddresses: newAptAddrs } : x));
+      setWallets(prev => prev.map(x => x.id === walletId ? { ...x, addresses: newAddrs, solAddresses: newSolAddrs, tronAddresses: newTronAddrs, axmAddresses: newAxmAddrs, atomAddresses: newAtomAddrs, suiAddresses: newSuiAddrs, aptAddresses: newAptAddrs, aseAddresses: newAseAddrs } : x));
       showAlert('Address berhasil diturunkan!', 'success');
     } catch (e: any) { showAlert('Gagal: ' + e.message, 'error'); }
     setGenerating(false);
@@ -4113,6 +4186,195 @@ export const WalletGenerator: React.FC = () => {
       showAlert('Gagal menghitung jumlah maksimum: ' + aptFriendlyError(e), 'error');
     }
     setAptMaxLoading(false);
+  };
+
+  // ══════════════════════════════════════════════════════════════════════
+  // ── Asentum (ASE): Send & Receive — pola identik dengan Aptos di atas,
+  //    tapi lewat Asentumnet.ts (post-quantum ML-DSA-65 via @asentum/sdk,
+  //    address bech32 "ase1..."). Testnet only, 1 network saja. ──
+  // ══════════════════════════════════════════════════════════════════════
+  const aseRefreshBalance = async (netOverride?: AsentumNetworkCfg, addr?: string) => {
+    const net     = netOverride ?? ASENTUM_NETWORK;
+    const address = addr ?? aseAddress;
+    if (!address) return;
+    setAseLoadingBal(true);
+    try {
+      const bal = await getAsentumBalanceWithFallback(net, address);
+      setAseBalance(bal.toLocaleString('en-US', { maximumFractionDigits: 6 }) + ' ASE');
+    } catch { setAseBalance('Error'); }
+    setAseLoadingBal(false);
+  };
+
+  // Estimasi gas fee ASE beneran (dari baseFeePerGas block terbaru × gasLimit
+  // transfer, lihat estimateAsentumFee() di Asentumnet.ts) — dipakai buat
+  // ditampilkan di UI Kirim ASE dan buat hitung tombol MAX. Dipanggil tiap
+  // kali connect / ganti network, dan bisa di-refresh manual dari UI.
+  const aseRefreshFeeEstimate = async (netOverride?: AsentumNetworkCfg) => {
+    const net = netOverride ?? ASENTUM_NETWORK;
+    setAseFeeEstimating(true);
+    setAseFeeEstimateError(null);
+    try {
+      const est = await estimateAsentumFee(net);
+      setAseFeeEstimate(est);
+      if (est.isFallback) setAseFeeEstimateError('RPC tidak bisa dibaca — pakai estimasi buffer default.');
+    } catch (e: any) {
+      setAseFeeEstimate(null);
+      setAseFeeEstimateError(e?.message || 'Gagal menghitung estimasi gas fee.');
+    }
+    setAseFeeEstimating(false);
+  };
+
+  const aseConnect = async () => {
+    const pk = asePrivKey.trim();
+    if (!pk) { showAlert('Masukkan private key Asentum dulu (format "secretKeyHex:publicKeyHex" hasil dari WalletGen).', 'error'); return; }
+    setAseConnecting(true);
+    setAseStatus({ type: 'idle', msg: '' });
+    try {
+      const addr = asentumAddressFromPrivateKey(ASENTUM_NETWORK, pk);
+      setAseAddress(addr);
+      setAseConnected(true);
+      await Promise.all([aseRefreshBalance(ASENTUM_NETWORK, addr), aseRefreshFeeEstimate(ASENTUM_NETWORK)]);
+    } catch (e: any) { showAlert('Gagal connect: private key Asentum tidak valid. (' + e.message + ')', 'error'); }
+    setAseConnecting(false);
+  };
+
+  const aseDisconnect = () => {
+    setAseConnected(false);
+    setAseAddress('');
+    setAseBalance('—');
+    setAsePrivKey('');
+    setAseWalletSel('');
+    setAseStatus({ type: 'idle', msg: '' });
+    setAseFeeEstimate(null);
+    setAseFeeEstimateError(null);
+  };
+
+  const switchAseNetwork = async (newId: string) => {
+    setAseNetId(newId);
+    if (!aseConnected || !aseAddress) return;
+    const newNet = ASENTUM_NETWORKS.find(n => n.id === newId) ?? ASENTUM_NETWORKS[0];
+    await Promise.all([aseRefreshBalance(newNet, aseAddress), aseRefreshFeeEstimate(newNet)]);
+  };
+
+  const handleAseWalletSel = (val: string) => {
+    setAseWalletSel(val);
+    if (!val) return;
+    const [wi, ai] = val.split(',').map(Number);
+    const w    = wallets[wi];
+    const addr = w?.aseAddresses?.find(a => a.index === ai);
+    if (addr) setAsePrivKey(addr.privateKey);
+  };
+
+  const aseSend = async () => {
+    if (!aseConnected || !aseAddress) { showAlert('Wallet Asentum tidak terhubung.', 'error'); return; }
+    if (!isValidAsentumAddress(aseSendTo.trim())) { showAlert('Address Asentum tujuan tidak valid.', 'error'); return; }
+    const amt = parseFloat(aseSendAmt);
+    if (isNaN(amt) || amt <= 0) { showAlert('Jumlah tidak valid.', 'error'); return; }
+
+    // Cek saldo vs jumlah + estimasi gas fee sebelum minta konfirmasi, biar user
+    // ga sampai submit tx yang bakal gagal karena kurang buat nutup gas.
+    const feeAse = aseFeeEstimate?.feeAse ?? ASENTUM_GAS_BUFFER;
+    try {
+      const curBalance = await getAsentumBalanceWithFallback(ASENTUM_NETWORK, aseAddress);
+      if (amt + feeAse > curBalance) {
+        showAlert(`Saldo tidak cukup: butuh ${(amt + feeAse).toFixed(18).replace(/0+$/, '').replace(/\.$/, '')} ASE (jumlah + estimasi gas fee), saldo cuma ${curBalance} ASE.`, 'error');
+        return;
+      }
+    } catch { /* kalau cek saldo gagal, biarkan tetap lanjut & biar sendAsentum yang nge-error */ }
+
+    const feeLabel = (feeAse ?? 0).toFixed(18).replace(/0+$/, '').replace(/\.$/, '');
+    const okSend = await requestTxConfirm({
+      title: 'Kirim Transaksi',
+      network: ASENTUM_NETWORK.name,
+      to: aseSendTo,
+      value: `${aseSendAmt} ASE (+ ~${feeLabel} ASE gas fee)`,
+    });
+    if (!okSend) return;
+
+    setAseSending(true);
+    setAseStatus({ type: 'pending', msg: `Mengirim transaksi ke ${ASENTUM_NETWORK.name}...` });
+    try {
+      const txHash = await sendAsentum(ASENTUM_NETWORK, asePrivKey, aseSendTo.trim(), amt);
+      setAseStatus({ type: 'success', msg: 'Transaksi terkirim & terkonfirmasi', hash: txHash });
+      saveTxHistory({
+        taskName: 'Transfer', description: `Kirim ${aseSendAmt} ASE ke ${shortAddr(aseSendTo)} di ${ASENTUM_NETWORK.name}`,
+        to: aseSendTo, value: aseSendAmt, data: '',
+        status: 'success', txHash, timestamp: Date.now(),
+      });
+      setAseSendTo(''); setAseSendAmt('');
+      await aseRefreshBalance();
+      aseRefreshFeeEstimate();
+    } catch (e: any) { setAseStatus({ type: 'error', msg: aseFriendlyError(e) }); }
+    setAseSending(false);
+  };
+
+  // Isi otomatis "Jumlah" dengan saldo ASE maksimum yang bisa dikirim — saldo
+  // dikurangi estimasi gas fee ASE beneran (dari aseRefreshFeeEstimate /
+  // estimateAsentumFee), fallback ke buffer statis ASENTUM_GAS_BUFFER kalau
+  // estimasi fee-nya gagal dibaca dari RPC.
+  const aseSetMaxAmount = async () => {
+    if (!aseConnected || !aseAddress) { showAlert('Connect wallet dulu.', 'error'); return; }
+    setAseMaxLoading(true);
+    try {
+      const [balance, est] = await Promise.all([
+        getAsentumBalanceWithFallback(ASENTUM_NETWORK, aseAddress),
+        estimateAsentumFee(ASENTUM_NETWORK).catch(() => null),
+      ]);
+      if (est) { setAseFeeEstimate(est); setAseFeeEstimateError(est.isFallback ? 'RPC tidak bisa dibaca — pakai estimasi buffer default.' : null); }
+      const fee = est?.feeAse ?? ASENTUM_GAS_BUFFER;
+      const max = balance - fee;
+      if (max <= 0) {
+        showAlert('Saldo tidak cukup untuk menutup biaya gas.', 'error');
+      } else {
+        setAseSendAmt(max.toFixed(6).replace(/0+$/, '').replace(/\.$/, ''));
+      }
+    } catch (e: any) {
+      showAlert('Gagal menghitung jumlah maksimum: ' + aseFriendlyError(e), 'error');
+    }
+    setAseMaxLoading(false);
+  };
+
+  // Faucet testnet ASE — beda dari faucet Solana (yang minta lewat RPC
+  // devnet resmi Solana), ini manggil method wallet SDK resmi
+  // `wallet.requestFaucet()` (BUKAN JSON-RPC generik "asentum_faucet" ke
+  // node — itu balikin "method not found", sudah dikonfirmasi). Karena
+  // method-nya ada di instance wallet, tetap butuh privateKey buat bentuk
+  // wallet-nya, meskipun dana yang di-faucet tetap cuma masuk ke address
+  // ini (bukan keluar / butuh signing transfer apa pun).
+  //
+  // CATATAN setelah laporan "berhasil tapi saldo ga masuk": requestFaucet()
+  // resolve duluan sebelum tx-nya benar-benar ke-mine (mirip sendTransfer()
+  // yang punya .wait() terpisah), dan testnet ini memang dilaporkan suka
+  // lambat/macet — jadi satu kali refresh sesaat setelah resolve seringkali
+  // masih baca saldo lama. Di sini ditangani dengan: (1) tunggu result.wait()
+  // kalau SDK-nya mengembalikan itu, (2) tampilkan hash tx-nya kalau ada
+  // biar bisa dicek manual di explorer, (3) refresh saldo berulang di
+  // background (bukan cuma sekali) selama ~30 detik setelah request.
+  const aseRequestFaucet = async () => {
+    if (!aseConnected || !aseAddress) { showAlert('Connect wallet Asentum dulu.', 'error'); return; }
+    setAseFaucetLoading(true);
+    setAseStatus({ type: 'pending', msg: `Meminta faucet ASE di ${ASENTUM_NETWORK.name}...` });
+    try {
+      const result: any = await requestAsentumFaucet(ASENTUM_NETWORK, asePrivKey);
+      if (result?.wait) { try { await result.wait(); } catch {} }
+      const hash = result?.hash || result?.txHash || undefined;
+      setAseStatus({
+        type: 'success',
+        msg: hash
+          ? 'Faucet diminta & terkirim. Kalau saldo belum berubah, tunggu beberapa detik (testnet ini kadang lambat) lalu klik Refresh — atau cek hash-nya langsung di Explorer.'
+          : 'Faucet diminta (RPC tidak mengembalikan hash tx). Kalau saldo belum berubah setelah ~30 detik, kemungkinan request-nya gagal di sisi chain meskipun tidak error — coba lagi atau cek address ini langsung di Explorer.',
+        hash,
+      });
+      showAlert(`Faucet ASE diminta di ${ASENTUM_NETWORK.name}. Tunggu beberapa detik lalu Refresh kalau saldo belum berubah.`, 'success');
+      await aseRefreshBalance();
+      // Refresh ulang otomatis di background (tidak menahan tombol/loading)
+      // karena confirmation testnet ini bisa telat beberapa detik.
+      [4000, 10000, 20000, 30000].forEach(delay => { setTimeout(() => { aseRefreshBalance(); }, delay); });
+    } catch (e: any) {
+      setAseStatus({ type: 'error', msg: aseFriendlyError(e) });
+      showAlert('Faucet gagal: ' + aseFriendlyError(e), 'error');
+    }
+    setAseFaucetLoading(false);
   };
 
   // ══════════════════════════════════════════════════════════════════════
@@ -7584,6 +7846,10 @@ export const WalletGenerator: React.FC = () => {
     APTOS_NETWORK, APTOS_NETWORKS, aptAddress, aptBalance, aptConnect, aptConnected, aptConnecting, aptDisconnect,
     aptLoadingBal, aptMaxLoading, aptNetId, aptPrivKey, setAptPrivKey, aptRefreshBalance, aptSend, aptSendAmt, setAptSendAmt, aptSendTo, setAptSendTo, aptSending,
     aptSetMaxAmount, aptStatus, aptWalletSel, setAptWalletSel, handleAptWalletSel, switchAptNetwork,
+    ASENTUM_NETWORK, ASENTUM_NETWORKS, aseAddress, aseBalance, aseConnect, aseConnected, aseConnecting, aseDisconnect,
+    aseLoadingBal, aseMaxLoading, aseNetId, asePrivKey, setAsePrivKey, aseRefreshBalance, aseSend, aseSendAmt, setAseSendAmt, aseSendTo, setAseSendTo, aseSending,
+    aseSetMaxAmount, aseStatus, aseWalletSel, setAseWalletSel, handleAseWalletSel, switchAseNetwork, checkAllAseBalances,
+    aseFaucetLoading, aseRequestFaucet, aseFeeEstimate, aseFeeEstimating, aseFeeEstimateError, aseRefreshFeeEstimate,
   };
 
   return (
@@ -8171,7 +8437,7 @@ export const WalletGenerator: React.FC = () => {
 
       <div style={{ display:'flex', gap:'2px', marginBottom:'20px', borderBottom:'1px solid #1e1e1e', overflowX:'auto' }}>
         {([
-          ['wallets',  <FaWallet/>,       'Wallet BIP39'],
+          ['wallets',  <FaWallet/>,       'Wallet'],
           ['transfer', <FaExchangeAlt/>,  'Send / Receive'],
           ['garap',    <FaRobot/>,        'Garap Hub'],
           ['networks', <FaNetworkWired/>, 'RPC Networks'],
