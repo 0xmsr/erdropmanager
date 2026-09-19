@@ -6,6 +6,7 @@ import type { WalletGeneratorCtx, ChainKind } from './types';
 import { CHAIN_OPTIONS } from './constants';
 import { shortAddr } from './helpers';
 import { GRAM_WALLET_VERSIONS, formatGramSwapOutput } from './network/Gramnet';
+import { asentumBech32ToHex } from './network/Asentumnet';
 
 export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
   const {
@@ -27,6 +28,10 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     aptAddress, aptBalance, aptConnect, aptConnected, aptConnecting, aptDisconnect,
     aptLoadingBal, aptMaxLoading, aptNetId, aptPrivKey, setAptPrivKey, aptRefreshBalance, aptSend, aptSendAmt, setAptSendAmt, aptSendTo, setAptSendTo, aptSending, aptSetMaxAmount,
     aptStatus, aptWalletSel, setAptWalletSel, handleAptWalletSel, switchAptNetwork,
+    ASENTUM_NETWORK, ASENTUM_NETWORKS, aseAddress, aseBalance, aseConnect, aseConnected, aseConnecting, aseDisconnect,
+    aseLoadingBal, aseMaxLoading, aseNetId, asePrivKey, setAsePrivKey, aseRefreshBalance, aseSend, aseSendAmt, setAseSendAmt, aseSendTo, setAseSendTo, aseSending, aseSetMaxAmount,
+    aseStatus, aseWalletSel, setAseWalletSel, handleAseWalletSel, switchAseNetwork, aseFaucetLoading, aseRequestFaucet,
+    aseFeeEstimate, aseFeeEstimating, aseFeeEstimateError, aseRefreshFeeEstimate,
     gramAddress, gramBalance, gramConnect, gramConnected, gramConnecting, gramDisconnect, 
     gramLoadingBal, gramNetId, gramPrivKey, gramRefreshBalance, gramSend, gramSendAmt, gramSendTo, 
     gramMemo, setGramMemo, 
@@ -95,6 +100,17 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     txCheckAllowance, txApproveToken, txRevokeApproval, txApprovalHistoryForToken,
   } = ctx;
 
+  // Address hex "0x..." khusus buat request RPC Asentum (getBalance, sendTransfer,
+  // dst di @asentum/sdk) — istilah "RPC address" ini konsisten dipakai di
+  // ekosistem Asentum sendiri (SDK reference & wallet resmi ASENDEX yang juga
+  // nyebut ini "0x representation" yang dipakai buat native RPC request),
+  // bukan address EVM meskipun formatnya sama-sama 0x + 40 hex. Ditampilkan
+  // sebagai info tambahan di samping bentuk bech32 "ase1..." yang jadi
+  // address utama, biar user yang butuh bentuk hex-nya (mis. buat panggil
+  // RPC/kontrak langsung) ga perlu convert manual.
+  let aseHexAddress = '';
+  try { aseHexAddress = aseAddress ? asentumBech32ToHex(aseAddress) : ''; } catch { aseHexAddress = ''; }
+
   const [gramSwapFlipSpin, setGramSwapFlipSpin] = React.useState(false);
   const handleGramSwapFlip = () => {
     setGramSwapFlipSpin(true);
@@ -138,7 +154,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                     </button>
                   );
                 }
-                const chainColor = opt.id === 'sol' ? '#9945FF' : opt.id === 'tron' ? '#EF0027' : opt.id === 'axm' ? '#75bbe9' : opt.id === 'gram' ? '#0088CC' : opt.id === 'sui' ? '#4DA2FF' : opt.id === 'apt' ? '#00D2AA' : '#01a2ff';
+                const chainColor = opt.id === 'sol' ? '#9945FF' : opt.id === 'tron' ? '#EF0027' : opt.id === 'axm' ? '#75bbe9' : opt.id === 'gram' ? '#0088CC' : opt.id === 'sui' ? '#4DA2FF' : opt.id === 'apt' ? '#00D2AA' : opt.id === 'ase' ? '#4949DF' : '#01a2ff';
                 return (
                   <button key={opt.id}
                     onClick={() => setTxChain(opt.id as ChainKind)}
@@ -2404,6 +2420,202 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
 
                   <div style={{ textAlign:'center' }}>
                     <button onClick={aptDisconnect}
+                      style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
+                      Disconnect Wallet
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+
+          {txChain === 'ase' && (
+            <>
+              <div style={{ marginBottom:'16px', display:'flex', gap:'10px', alignItems:'center', flexWrap:'wrap' }}>
+                <select value={aseNetId} onChange={e => switchAseNetwork(e.target.value)}
+                  style={{ flex:'1 1 260px', fontFamily:'monospace', fontSize:'13px', padding:'10px 12px', background:'#0d0d0d', border:'1px solid #1e1e1e', color:'#ccc' }}>
+                  {ASENTUM_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
+                </select>
+                <a href={ASENTUM_NETWORK.explorerUrl} target="_blank" rel="noreferrer"
+                  style={{ fontSize:'11px', color:'#4949DF', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
+                  <FaLink size={9}/> Explorer
+                </a>
+              </div>
+
+              <div style={{ marginBottom:'16px', padding:'10px 12px', background:'#1a1a0d', border:'1px solid #5a5a1e', fontSize:'11px', color:'#ffff88', display:'flex', alignItems:'flex-start', gap:'8px' }}>
+                <FaExclamationTriangle size={12} style={{ flexShrink:0, marginTop:'1px' }}/>
+                <span>Asentum masih testnet post-quantum (Dilithium3/ML-DSA-65) — saldo/kirim tx bisa gagal kalau chain-nya sedang tidak responsif.</span>
+              </div>
+
+              {!aseConnected ? (
+                <div className="form-container" style={{ maxWidth:'420px', margin:'32px auto' }}>
+                  <h2 style={{ textAlign:'center', marginBottom:'18px', fontSize:'15px' }}>
+                    <FaPlug style={{ marginRight:'8px' }}/>Connect ke {ASENTUM_NETWORK.name}
+                  </h2>
+                  {wallets.some(w => (w.aseAddresses||[]).length > 0) && (
+                    <div style={{ marginBottom:'14px' }}>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Asentum tersimpan</label>
+                      <select value={aseWalletSel} onChange={e => handleAseWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
+                        <option value="">-- Pilih address --</option>
+                        {wallets.flatMap((w, wi) =>
+                          (w.aseAddresses||[]).map(a => (
+                            <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
+                              {w.name} · #{a.index} · {a.address.slice(0,14)}...
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+                  )}
+                  <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
+                    <FaKey style={{ marginRight:'4px' }}/>Private Key
+                  </label>
+                  <input
+                    type="password"
+                    placeholder="secretKeyHex:publicKeyHex"
+                    value={asePrivKey}
+                    onChange={e => { setAsePrivKey(e.target.value); setAseWalletSel(''); }}
+                    style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}
+                  />
+                  <button onClick={aseConnect} disabled={aseConnecting || !asePrivKey.trim()}
+                    style={{ width:'100%', padding:'12px', background:aseConnecting?'#0a0a1a':ASENTUM_NETWORK.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:!asePrivKey.trim()?0.5:1 }}>
+                    {aseConnecting
+                      ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Connecting...</>
+                      : <><FaPlug/> Connect</>}
+                  </button>
+                </div>
+              ) : (
+                <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
+
+                  {/* ── Balance / Receive card ── */}
+                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderTop:`2px solid ${ASENTUM_NETWORK.color}`, padding:'20px' }}>
+                    <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', flexWrap:'wrap', gap:'16px' }}>
+                      <div>
+                        <div style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'6px' }}>Saldo</div>
+                        <div style={{ fontSize:'22px', fontWeight:'bold', fontFamily:'monospace' }}>
+                          {aseLoadingBal ? <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> : aseBalance}
+                        </div>
+                      </div>
+                      <div style={{ display:'flex', gap:'8px' }}>
+                        <button onClick={aseRequestFaucet} disabled={aseFaucetLoading}
+                          title={`Minta ASE gratis di ${ASENTUM_NETWORK.name}`}
+                          style={{ background:'none', border:'1px solid #4a3f10', color:'#F1C40F', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
+                          <FaFaucet size={11} style={{ animation:aseFaucetLoading?'spin 1s linear infinite':undefined }}/> {aseFaucetLoading ? 'Meminta...' : 'Faucet ASE'}
+                        </button>
+                        <button onClick={() => aseRefreshBalance()} disabled={aseLoadingBal}
+                          style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
+                          <FaSync size={11} style={{ animation:aseLoadingBal?'spin 1s linear infinite':undefined }}/> Refresh
+                        </button>
+                      </div>
+                    </div>
+                    <div style={{ marginTop:'14px', paddingTop:'14px', borderTop:'1px solid #1a1a1a' }}>
+                      <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                        <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'8px 10px' }}>
+                          {aseAddress}
+                        </code>
+                        <button onClick={() => copyText(aseAddress, 'ase_recv')} style={{ background:'none', border:'1px solid #333', color:copiedKey==='ase_recv'?'#4caf50':'#888', cursor:'pointer', padding:'8px 10px' }}>
+                          {copiedKey==='ase_recv' ? <FaCheckCircle size={12}/> : <FaCopy size={12}/>}
+                        </button>
+                        <button onClick={() => setQrAddress(aseAddress)} style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
+                          <FaQrcode size={12}/>
+                        </button>
+                        <a href={`${ASENTUM_NETWORK.explorerUrl}/address/${aseAddress}`} target="_blank" rel="noreferrer"
+                          style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 10px', display:'flex' }} title="Lihat di Explorer">
+                          <FaLink size={12}/>
+                        </a>
+                      </div>
+                      {aseHexAddress && (
+                        <div style={{ marginTop:'8px', display:'flex', alignItems:'center', gap:'8px' }}>
+                          <span style={{ fontSize:'9px', color:'#555', textTransform:'uppercase', letterSpacing:'0.5px', whiteSpace:'nowrap' }} title='Address RPC Asentum — dipakai @asentum/sdk buat request RPC (getBalance, sendTransfer, dst). Sama akun dengan yang di atas, cuma beda representasi; bukan address EVM walau formatnya mirip.'>
+                            Hex (RPC):
+                          </span>
+                          <code style={{ flex:1, fontSize:'11px', color:'#7a7aff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'6px 10px' }}>
+                            {aseHexAddress}
+                          </code>
+                          <button onClick={() => copyText(aseHexAddress, 'ase_recv_hex')} style={{ background:'none', border:'1px solid #333', color:copiedKey==='ase_recv_hex'?'#4caf50':'#888', cursor:'pointer', padding:'6px 8px', flexShrink:0 }}>
+                            {copiedKey==='ase_recv_hex' ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
+                          </button>
+                          <a href={`${ASENTUM_NETWORK.explorerUrl}/address/${aseHexAddress}`} target="_blank" rel="noreferrer"
+                            style={{ background:'none', border:'1px solid #333', color:'#888', padding:'6px 8px', display:'flex', flexShrink:0 }} title="Lihat di Explorer">
+                            <FaLink size={11}/>
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
+                    <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaPaperPlane style={{ marginRight:'6px' }}/>Kirim ASE</h3>
+                      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
+                      <input placeholder="ase1... atau 0x..." value={aseSendTo} onChange={e => setAseSendTo(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'12px' }}/>
+                      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'4px' }}>
+                        <label style={{ fontSize:'11px', color:'#555' }}>Jumlah (ASE)</label>
+                        <button onClick={aseSetMaxAmount} disabled={aseMaxLoading || !aseConnected}
+                          style={{ background:'none', border:'1px solid #333', color:aseMaxLoading?'#555':ASENTUM_NETWORK.color, padding:'2px 8px', cursor:(aseMaxLoading||!aseConnected)?'not-allowed':'pointer', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.5px', opacity:!aseConnected?0.4:1 }}>
+                          {aseMaxLoading ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : 'MAX'}
+                        </button>
+                      </div>
+                      <input type="number" placeholder="0.0" value={aseSendAmt} onChange={e => setAseSendAmt(e.target.value)}
+                        style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'16px' }}/>
+
+                      <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px', marginBottom:'16px' }}>
+                        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:'8px', marginBottom: (aseFeeEstimate || aseFeeEstimateError) ? '8px' : 0 }}>
+                          <div style={{ display:'flex', alignItems:'center', gap:'6px', color:'#666', textTransform:'uppercase', letterSpacing:'0.5px', fontSize:'10px' }}>
+                            <FaGasPump size={10}/> Estimasi Gas Fee
+                            {aseFeeEstimating && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
+                          </div>
+                          <button onClick={() => aseRefreshFeeEstimate()} disabled={aseFeeEstimating}
+                            style={{ background:'none', border:'1px solid #333', color:'#888', padding:'2px 8px', cursor:aseFeeEstimating?'not-allowed':'pointer', fontSize:'10px', display:'flex', alignItems:'center', gap:'4px' }}>
+                            <FaSync size={9} style={{ animation:aseFeeEstimating?'spin 1s linear infinite':undefined }}/> Refresh
+                          </button>
+                        </div>
+                        {aseFeeEstimate && (
+                          <div style={{ display:'flex', flexWrap:'wrap', gap:'6px 16px', fontSize:'11px' }}>
+                            <span style={{ color:'#888' }}>Gas Limit: <span style={{ fontFamily:'monospace', color:'#ccc' }}>{Number(aseFeeEstimate.gasLimit).toLocaleString('en-US')}</span> unit</span>
+                            <span style={{ color:'#888' }}>Base Fee: <span style={{ fontFamily:'monospace', color:'#ccc' }}>{aseFeeEstimate.baseFeePerGas}</span> wei/unit</span>
+                            <span style={{ fontFamily:'monospace', fontWeight:'bold', color:'#4caf50' }}>
+                              ≈ {aseFeeEstimate.feeAse.toLocaleString('en-US', { maximumFractionDigits: 18 })} ASE
+                            </span>
+                          </div>
+                        )}
+                        {aseFeeEstimateError && (
+                          <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', color:'#ffaa00', fontSize:'11px' }}>
+                            <FaExclamationTriangle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
+                            <span>{aseFeeEstimateError}</span>
+                          </div>
+                        )}
+                        <div style={{ fontSize:'10px', color:'#444', marginTop:'6px' }}>
+                          Gas fee otomatis dipotong dari saldo yang sama — tombol MAX sudah menyisakan estimasi di atas.
+                        </div>
+                      </div>
+
+                      <button onClick={aseSend} disabled={aseSending || !aseSendTo.trim() || !aseSendAmt}
+                        style={{ width:'100%', padding:'12px', background:aseSending?'#0a0a1a':ASENTUM_NETWORK.color, color:'#fff', border:'none', cursor:'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity:(!aseSendTo.trim()||!aseSendAmt)?0.5:1 }}>
+                        {aseSending
+                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
+                          : <><FaPaperPlane/> Kirim ASE</>}
+                      </button>
+                      {aseStatus.type !== 'idle' && (
+                        <div style={{
+                          marginTop:'14px', padding:'12px', fontSize:'12px',
+                          background: aseStatus.type==='error' ? '#2a0d0d' : aseStatus.type==='success' ? '#0d2a0d' : '#1a1a0d',
+                          border: `1px solid ${aseStatus.type==='error' ? '#5a1e1e' : aseStatus.type==='success' ? '#1e5a1e' : '#5a5a1e'}`,
+                          color: aseStatus.type==='error' ? '#ff8888' : aseStatus.type==='success' ? '#88ff88' : '#ffff88',
+                        }}>
+                          {aseStatus.msg}
+                          {aseStatus.hash && (
+                            <a href={`${ASENTUM_NETWORK.explorerUrl}/tx/${aseStatus.hash}`} target="_blank" rel="noreferrer"
+                              style={{ display:'block', marginTop:'6px', color:'#4949DF', wordBreak:'break-all' }}>
+                              <FaLink size={9}/> {aseStatus.hash}
+                            </a>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                  <div style={{ textAlign:'center' }}>
+                    <button onClick={aseDisconnect}
                       style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
                       Disconnect Wallet
                     </button>
