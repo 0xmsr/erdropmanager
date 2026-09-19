@@ -11,12 +11,8 @@ export interface BIP39Wallet {
   atomAddresses: { index: number; address: string; privateKey: string }[];
   suiAddresses: { index: number; address: string; privateKey: string }[];
   aptAddresses: { index: number; address: string; privateKey: string }[];
+  aseAddresses: { index: number; address: string; privateKey: string }[];
   gramAddress?: { address: string; privateKey: string; version: GramVersion };
-  // true kalau wallet ini diimport dari mnemonic TON native (Telegram Wallet /
-  // Tonkeeper / dst), bukan dari mnemonic BIP39 multi-chain buatan app ini.
-  // Wallet seperti ini HANYA punya address Gram yang valid — field mnemonic
-  // di atas bukan mnemonic BIP39 & tidak bisa dipakai untuk menurunkan
-  // address EVM/SOL/TRON/AXM/ATOM ("Derive More" akan ditolak untuk wallet ini).
   isTonNative?: boolean;
   createdAt: number;
   tags: string[];
@@ -91,7 +87,7 @@ export interface AutoContractCall {
   value: string;
 }
 
-export type ChainKind = 'evm' | 'sol' | 'tron' | 'atom' | 'axm' | 'gram' | 'sui' | 'apt';
+export type ChainKind = 'evm' | 'sol' | 'tron' | 'atom' | 'axm' | 'gram' | 'sui' | 'apt' | 'ase';
 
 export interface CreatedGramToken {
   id: string;
