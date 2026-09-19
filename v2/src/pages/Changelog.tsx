@@ -21,6 +21,19 @@ interface Version {
 
 const CHANGELOG: Version[] = [
   {
+    version: '2.4.2',
+    date: '19 Sep 2026',
+    title: 'Update v2.4.2',
+    changes: [
+      { type: 'feature', text: 'Support Asentum Network' },
+      { type: 'feature', text: 'Menambahkan estimasi gas fee real-time untuk Asentum (ASE) — dihitung dari baseFeePerGas block terbaru × gas limit transfer (bukan buffer statis lagi), lengkap dengan tombol Refresh manual ~WalletGen' },
+      { type: 'feature', text: 'Menampilkan address hex RPC (0x...) khusus Asentum di samping address bech32 (ase1...) — dengan tombol copy & link ke explorer sendiri, dilabeli jelas biar nggak ketuker sama address EVM meski formatnya mirip ~WalletGen' },
+      { type: 'improvement', text: 'Tombol MAX dan validasi kirim ASE sekarang pakai estimasi gas fee real, dengan cek saldo vs (jumlah + fee) sebelum minta konfirmasi biar nggak gagal karena kurang buat nutup gas ~WalletGen' },
+      { type: 'fix', text: 'Memperbaiki explorerUrl Asentum yang sebelumnya kepasang sama dengan RPC — sekarang bener ke explorer.asentum.com, RPC tetap ke testnet.asentum.com ~WalletGen' },
+      { type: 'fix', text: 'Memperbaiki presisi tampilan estimasi gas fee ASE (dari 6-8 desimal jadi 18 desimal) — sebelumnya kebulat jadi 0.00000000 padahal fee-nya kecil banget (level ~1e-14 ASE) ~WalletGen' },
+    ],
+  }, 
+  {
     version: '2.4.0',
     date: '17 Sep 2026',
     title: 'Multi-Chain Agent — Rekt AI Kini Kuasai 7 Chain Baru',
