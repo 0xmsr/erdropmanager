@@ -4,18 +4,19 @@ import React from 'react';
 import type { WalletGeneratorCtx, ChainKind } from './types';
 import { QLENGTH_OPTIONS, WALLET_CHAIN_OPTIONS } from './constants';
 import { GRAM_WALLET_VERSIONS } from './network/Gramnet';
+import { asentumBech32ToHex, ASENTUM_NETWORKS } from './network/Asentumnet';
 
 export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
   const {
     FaChartBar, FaCheckCircle, FaChevronDown, FaChevronUp, FaCoins, FaCopy, FaEye, FaEyeSlash, 
-    FaFileExport, FaFileImport, FaKey, FaNetworkWired, FaPaperPlane, FaPlus, FaQrcode, FaRandom, FaSearch, 
+    FaFileExport, FaFileImport, FaKey, FaLink, FaNetworkWired, FaPaperPlane, FaPlus, FaQrcode, FaRandom, FaSearch, 
     FaShieldAlt, FaSync, FaTrash, FaWallet, activeTab, addressCount, balCheckNetId, balCheckChain, setBalCheckChain, balChecking, 
     balResults, chainView, checkAllAtomBalances, checkAllAxmBalances, checkAllBalances, checkAllGramBalances, 
-    checkAllSolBalances, checkAllTronBalances, checkAllSuiBalances, checkAllAptBalances, copiedKey, copyText, csvExporting, customMnemonic, 
+    checkAllSolBalances, checkAllTronBalances, checkAllSuiBalances, checkAllAptBalances, checkAllAseBalances, copiedKey, copyText, csvExporting, customMnemonic, 
     mnemonicSuggestions, handleMnemonicChange, applyMnemonicSuggestion,
     deleteWallet, deriveMore, entropyBits, expandedId, exportAllCSV, exportWallet, filteredWallets, 
     generateWallet, generating, handleAtomWalletSel, handleAxmWalletSel, 
-    handleSolWalletSel, handleTronWalletSel, handleTxWalletSel, handleSuiWalletSel, handleAptWalletSel, gramConnectWithWallet, importMode, networks, openPortfolio, 
+    handleSolWalletSel, handleTronWalletSel, handleTxWalletSel, handleSuiWalletSel, handleAptWalletSel, handleAseWalletSel, gramConnectWithWallet, importMode, networks, openPortfolio, 
     revealedIds, revealedPKs, search, 
     setActiveTab, setAddressCount, setBalCheckNetId, setBalResults, setChainView, setCustomMnemonic, setEntropyBits, 
     setExpandedId, setImportMode, setQrAddress, setRevealedIds, setRevealedPKs, setSearch, 
@@ -34,6 +35,7 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
         chain === 'axm'  ? w.axmAddresses :
         chain === 'sui'  ? w.suiAddresses :
         chain === 'apt'  ? w.aptAddresses :
+        chain === 'ase'  ? w.aseAddresses :
         chain === 'gram' ? (w.gramAddress ? [{ index: 0, address: w.gramAddress.address }] : []) :
         w.addresses;
       const found = (list || []).find((a: any) => a.address === address);
@@ -66,6 +68,8 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
       handleSuiWalletSel(sel);
     } else if (balCheckChain === 'apt') {
       handleAptWalletSel(sel);
+    } else if (balCheckChain === 'ase') {
+      handleAseWalletSel(sel);
     } else if (balCheckChain === 'gram') {
       gramConnectWithWallet(owner.wi);
     }
@@ -80,6 +84,7 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     gram: { label: 'Cek Semua GRAM', color:'#0088CC', textColor:'#fff', action: checkAllGramBalances, title:'Cek saldo TON semua address Gram yang tersimpan' },
     sui:  { label: 'Cek Semua SUI',  color:'#4DA2FF', textColor:'#000', action: checkAllSuiBalances,  title:'Cek saldo SUI semua address Sui yang tersimpan' },
     apt:  { label: 'Cek Semua APT',  color:'#00D2AA', textColor:'#000', action: checkAllAptBalances,  title:'Cek saldo APT semua address Aptos yang tersimpan' },
+    ase:  { label: 'Cek Semua ASE',  color:'#4949DF', textColor:'#fff', action: checkAllAseBalances,  title:'Cek saldo ASE semua address Asentum yang tersimpan' },
   };
   const balCheckCfg = BAL_CHECK_CHAINS[balCheckChain] || BAL_CHECK_CHAINS.evm;
 
@@ -219,6 +224,7 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                   <option value="gram">Gram / TON</option>
                   <option value="sui">Sui (SUI)</option>
                   <option value="apt">Aptos (APT)</option>
+                  <option value="ase">Asentum (ASE)</option>
                 </select>
                 {balCheckChain === 'evm' && (
                   <select value={balCheckNetId} onChange={e => { setBalCheckNetId(e.target.value); setBalResults({}); }}
@@ -281,8 +287,8 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
               const isExpanded      = expandedId === w.id;
               const isMnemonicShown = revealedIds.has(w.id);
               const activeChain: ChainKind = chainView[w.id] || (w.isTonNative ? 'gram' : 'evm');
-              const activeList  = activeChain === 'sol' ? (w.solAddresses || []) : activeChain === 'tron' ? (w.tronAddresses || []) : activeChain === 'axm' ? (w.axmAddresses || []) : activeChain === 'atom' ? (w.atomAddresses || []) : activeChain === 'sui' ? (w.suiAddresses || []) : activeChain === 'apt' ? (w.aptAddresses || []) : activeChain === 'gram' ? (w.gramAddress ? [{ index: 0, address: w.gramAddress.address, privateKey: w.gramAddress.privateKey }] : []) : w.addresses;
-              const activePath  = activeChain === 'sol' ? "m/44'/501'/x'/0'" : activeChain === 'tron' ? "m/44'/195'/0'/0/x" : activeChain === 'axm' ? "m/44'/118'/x'/0/0" : activeChain === 'atom' ? "m/44'/118'/x'/0/0" : activeChain === 'sui' ? "m/44'/784'/x'/0'/0'" : activeChain === 'apt' ? "m/44'/637'/x'/0'/0'" : activeChain === 'gram' ? "m/44'/607'/0'" : "m/44'/60'/0'/0/x";
+              const activeList  = activeChain === 'sol' ? (w.solAddresses || []) : activeChain === 'tron' ? (w.tronAddresses || []) : activeChain === 'axm' ? (w.axmAddresses || []) : activeChain === 'atom' ? (w.atomAddresses || []) : activeChain === 'sui' ? (w.suiAddresses || []) : activeChain === 'apt' ? (w.aptAddresses || []) : activeChain === 'ase' ? (w.aseAddresses || []) : activeChain === 'gram' ? (w.gramAddress ? [{ index: 0, address: w.gramAddress.address, privateKey: w.gramAddress.privateKey }] : []) : w.addresses;
+              const activePath  = activeChain === 'sol' ? "m/44'/501'/x'/0'" : activeChain === 'tron' ? "m/44'/195'/0'/0/x" : activeChain === 'axm' ? "m/44'/118'/x'/0/0" : activeChain === 'atom' ? "m/44'/118'/x'/0/0" : activeChain === 'sui' ? "m/44'/784'/x'/0'/0'" : activeChain === 'apt' ? "m/44'/637'/x'/0'/0'" : activeChain === 'ase' ? "m/44'/1'/x'/0'/0'" : activeChain === 'gram' ? "m/44'/607'/0'" : "m/44'/60'/0'/0/x";
               return (
                 <div key={w.id} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #01a2ff', overflow:'hidden' }}>
                   <div style={{ display:'flex', alignItems:'center', gap:'10px', padding:'14px 16px', cursor:'pointer' }}
@@ -381,7 +387,7 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                       <div>
                         <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px' }}>
                           <FaShieldAlt style={{ marginRight:'5px' }}/>
-                          Derived Addresses {activeChain === 'sol' ? '(Solana · ed25519)' : activeChain === 'tron' ? '(Tron · secp256k1, base58check)' : activeChain === 'axm' ? '(Axiome · secp256k1, bech32 "axm1...")' : activeChain === 'atom' ? '(Cosmos Hub · secp256k1, bech32 "cosmos1...")' : activeChain === 'sui' ? '(Sui · ed25519)' : activeChain === 'apt' ? '(Aptos · ed25519)' : activeChain === 'gram' ? `(Gram/TON · ed25519, wallet ${w.gramAddress?.version === 'v4' ? 'V4R2' : 'W5/v5r1'})` : '(EIP-55 Checksummed)'}
+                          Derived Addresses {activeChain === 'sol' ? '(Solana · ed25519)' : activeChain === 'tron' ? '(Tron · secp256k1, base58check)' : activeChain === 'axm' ? '(Axiome · secp256k1, bech32 "axm1...")' : activeChain === 'atom' ? '(Cosmos Hub · secp256k1, bech32 "cosmos1...")' : activeChain === 'sui' ? '(Sui · ed25519)' : activeChain === 'apt' ? '(Aptos · ed25519)' : activeChain === 'ase' ? '(Asentum · ML-DSA-65 Dilithium3, bech32 "ase1...")' : activeChain === 'gram' ? `(Gram/TON · ed25519, wallet ${w.gramAddress?.version === 'v4' ? 'V4R2' : 'W5/v5r1'})` : '(EIP-55 Checksummed)'}
                         </div>
 
                         {activeList.length === 0 && activeChain === 'sol' && (
@@ -414,6 +420,11 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                             Belum ada address Aptos — klik "Turunkan Address" di bawah untuk generate dari mnemonic yang sama.
                           </div>
                         )}
+                        {activeList.length === 0 && activeChain === 'ase' && (
+                          <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
+                            Belum ada address Asentum — sedang diturunkan dari mnemonic yang sama (async), atau klik "Turunkan Address" di bawah.
+                          </div>
+                        )}
                         {activeList.length === 0 && activeChain === 'gram' && (
                           <div style={{ color:'#444', fontSize:'11px', padding:'10px 0' }}>
                             Belum ada address Gram (TON) — sedang diturunkan dari mnemonic yang sama (async).
@@ -422,6 +433,10 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         {activeList.slice().sort((a,b) => a.index - b.index).map(addr => {
                           const pkKey      = `pk_${activeChain}_${w.id}_${addr.index}`;
                           const pkRevealed = revealedPKs.has(pkKey);
+                          let aseHex = '';
+                          if (activeChain === 'ase') {
+                            try { aseHex = asentumBech32ToHex(addr.address); } catch { aseHex = ''; }
+                          }
                           return (
                             <div key={addr.index} style={{ background:'#0a0a0a', border:'1px solid #151515', padding:'12px', marginBottom:'8px' }}>
                               <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'8px' }}>
@@ -447,6 +462,24 @@ export function WalletsTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                                   </span>
                                 )}
                               </div>
+                              {activeChain === 'ase' && aseHex && (
+                                <div style={{ display:'flex', alignItems:'center', gap:'8px', marginBottom:'8px' }}>
+                                  <span style={{ fontSize:'9px', color:'#444', whiteSpace:'nowrap' }} title='Address RPC Asentum — dipakai @asentum/sdk buat request RPC (getBalance, sendTransfer, dst). Sama akun dengan yang di atas, cuma beda representasi; bukan address EVM walau formatnya mirip.'>
+                                    Hex (RPC):
+                                  </span>
+                                  <code style={{ flex:1, fontSize:'11px', color:'#7a7aff', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', fontFamily:'monospace' }}>
+                                    {aseHex}
+                                  </code>
+                                  <button onClick={() => copyText(aseHex, `addr_ase_hex_${addr.index}_${w.id}`)}
+                                    style={{ background:'none', border:'none', color:copiedKey===`addr_ase_hex_${addr.index}_${w.id}`?'#4caf50':'#555', cursor:'pointer', padding:'4px', flexShrink:0 }}>
+                                    {copiedKey===`addr_ase_hex_${addr.index}_${w.id}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
+                                  </button>
+                                  <a href={`${ASENTUM_NETWORKS[0].explorerUrl}/address/${aseHex}`} target="_blank" rel="noreferrer" title="Lihat di Explorer"
+                                    style={{ background:'none', border:'none', color:'#555', cursor:'pointer', padding:'4px', flexShrink:0, display:'flex' }}>
+                                    <FaLink size={11}/>
+                                  </a>
+                                </div>
+                              )}
                               <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
                                 <span style={{ fontSize:'10px', color:'#333', whiteSpace:'nowrap' }}>Private Key:</span>
                                 <code style={{ flex:1, fontSize:'11px', color:pkRevealed?'#ff9944':'#1e1e1e', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0d0d0d', padding:'3px 6px' }}>
