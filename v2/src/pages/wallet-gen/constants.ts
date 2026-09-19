@@ -92,6 +92,7 @@ export const CHAIN_OPTIONS: { id: ChainKind | string; label: string; soon?: bool
   { id: 'gram', label: 'GRAM (ex-TON)' },
   { id: 'sui',  label: 'SUI' },
   { id: 'apt',  label: 'APT' },
+  { id: 'ase',  label: 'ASE (Asentum)' },
   { id: 'btc', label: 'BTC',  soon: true },
 ];
 
@@ -104,6 +105,7 @@ export const WALLET_CHAIN_OPTIONS: { id: ChainKind | string; label: string; soon
   { id: 'gram', label: 'GRAM (ex-TON)' },
   { id: 'sui',  label: 'SUI' },
   { id: 'apt',  label: 'APT' },
+  { id: 'ase',  label: 'ASE (Asentum)' },
   { id: 'btc', label: 'BTC',  soon: true },
 ];
 
