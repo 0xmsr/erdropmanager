@@ -32,6 +32,7 @@ import { Navbar } from '../../components/Navbar';
 import { CustomAlert, CustomConfirm, TxConfirmModal, type TxConfirmDetails } from '../../components/CustomModals';
 import { KNOWN_4BYTE, KNOWN_TOPICS, KNOWN_SELECTORS } from './know'
 import { TxDecoder } from './Txdecoder';
+import { UI_STYLE_STORAGE_KEY, loadUiStyle } from './wallet-themes/UiThemes';
 import {
   deriveSolanaAddress, getMetadataPda, SPL_META_MAX,
   SOLANA_NETWORKS, getSolanaConnection, getSolBalanceWithFallback,
@@ -67,7 +68,7 @@ import {
 import {
   deriveAsentumAddress, ASENTUM_NETWORKS, getAsentumBalanceWithFallback, isValidAsentumAddress,
   sendAsentum, aseFriendlyError, ASENTUM_GAS_BUFFER, asentumAddressFromPrivateKey, requestAsentumFaucet, migrateAsentumAddresses,
-  estimateAsentumFee, type AsentumNetworkCfg, type AsentumFeeEstimate,
+  estimateAsentumFee, sweepAsentumWallet, type AsentumNetworkCfg, type AsentumFeeEstimate,
 } from './network/Asentumnet';
 import {
   deriveGramAddress, GRAM_NETWORKS, GRAM_WALLET_VERSIONS, getGramBalanceWithFallback,
@@ -539,6 +540,11 @@ export const WalletGenerator: React.FC = () => {
   const [devMode, setDevMode] = useState<boolean>(() => localStorage.getItem('devModeSkipTxConfirm') === 'true');
   useEffect(() => { localStorage.setItem('devModeSkipTxConfirm', String(devMode)); }, [devMode]);
 
+  // Gaya tampilan tab Send / Receive: 'default' (asli) atau 'pixel' (Pixel Block).
+  // Daftar tema ada di uiThemes.ts (tinggal tambah entri di sana untuk tema baru).
+  const [uiStyle, setUiStyle] = useState<string>(() => loadUiStyle());
+  useEffect(() => { try { localStorage.setItem(UI_STYLE_STORAGE_KEY, uiStyle); } catch {} }, [uiStyle]);
+
   const [txConfirmModal, setTxConfirmModal] = useState<{isOpen:boolean; details: TxConfirmDetails|null}>({isOpen:false, details:null});
   const txConfirmResolverRef = useRef<((ok:boolean)=>void)|null>(null);
 
@@ -818,6 +824,23 @@ export const WalletGenerator: React.FC = () => {
   const [aseFeeEstimate,      setAseFeeEstimate]      = useState<AsentumFeeEstimate | null>(null);
   const [aseFeeEstimating,    setAseFeeEstimating]    = useState(false);
   const [aseFeeEstimateError, setAseFeeEstimateError] = useState<string | null>(null);
+
+  // ── ASE: mode Multi Send & Sweep ──
+  const [aseMode, setAseMode] = useState<'single'|'multi'|'sweep'>('single');
+  const [aseMultiRows, setAseMultiRows] = useState<{id:string;to:string;amount:string;status:'idle'|'pending'|'success'|'failed';hash?:string;error?:string}[]>([
+    { id: '1', to: '', amount: '', status: 'idle' },
+  ]);
+  const [aseMultiRunning,  setAseMultiRunning]  = useState(false);
+  const [aseMultiEqualAmt, setAseMultiEqualAmt] = useState('');
+  const [aseSweepDestAddr,    setAseSweepDestAddr]    = useState('');
+  const [aseSweepAmtMode,     setAseSweepAmtMode]     = useState<'all'|'fixed'>('all');
+  const [aseSweepFixedAmt,    setAseSweepFixedAmt]    = useState('');
+  const [aseSweepLeaveBuf,    setAseSweepLeaveBuf]    = useState('0');
+  const [aseSweepSources,     setAseSweepSources]     = useState<{id:string;label:string;address:string;privateKey:string;balance?:string;status:'idle'|'pending'|'success'|'failed'|'skipped';hash?:string;error?:string}[]>([]);
+  const [aseSweepManualPK,    setAseSweepManualPK]    = useState('');
+  const [aseSweepRunning,     setAseSweepRunning]     = useState(false);
+  const [aseSweepDelayMs,     setAseSweepDelayMs]     = useState(1500);
+  const [aseSweepFetchingBal, setAseSweepFetchingBal] = useState(false);
 
   const [atomNetId,       setAtomNetId]       = useState('cosmoshub-mainnet');
   const COSMOS_NETWORK = COSMOS_NETWORKS.find(n => n.id === atomNetId) ?? COSMOS_NETWORKS[0];
@@ -4254,6 +4277,165 @@ export const WalletGenerator: React.FC = () => {
     if (!aseConnected || !aseAddress) return;
     const newNet = ASENTUM_NETWORKS.find(n => n.id === newId) ?? ASENTUM_NETWORKS[0];
     await Promise.all([aseRefreshBalance(newNet, aseAddress), aseRefreshFeeEstimate(newNet)]);
+  };
+
+  // ══ Asentum: Multi Send (1 wallet → banyak penerima) ══
+  const aseIsValidAddr = (addr: string) => isValidAsentumAddress((addr || '').trim());
+
+  const aseMultiAddRow = () =>
+    setAseMultiRows(prev => [...prev, { id: Date.now().toString(), to: '', amount: '', status: 'idle' }]);
+
+  const aseMultiRemoveRow = (id: string) =>
+    setAseMultiRows(prev => prev.filter(r => r.id !== id));
+
+  const aseMultiUpdateRow = (id: string, field: 'to'|'amount', val: string) =>
+    setAseMultiRows(prev => prev.map(r => r.id === id ? { ...r, [field]: val } : r));
+
+  const aseMultiApplyEqual = () => {
+    if (!aseMultiEqualAmt) return;
+    setAseMultiRows(prev => prev.map(r => ({ ...r, amount: aseMultiEqualAmt })));
+  };
+
+  const aseMultiSend = async () => {
+    if (!aseConnected || !aseAddress) { showAlert('Wallet Asentum tidak terhubung.', 'error'); return; }
+    const validRows = aseMultiRows.filter(r => aseIsValidAddr(r.to) && parseFloat(r.amount) > 0);
+    if (validRows.length === 0) { showAlert('Tidak ada baris valid (address + jumlah).', 'error'); return; }
+
+    const feeAse   = aseFeeEstimate?.feeAse ?? ASENTUM_GAS_BUFFER;
+    const totalAmt = validRows.reduce((a, r) => a + parseFloat(r.amount), 0);
+    const totalFee = feeAse * validRows.length;
+    try {
+      const curBalance = await getAsentumBalanceWithFallback(ASENTUM_NETWORK, aseAddress);
+      if (totalAmt + totalFee > curBalance) {
+        showAlert(`Saldo tidak cukup: butuh ~${(totalAmt + totalFee).toFixed(6)} ASE (total kirim + ${validRows.length}× estimasi gas), saldo cuma ${curBalance} ASE.`, 'error');
+        return;
+      }
+    } catch { /* cek saldo gagal → lanjut, biar sendAsentum yang nge-error per baris */ }
+
+    const okMulti = await requestTxConfirm({
+      title: `Multi-Send — ${validRows.length} penerima`,
+      network: ASENTUM_NETWORK.name,
+      value: `${totalAmt} ASE (total) + ~${totalFee.toFixed(6)} ASE gas`,
+      extra: 'TX akan dikirim satu per satu ke semua penerima di bawah, tanpa konfirmasi per-baris.',
+    });
+    if (!okMulti) return;
+
+    setAseMultiRunning(true);
+    setAseMultiRows(prev => prev.map(r => ({ ...r, status: 'idle', hash: undefined, error: undefined })));
+
+    for (const row of validRows) {
+      setAseMultiRows(prev => prev.map(r => r.id === row.id ? { ...r, status: 'pending' } : r));
+      try {
+        const txHash = await sendAsentum(ASENTUM_NETWORK, asePrivKey, row.to.trim(), parseFloat(row.amount));
+        setAseMultiRows(prev => prev.map(r => r.id === row.id ? { ...r, status: 'success', hash: txHash } : r));
+        saveTxHistory({
+          taskName: 'Multi-Send', description: `${row.amount} ASE → ${shortAddr(row.to)} di ${ASENTUM_NETWORK.name}`,
+          to: row.to, value: row.amount, data: '',
+          status: 'success', txHash, timestamp: Date.now(),
+        });
+      } catch (e: any) {
+        setAseMultiRows(prev => prev.map(r => r.id === row.id ? { ...r, status: 'failed', error: aseFriendlyError(e).slice(0, 120) } : r));
+      }
+    }
+    setAseMultiRunning(false);
+    await aseRefreshBalance();
+    aseRefreshFeeEstimate();
+  };
+
+  // ══ Asentum: Sweep (banyak wallet → 1 address tujuan) ══
+  const aseSweepAddFromBIP39 = (val: string) => {
+    if (!val || !val.includes(',')) return;
+    const [wi, ai] = val.split(',').map(Number);
+    const w    = wallets[wi];
+    const addr = w?.aseAddresses?.find(a => a.index === ai);
+    if (!addr) return;
+    const id = `bip39_${wi}_${ai}`;
+    if (aseSweepSources.some(s => s.id === id)) return;
+    setAseSweepSources(prev => [...prev, {
+      id, label: `[${w.name}] #${ai} ${addr.address.slice(0, 14)}…`,
+      address: addr.address, privateKey: addr.privateKey, status: 'idle',
+    }]);
+  };
+
+  const aseSweepAddManualPK = () => {
+    const pk = aseSweepManualPK.trim();
+    if (!pk) return;
+    try {
+      const addr = asentumAddressFromPrivateKey(ASENTUM_NETWORK, pk);   // throw kalau bukan 64 hex seed
+      const id   = `manual_${addr}`;
+      if (aseSweepSources.some(s => s.id === id)) { showAlert('Address sudah ada di daftar.', 'error'); return; }
+      setAseSweepSources(prev => [...prev, {
+        id, label: `Manual ${addr.slice(0, 14)}…`, address: addr, privateKey: pk, status: 'idle',
+      }]);
+      setAseSweepManualPK('');
+    } catch (e: any) { showAlert(aseFriendlyError(e) || 'Private key Asentum tidak valid.', 'error'); }
+  };
+
+  const aseSweepRemoveSource = (id: string) =>
+    setAseSweepSources(prev => prev.filter(s => s.id !== id));
+
+  const aseSweepFetchBalances = async () => {
+    if (aseSweepSources.length === 0) return;
+    setAseSweepFetchingBal(true);
+    await Promise.all(aseSweepSources.map(async s => {
+      try {
+        const bal = await getAsentumBalanceWithFallback(ASENTUM_NETWORK, s.address);
+        setAseSweepSources(prev => prev.map(x => x.id === s.id ? { ...x, balance: bal.toLocaleString('en-US', { maximumFractionDigits: 6 }) + ' ASE' } : x));
+      } catch {
+        setAseSweepSources(prev => prev.map(x => x.id === s.id ? { ...x, balance: 'Error' } : x));
+      }
+    }));
+    setAseSweepFetchingBal(false);
+  };
+
+  const aseSweepRun = async () => {
+    if (!aseIsValidAddr(aseSweepDestAddr)) { showAlert('Address tujuan tidak valid.', 'error'); return; }
+    if (aseSweepSources.length === 0) { showAlert('Belum ada wallet sumber.', 'error'); return; }
+    if (aseSweepAmtMode === 'fixed' && !(parseFloat(aseSweepFixedAmt) > 0)) { showAlert('Isi jumlah tetap yang valid.', 'error'); return; }
+
+    const okSweep = await requestTxConfirm({
+      title: `Sweep — ${aseSweepSources.length} wallet sumber`,
+      network: ASENTUM_NETWORK.name,
+      to: aseSweepDestAddr,
+      extra: aseSweepAmtMode === 'all'
+        ? 'Akan mengirim seluruh saldo (dikurangi estimasi fee) dari tiap wallet sumber ke address tujuan di atas.'
+        : `Akan mengirim ${aseSweepFixedAmt} ASE dari tiap wallet sumber ke address tujuan di atas.`,
+    });
+    if (!okSweep) return;
+
+    setAseSweepRunning(true);
+    setAseSweepSources(prev => prev.map(s => ({ ...s, status: 'idle', hash: undefined, error: undefined })));
+
+    // Estimasi fee dibaca sekali per sweep (sudah termasuk safety margin 1.5×).
+    const est = await estimateAsentumFee(ASENTUM_NETWORK);
+    const feeWei = BigInt(est.estimatedFeeWei);
+
+    for (const src of aseSweepSources) {
+      setAseSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'pending' } : s));
+      try {
+        const res = await sweepAsentumWallet(ASENTUM_NETWORK, src.privateKey, aseSweepDestAddr.trim(), {
+          amountMode: aseSweepAmtMode, fixedAse: aseSweepFixedAmt, leaveAse: aseSweepLeaveBuf, feeWei,
+        });
+        setAseSweepSources(prev => prev.map(s => s.id === src.id ? {
+          ...s, status: res.status === 'success' ? 'success' : 'skipped',
+          hash: res.hash, error: res.status === 'skipped' ? res.message : undefined,
+          balance: res.status === 'success' ? `sent ${res.sentAse} ASE` : (res.balanceAse ? `${res.balanceAse} ASE` : s.balance),
+        } : s));
+        if (res.status === 'success' && res.hash) {
+          saveTxHistory({
+            taskName: 'Sweep', description: `${res.sentAse} ASE dari ${shortAddr(src.address)} → ${shortAddr(aseSweepDestAddr)} di ${ASENTUM_NETWORK.name}`,
+            to: aseSweepDestAddr, value: String(res.sentAse), data: '',
+            status: 'success', txHash: res.hash, timestamp: Date.now(),
+          });
+        }
+      } catch (e: any) {
+        setAseSweepSources(prev => prev.map(s => s.id === src.id ? { ...s, status: 'failed', error: aseFriendlyError(e).slice(0, 160) } : s));
+      }
+      if (aseSweepDelayMs > 0) await new Promise(r => setTimeout(r, aseSweepDelayMs));
+    }
+    setAseSweepRunning(false);
+    await aseSweepFetchBalances();
+    aseRefreshBalance();
   };
 
   const handleAseWalletSel = (val: string) => {
@@ -7850,6 +8032,14 @@ export const WalletGenerator: React.FC = () => {
     aseLoadingBal, aseMaxLoading, aseNetId, asePrivKey, setAsePrivKey, aseRefreshBalance, aseSend, aseSendAmt, setAseSendAmt, aseSendTo, setAseSendTo, aseSending,
     aseSetMaxAmount, aseStatus, aseWalletSel, setAseWalletSel, handleAseWalletSel, switchAseNetwork, checkAllAseBalances,
     aseFaucetLoading, aseRequestFaucet, aseFeeEstimate, aseFeeEstimating, aseFeeEstimateError, aseRefreshFeeEstimate,
+    aseMode, setAseMode, aseIsValidAddr, uiStyle, setUiStyle,
+    aseMultiRows, aseMultiRunning, aseMultiEqualAmt, setAseMultiEqualAmt,
+    aseMultiAddRow, aseMultiRemoveRow, aseMultiUpdateRow, aseMultiApplyEqual, aseMultiSend,
+    aseSweepDestAddr, setAseSweepDestAddr, aseSweepAmtMode, setAseSweepAmtMode,
+    aseSweepFixedAmt, setAseSweepFixedAmt, aseSweepLeaveBuf, setAseSweepLeaveBuf,
+    aseSweepSources, aseSweepManualPK, setAseSweepManualPK, aseSweepRunning,
+    aseSweepDelayMs, setAseSweepDelayMs, aseSweepFetchingBal,
+    aseSweepAddFromBIP39, aseSweepAddManualPK, aseSweepRemoveSource, aseSweepFetchBalances, aseSweepRun,
   };
 
   return (
