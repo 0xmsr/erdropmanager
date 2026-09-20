@@ -7,6 +7,8 @@ import { CHAIN_OPTIONS } from './constants';
 import { shortAddr } from './helpers';
 import { GRAM_WALLET_VERSIONS, formatGramSwapOutput } from './network/Gramnet';
 import { asentumBech32ToHex } from './network/Asentumnet';
+import { chainAccent } from './wallet-themes/pixelTheme';
+import { UI_THEMES, getUiTheme, themeScope } from './wallet-themes/UiThemes';
 
 export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
   const {
@@ -32,6 +34,14 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     aseLoadingBal, aseMaxLoading, aseNetId, asePrivKey, setAsePrivKey, aseRefreshBalance, aseSend, aseSendAmt, setAseSendAmt, aseSendTo, setAseSendTo, aseSending, aseSetMaxAmount,
     aseStatus, aseWalletSel, setAseWalletSel, handleAseWalletSel, switchAseNetwork, aseFaucetLoading, aseRequestFaucet,
     aseFeeEstimate, aseFeeEstimating, aseFeeEstimateError, aseRefreshFeeEstimate,
+    aseMode, setAseMode, aseIsValidAddr, uiStyle, setUiStyle,
+    aseMultiRows, aseMultiRunning, aseMultiEqualAmt, setAseMultiEqualAmt,
+    aseMultiAddRow, aseMultiRemoveRow, aseMultiUpdateRow, aseMultiApplyEqual, aseMultiSend,
+    aseSweepDestAddr, setAseSweepDestAddr, aseSweepAmtMode, setAseSweepAmtMode,
+    aseSweepFixedAmt, setAseSweepFixedAmt, aseSweepLeaveBuf, setAseSweepLeaveBuf,
+    aseSweepSources, aseSweepManualPK, setAseSweepManualPK, aseSweepRunning,
+    aseSweepDelayMs, setAseSweepDelayMs, aseSweepFetchingBal,
+    aseSweepAddFromBIP39, aseSweepAddManualPK, aseSweepRemoveSource, aseSweepFetchBalances, aseSweepRun,
     gramAddress, gramBalance, gramConnect, gramConnected, gramConnecting, gramDisconnect, 
     gramLoadingBal, gramNetId, gramPrivKey, gramRefreshBalance, gramSend, gramSendAmt, gramSendTo, 
     gramMemo, setGramMemo, 
@@ -136,8 +146,36 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     return `Swap ${gramSwapFrom.symbol} → ${gramSwapTo.symbol}`;
   })();
 
+  const activeTheme = getUiTheme(String(uiStyle || 'default'));
+  const isThemed = !!activeTheme.css;
+  const uiAccent = chainAccent(String(txChain));
+
   return (
-        <>
+        <div className="px-scope" data-ui={activeTheme.id}
+          style={isThemed ? ({ ['--ui-accent' as any]: uiAccent, ['--ui-accent-dim' as any]: uiAccent + '66' } as React.CSSProperties) : undefined}>
+          {activeTheme.css && <style>{activeTheme.css(themeScope(activeTheme.id))}</style>}
+
+          {/* ── Pengaturan gaya tampilan (khusus tab Send / Receive) ── */}
+          <div style={{
+            display:'flex', alignItems:'center', justifyContent:'space-between', gap:'10px', flexWrap:'wrap',
+            background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:'3px solid #01a2ff',
+            padding:'10px 16px', marginBottom:'16px',
+          }}>
+            <div style={{ fontSize:'12px', color:'#888' }}>
+              <strong style={{ color:'#ccc' }}>Gaya tampilan</strong> — hanya berlaku di Send / Receive, tersimpan otomatis.
+            </div>
+            <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', padding:'2px', flexWrap:'wrap' }}>
+              {UI_THEMES.map(t => (
+                <button key={t.id} onClick={() => setUiStyle(t.id)} style={{
+                  padding:'7px 14px', border:'none', cursor:'pointer', fontSize:'11px', fontWeight:'bold',
+                  background: activeTheme.id === t.id ? '#01a2ff' : 'transparent',
+                  color: activeTheme.id === t.id ? '#000' : '#666',
+                }}>
+                  {t.label}
+                </button>
+              ))}
+            </div>
+          </div>
 
           <div style={{ marginBottom:'16px' }}>
             <label style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'block', marginBottom:'8px' }}>
@@ -616,11 +654,11 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                       disabled={sweepRunning || sweepSources.length === 0 || !ethers.utils.isAddress(sweepDestAddr) || (txSendAssetMode==='token' && txAsset==='native')}
                       style={{
                         padding:'13px', fontWeight:'bold', fontSize:'14px', cursor:sweepRunning?'wait':'pointer',
-                        background: sweepRunning ? '#001a00' : (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)||(txSendAssetMode==='token'&&txAsset==='native')) ? 'transparent' : '#00e676',
-                        color: sweepRunning ? '#00e676' : '#000',
+                        background: sweepRunning ? '#001a00' : (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)||(txSendAssetMode==='token'&&txAsset==='native')) ? '#12301f' : '#00e676',
+                        color: sweepRunning ? '#00e676' : (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)||(txSendAssetMode==='token'&&txAsset==='native')) ? '#7dffb3' : '#000',
                         border:`1px solid ${sweepRunning?'#00e67644':'#00e676'}`,
                         display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
-                        opacity: (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)||(txSendAssetMode==='token'&&txAsset==='native')) ? 0.4 : 1,
+                        opacity: (sweepSources.length===0||!ethers.utils.isAddress(sweepDestAddr)||(txSendAssetMode==='token'&&txAsset==='native')) ? 0.85 : 1,
                         transition:'all 0.2s',
                       }}>
                       {sweepRunning
@@ -1301,11 +1339,11 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                           disabled={solSweepRunning || solSweepSources.length === 0 || !solIsValidAddr(solSweepDestAddr)}
                           style={{
                             padding:'13px', fontWeight:'bold', fontSize:'14px', cursor:solSweepRunning?'wait':'pointer',
-                            background: solSweepRunning ? '#001a00' : (solSweepSources.length===0||!solIsValidAddr(solSweepDestAddr)) ? 'transparent' : '#00e676',
-                            color: solSweepRunning ? '#00e676' : '#000',
+                            background: solSweepRunning ? '#001a00' : (solSweepSources.length===0||!solIsValidAddr(solSweepDestAddr)) ? '#12301f' : '#00e676',
+                            color: solSweepRunning ? '#00e676' : (solSweepSources.length===0||!solIsValidAddr(solSweepDestAddr)) ? '#7dffb3' : '#000',
                             border:`1px solid ${solSweepRunning?'#00e67644':'#00e676'}`,
                             display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
-                            opacity: (solSweepSources.length===0||!solIsValidAddr(solSweepDestAddr)) ? 0.4 : 1,
+                            opacity: (solSweepSources.length===0||!solIsValidAddr(solSweepDestAddr)) ? 0.85 : 1,
                             transition:'all 0.2s',
                           }}>
                           {solSweepRunning
@@ -2472,7 +2510,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                   </label>
                   <input
                     type="password"
-                    placeholder="secretKeyHex:publicKeyHex"
+                    placeholder="64 hex seed (recovery key)"
                     value={asePrivKey}
                     onChange={e => { setAsePrivKey(e.target.value); setAseWalletSel(''); }}
                     style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'13px', marginBottom:'14px' }}
@@ -2544,6 +2582,25 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                     </div>
                   </div>
 
+                  {/* ── Mode: Kirim / Multi Send / Sweep ── */}
+                  <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', padding:'2px' }}>
+                    {([
+                      ['single', <FaPaperPlane key="i" size={11}/>, 'Kirim'],
+                      ['multi',  <FaLayerGroup key="i" size={11}/>, 'Multi Send'],
+                      ['sweep',  <FaExchangeAlt key="i" size={11}/>, 'Sweep'],
+                    ] as const).map(([m, icon, label]) => (
+                      <button key={m} onClick={() => setAseMode(m)} style={{
+                        flex:1, padding:'9px 8px', background: aseMode===m ? ASENTUM_NETWORK.color : 'transparent',
+                        border:'none', color: aseMode===m ? '#fff' : '#666',
+                        cursor:'pointer', fontSize:'12px', fontWeight:'bold',
+                        display:'flex', alignItems:'center', justifyContent:'center', gap:'6px',
+                      }}>
+                        {icon} {label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {aseMode === 'single' && (
                   <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
                     <h3 style={{ fontSize:'13px', marginBottom:'14px' }}><FaPaperPlane style={{ marginRight:'6px' }}/>Kirim ASE</h3>
                       <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Address Tujuan</label>
@@ -2613,6 +2670,228 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         </div>
                       )}
                     </div>
+                  )}
+
+                  {/* ── Multi Send ── */}
+                  {aseMode === 'multi' && (
+                    <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px', display:'flex', flexDirection:'column', gap:'14px' }}>
+                      <h3 style={{ fontSize:'13px', margin:0 }}><FaLayerGroup style={{ marginRight:'6px' }}/>Multi Send ASE</h3>
+                      <div style={{ display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+                        <label style={{ fontSize:'11px', color:'#555', whiteSpace:'nowrap' }}>Jumlah rata (ASE):</label>
+                        <input type="number" placeholder="0.001" step="0.0001" min="0" value={aseMultiEqualAmt}
+                          onChange={e => setAseMultiEqualAmt(e.target.value)}
+                          style={{ width:'110px', fontFamily:'monospace', fontSize:'12px' }}/>
+                        <button onClick={aseMultiApplyEqual} disabled={!aseMultiEqualAmt}
+                          style={{ background:'none', border:'1px solid #333', color:'#888', padding:'5px 12px', cursor:'pointer', fontSize:'11px', opacity:!aseMultiEqualAmt?0.4:1 }}>
+                          Terapkan ke semua baris
+                        </button>
+                      </div>
+
+                      <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+                        {aseMultiRows.map((row, idx) => {
+                          const statusColor = { idle:'#333', pending:'#ffaa00', success:'#4caf50', failed:'#f44336' }[row.status];
+                          return (
+                            <div key={row.id} style={{ display:'grid', gridTemplateColumns:'1fr 110px 40px 26px', gap:'6px', alignItems:'center' }}>
+                              <input type="text" placeholder={`ase1... atau 0x... #${idx+1}`} value={row.to}
+                                onChange={e => aseMultiUpdateRow(row.id, 'to', e.target.value)}
+                                style={{ fontFamily:'monospace', fontSize:'11px', padding:'8px 9px', background: row.status==='failed'?'#1a0000':row.status==='success'?'#001a00':'#0d0d0d', border:`1px solid ${row.to && !aseIsValidAddr(row.to) ? '#f4433666' : row.status!=='idle'?statusColor+'44':'#1e1e1e'}` }}/>
+                              <input type="number" placeholder="0.001" step="0.0001" min="0" value={row.amount}
+                                onChange={e => aseMultiUpdateRow(row.id, 'amount', e.target.value)}
+                                style={{ fontFamily:'monospace', fontSize:'11px', padding:'8px 9px', background:'#0d0d0d', border:'1px solid #1e1e1e' }}/>
+                              <div style={{ fontSize:'10px', fontWeight:'bold', color:statusColor, fontFamily:'monospace', textAlign:'center' }}>
+                                {row.status === 'idle'    && '—'}
+                                {row.status === 'pending' && '⟳'}
+                                {row.status === 'success' && '✓'}
+                                {row.status === 'failed'  && '✗'}
+                              </div>
+                              <button onClick={() => aseMultiRemoveRow(row.id)} disabled={aseMultiRows.length === 1 || aseMultiRunning}
+                                style={{ background:'none', border:'1px solid #2a2a2a', color:'#f44336', padding:'6px', cursor: aseMultiRows.length===1?'not-allowed':'pointer', fontSize:'11px', opacity:aseMultiRows.length===1?0.3:1 }}>
+                                ×
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <button onClick={aseMultiAddRow} disabled={aseMultiRunning}
+                        style={{ alignSelf:'flex-start', background:'none', border:'none', color:ASENTUM_NETWORK.color, padding:'2px 0', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'5px' }}>
+                        <FaPlus size={10}/> Tambah baris
+                      </button>
+
+                      {aseMultiRows.some(r => r.hash || r.error) && (
+                        <div style={{ background:'#070707', border:'1px solid #1a1a1a', padding:'10px 12px', fontSize:'11px', fontFamily:'monospace', display:'flex', flexDirection:'column', gap:'5px' }}>
+                          {aseMultiRows.filter(r => r.hash || r.error).map(r => (
+                            <div key={r.id + '_log'}>
+                              {r.hash && (
+                                <span style={{ color:'#4caf50' }}>
+                                  ✓ {shortAddr(r.to)} —{' '}
+                                  <a href={`${ASENTUM_NETWORK.explorerUrl}/tx/${r.hash}`} target="_blank" rel="noreferrer" style={{ color:'#7a7aff' }}>{r.hash.slice(0,18)}…</a>
+                                </span>
+                              )}
+                              {r.error && <span style={{ color:'#f44336' }}>✗ {shortAddr(r.to)} — {r.error.slice(0,80)}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      <button onClick={aseMultiSend}
+                        disabled={aseMultiRunning || aseMultiRows.every(r => !r.to || !r.amount)}
+                        style={{
+                          padding:'13px', background:aseMultiRunning?'#0a0a1a':ASENTUM_NETWORK.color, color:'#fff', border:'none',
+                          cursor:aseMultiRunning?'wait':'pointer', fontSize:'14px', fontWeight:'bold',
+                          display:'flex', alignItems:'center', justifyContent:'center', gap:'7px',
+                          opacity: aseMultiRows.every(r=>!r.to||!r.amount) ? 0.5 : 1,
+                        }}>
+                        {aseMultiRunning
+                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim {aseMultiRows.filter(r=>r.status==='success').length}/{aseMultiRows.filter(r=>aseIsValidAddr(r.to)&&parseFloat(r.amount)>0).length}...</>
+                          : <><FaPaperPlane/> Kirim {aseMultiRows.filter(r=>aseIsValidAddr(r.to)&&parseFloat(r.amount)>0).length || aseMultiRows.length} Transaksi</>}
+                      </button>
+                      <div style={{ fontSize:'10px', color:'#444', textAlign:'center' }}>
+                        Dikirim satu per satu — tiap TX menunggu konfirmasi sebelum lanjut. Tiap TX memotong gas fee dari saldo yang sama.
+                      </div>
+                    </div>
+                  )}
+
+                  {/* ── Sweep ── */}
+                  {aseMode === 'sweep' && (
+                    <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px', display:'flex', flexDirection:'column', gap:'14px' }}>
+                      <h3 style={{ fontSize:'13px', margin:0 }}><FaExchangeAlt style={{ marginRight:'6px' }}/>Sweep ASE</h3>
+                      <div style={{ fontSize:'11px', color:'#888', lineHeight:'1.6' }}>
+                        Kirim saldo ASE dari banyak wallet ke <strong style={{ color:'#ccc' }}>satu address tujuan</strong>. Wallet dengan saldo lebih kecil dari estimasi fee otomatis di-skip.
+                      </div>
+
+                      <div>
+                        <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Address tujuan (penerima)</label>
+                        <input type="text" placeholder="ase1... atau 0x... yang akan menerima semua dana"
+                          value={aseSweepDestAddr} onChange={e => setAseSweepDestAddr(e.target.value)}
+                          style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px',
+                            borderColor: aseSweepDestAddr && !aseIsValidAddr(aseSweepDestAddr) ? '#f44336' : undefined }}/>
+                        {aseSweepDestAddr && !aseIsValidAddr(aseSweepDestAddr) && (
+                          <div style={{ fontSize:'10px', color:'#f44336', marginTop:'3px' }}>Address tidak valid</div>
+                        )}
+                      </div>
+
+                      <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', padding:'2px' }}>
+                        {(['all','fixed'] as const).map(m => (
+                          <button key={m} onClick={() => setAseSweepAmtMode(m)} style={{
+                            flex:1, padding:'8px', background: aseSweepAmtMode===m ? ASENTUM_NETWORK.color : 'transparent',
+                            border:'none', color: aseSweepAmtMode===m ? '#fff' : '#666', cursor:'pointer', fontSize:'11px', fontWeight:'bold',
+                          }}>
+                            {m === 'all' ? 'Semua Saldo' : 'Jumlah Tetap'}
+                          </button>
+                        ))}
+                      </div>
+
+                      {aseSweepAmtMode === 'fixed' ? (
+                        <div>
+                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Jumlah tetap (ASE) per wallet</label>
+                          <input type="number" placeholder="0.01" step="0.0001" min="0" value={aseSweepFixedAmt}
+                            onChange={e => setAseSweepFixedAmt(e.target.value)}
+                            style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
+                        </div>
+                      ) : (
+                        <div>
+                          <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Sisakan di tiap wallet (ASE, di luar fee)</label>
+                          <input type="number" placeholder="0" step="0.0001" min="0" value={aseSweepLeaveBuf}
+                            onChange={e => setAseSweepLeaveBuf(e.target.value)}
+                            style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
+                        </div>
+                      )}
+
+                      <div>
+                        <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Delay antar TX (ms)</label>
+                        <input type="number" placeholder="1500" step="100" min="0" value={aseSweepDelayMs}
+                          onChange={e => setAseSweepDelayMs(parseInt(e.target.value) || 0)}
+                          style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
+                      </div>
+
+                      {/* Sumber wallet */}
+                      <div style={{ borderTop:'1px solid #161616', paddingTop:'14px' }}>
+                        <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px' }}>
+                          Wallet Sumber ({aseSweepSources.length})
+                        </div>
+                        {wallets.some(w => (w.aseAddresses||[]).length > 0) && (
+                          <div style={{ marginBottom:'10px' }}>
+                            <select onChange={e => { aseSweepAddFromBIP39(e.target.value); e.target.value=''; }} value=""
+                              style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
+                              <option value="">-- Tambah dari wallet tersimpan --</option>
+                              {wallets.flatMap((w, wi) =>
+                                (w.aseAddresses||[]).map(a => (
+                                  <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
+                                    {w.name} · #{a.index} · {a.address.slice(0,14)}...
+                                  </option>
+                                ))
+                              )}
+                            </select>
+                          </div>
+                        )}
+                        <div style={{ display:'flex', gap:'8px', marginBottom:'12px' }}>
+                          <input type="password" placeholder="Atau tempel private key (64 hex seed) manual..."
+                            value={aseSweepManualPK} onChange={e => setAseSweepManualPK(e.target.value)}
+                            style={{ flex:1, fontFamily:'monospace', fontSize:'12px' }}/>
+                          <button onClick={aseSweepAddManualPK} disabled={!aseSweepManualPK.trim()}
+                            style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px 14px', cursor:'pointer', fontSize:'11px', opacity:!aseSweepManualPK.trim()?0.4:1 }}>
+                            <FaPlus size={10}/>
+                          </button>
+                        </div>
+
+                        {aseSweepSources.length > 0 && (
+                          <>
+                            <button onClick={aseSweepFetchBalances} disabled={aseSweepFetchingBal}
+                              style={{ background:'none', border:'1px solid #333', color:'#666', padding:'6px 12px', cursor:'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', marginBottom:'10px' }}>
+                              <FaSync size={10} style={{ animation:aseSweepFetchingBal?'spin 1s linear infinite':undefined }}/> Cek Saldo Semua
+                            </button>
+                            <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+                              {aseSweepSources.map(src => {
+                                const statusColor = { idle:'#333', pending:'#ffaa00', success:'#4caf50', failed:'#f44336', skipped:'#666' }[src.status];
+                                return (
+                                  <div key={src.id} style={{ display:'flex', alignItems:'center', gap:'8px', background:'#0a0a0a', border:`1px solid ${src.status!=='idle'?statusColor+'44':'#151515'}`, padding:'9px 12px' }}>
+                                    <div style={{ flex:1, minWidth:0 }}>
+                                      <div style={{ fontSize:'11px', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{src.label}</div>
+                                      {src.balance && <div style={{ fontSize:'10px', color:'#666' }}>{src.balance}</div>}
+                                      {src.error && <div style={{ fontSize:'10px', color: src.status==='failed' ? '#f44336' : '#888' }}>{src.error}</div>}
+                                      {src.hash && (
+                                        <a href={`${ASENTUM_NETWORK.explorerUrl}/tx/${src.hash}`} target="_blank" rel="noreferrer" style={{ fontSize:'10px', color:'#7a7aff', fontFamily:'monospace' }}>
+                                          {src.hash.slice(0,18)}…
+                                        </a>
+                                      )}
+                                    </div>
+                                    <div style={{ fontSize:'10px', fontWeight:'bold', color:statusColor, fontFamily:'monospace', flexShrink:0 }}>
+                                      {src.status === 'idle'    && '—'}
+                                      {src.status === 'pending' && '⟳'}
+                                      {src.status === 'success' && '✓'}
+                                      {src.status === 'failed'  && '✗'}
+                                      {src.status === 'skipped' && 'skip'}
+                                    </div>
+                                    <button onClick={() => aseSweepRemoveSource(src.id)} disabled={aseSweepRunning}
+                                      style={{ background:'none', border:'none', color:'#f44336', cursor:'pointer', padding:'4px', flexShrink:0 }}>
+                                      ×
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </>
+                        )}
+                      </div>
+
+                      <button onClick={aseSweepRun}
+                        disabled={aseSweepRunning || aseSweepSources.length === 0 || !aseIsValidAddr(aseSweepDestAddr)}
+                        style={{
+                          padding:'13px', fontWeight:'bold', fontSize:'14px', cursor:aseSweepRunning?'wait':'pointer',
+                          background: aseSweepRunning ? '#001a00' : (aseSweepSources.length===0||!aseIsValidAddr(aseSweepDestAddr)) ? '#12301f' : '#00e676',
+                          color: aseSweepRunning ? '#00e676' : (aseSweepSources.length===0||!aseIsValidAddr(aseSweepDestAddr)) ? '#7dffb3' : '#000',
+                          border:`1px solid ${aseSweepRunning?'#00e67644':'#00e676'}`,
+                          display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
+                          opacity: (aseSweepSources.length===0||!aseIsValidAddr(aseSweepDestAddr)) ? 0.85 : 1,
+                          transition:'all 0.2s',
+                        }}>
+                        {aseSweepRunning
+                          ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Sweeping {aseSweepSources.filter(x=>x.status==='success').length}/{aseSweepSources.length}...</>
+                          : <><FaExchangeAlt/> Mulai Sweep {aseSweepSources.length} Wallet</>}
+                      </button>
+                    </div>
+                  )}
 
                   <div style={{ textAlign:'center' }}>
                     <button onClick={aseDisconnect}
@@ -3378,6 +3657,6 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
               Network ini akan segera hadir.
             </div>
           )}
-        </>
+        </div>
   );
 }
