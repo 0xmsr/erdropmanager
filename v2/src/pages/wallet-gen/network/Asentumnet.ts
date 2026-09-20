@@ -52,6 +52,7 @@ export interface AsentumNetworkCfg {
   color: string;
   explorerUrl: string;
   rpcUrls: string[];
+  faucetUrl?: string;   // endpoint HTTP faucet (airdrop dashboard)
 }
 
 // Hanya testnet — Asentum belum punya mainnet.
@@ -65,6 +66,7 @@ export const ASENTUM_NETWORKS: AsentumNetworkCfg[] = [
     rpcUrls: [
       'https://testnet.asentum.com',
     ],
+    faucetUrl: 'https://airdrop.asentum.com/api/faucet',
   },
 ];
 
@@ -177,28 +179,65 @@ export async function getAsentumBalanceWithFallback(net: AsentumNetworkCfg, addr
   throw lastErr || new Error(`Tidak dapat connect ke ${net.name}. Cek koneksi / RPC.`);
 }
 
-// Minta ASE gratis dari faucet testnet lewat method wallet SDK resmi
-// `wallet.requestFaucet()` (docs.asentum.com/reference/sdk). SEBELUMNYA
-// fungsi ini manggil JSON-RPC "asentum_faucet" langsung ke node RPC
-// (dikira generic method karena contoh curl user pakai endpoint yang sama
-// dengan RPC node) — ternyata node RPC-nya balikin
-// `{"code":-32601,"message":"method not found: asentum_faucet"}`, jadi
-// method itu memang cuma ada di level wallet SDK, bukan RPC node biasa.
-// Makanya di sini WAJIB bentuk AsentumWallet dulu (perlu privateKey), tidak
-// bisa cuma modal address kayak requestFaucet versi awal.
-export async function requestAsentumFaucet(net: AsentumNetworkCfg, privateKey: string, rpc?: string): Promise<void> {
+// Minta ASE gratis dari faucet testnet lewat endpoint HTTP airdrop dashboard
+// (POST https://airdrop.asentum.com/api/faucet). SEBELUMNYA pakai
+// `wallet.requestFaucet()` dari @asentum/sdk (JSON-RPC ke node), tapi node
+// sekarang menolak dengan `{accepted:false, reason:"unauthorized: the faucet
+// is available through the airdrop dashboard, the Telegram wallet, or a
+// validator install"}` — jadi jalur SDK sudah tidak bisa dipakai dari app ini.
+// Respons sukses endpoint dashboard: {ok:true, txHash, amount:"5", to:"0x..."}.
+//
+// Body request = {address: "0x..."} (hex 20 byte; bech32 "ase1..." dikonversi
+// dulu). Kalau dashboard ternyata memakai nama field lain, cukup ubah
+// FAUCET_BODY_KEYS di bawah — semua key dicoba berurutan.
+const FAUCET_BODY_KEYS = ['address', 'to', 'wallet'];
+
+export interface AsentumFaucetResult {
+  txHash?: string;
+  hash?: string;
+  amount?: string;
+  to?: string;
+}
+
+export async function requestAsentumFaucet(net: AsentumNetworkCfg, privateKey: string, _rpc?: string): Promise<AsentumFaucetResult> {
+  const url = net.faucetUrl;
+  if (!url) throw new Error(`Faucet tidak dikonfigurasi untuk ${net.name}.`);
+
+  // Address diturunkan dari privateKey (sama seperti sebelumnya) supaya
+  // pemanggil tidak perlu berubah.
+  const hexAddr = toAsentumHex(asentumAddressFromPrivateKey(net, privateKey));
+
   let lastErr: any;
-  for (const r of (rpc ? [rpc] : net.rpcUrls)) {
+  for (const key of FAUCET_BODY_KEYS) {
+    const ctrl  = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 20000);
     try {
-      const wallet = asentumWalletFromPrivateKey(net, privateKey, r);
-      await Promise.race([
-        (wallet as any).requestFaucet(),
-        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 15000)),
-      ]);
-      return;
-    } catch (e) { lastErr = e; }
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ [key]: hexAddr }),
+        signal: ctrl.signal,
+      });
+      const text = await res.text();
+      let data: any = {};
+      try { data = text ? JSON.parse(text) : {}; } catch { data = { message: text }; }
+
+      if (res.ok && data?.ok !== false && data?.accepted !== false) {
+        const txHash = data.txHash || data.hash;
+        return { txHash, hash: txHash, amount: data.amount, to: data.to };
+      }
+      const reason = data?.reason || data?.error || data?.message || `HTTP ${res.status}`;
+      lastErr = new Error(String(reason));
+      // Error karena rate limit / unauthorized tidak akan berubah kalau ganti
+      // nama field — berhenti di sini. Coba key lain hanya untuk error
+      // validasi body (400/422).
+      if (res.status !== 400 && res.status !== 422) break;
+    } catch (e: any) {
+      lastErr = e?.name === 'AbortError' ? new Error('timeout') : e;
+      break;
+    } finally { clearTimeout(timer); }
   }
-  throw lastErr || new Error(`Gagal request faucet dari ${net.name}. Cek koneksi / RPC.`);
+  throw lastErr || new Error(`Gagal request faucet dari ${net.name}. Cek koneksi.`);
 }
 
 function asentumWalletFromPrivateKey(net: AsentumNetworkCfg, privateKey: string, rpc?: string): AsentumWallet {
@@ -297,8 +336,76 @@ export function aseFriendlyError(e: any): string {
   if (/insufficient.*balance/i.test(msg)) return 'Saldo ASE tidak cukup untuk jumlah + gas.';
   if (/invalid.*address/i.test(msg)) return 'Address tujuan tidak valid.';
   if (/format private key/i.test(msg)) return msg;
+  if (/failed to fetch|networkerror|load failed|cors/i.test(msg)) return 'Faucet tidak bisa dijangkau dari browser (kemungkinan diblokir CORS oleh airdrop.asentum.com). Minta lewat dashboard https://airdrop.asentum.com atau Telegram wallet, atau lewatkan lewat proxy backend.';
+  if (/unauthorized/i.test(msg)) return 'Faucet menolak request (unauthorized) — endpoint dashboard mungkin butuh login/sesi. Minta manual lewat https://airdrop.asentum.com atau Telegram wallet.';
   if (/rate.?limit|cooldown|already.*(funded|requested|claimed)|429/i.test(msg)) return 'Faucet lagi dibatasi (rate limit / cooldown) untuk address ini — coba lagi nanti.';
   if (/method not found|-32601/i.test(msg)) return 'Faucet tidak tersedia di RPC/versi SDK ini — cek versi @asentum/sdk atau minta manual lewat dokumentasi Asentum.';
   if (/timeout|halted|frozen/i.test(msg)) return 'Testnet Asentum sedang tidak responsif (chain dilaporkan sempat macet) — coba lagi nanti.';
   return msg || 'Gagal mengirim transaksi ASE.';
+}
+
+async function getAsentumBalanceRaw(net: AsentumNetworkCfg, address: string): Promise<{ raw: bigint; rpc: string }> {
+  let lastErr: any;
+  for (const rpc of net.rpcUrls) {
+    try {
+      const client = makeClient(net, rpc);
+      const bal = await Promise.race([
+        client.getBalance(toAsentumHex(address)),
+        new Promise<never>((_, r) => setTimeout(() => r(new Error('timeout')), 8000)),
+      ]);
+      return { raw: BigInt(bal.balance as any), rpc };
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error(`Tidak dapat connect ke ${net.name}. Cek koneksi / RPC.`);
+}
+
+export interface AsentumSweepOpts {
+  amountMode: 'all' | 'fixed';
+  fixedAse?: string;
+  leaveAse?: string;
+  feeWei: bigint;
+}
+
+export interface AsentumSweepResult {
+  status: 'success' | 'skipped' | 'failed';
+  hash?: string;
+  sentAse?: string;
+  balanceAse?: string;
+  message?: string;
+}
+
+export async function sweepAsentumWallet(
+  net: AsentumNetworkCfg,
+  privateKey: string,
+  to: string,
+  opts: AsentumSweepOpts,
+): Promise<AsentumSweepResult> {
+  if (!isValidAsentumAddress(to)) throw new Error('Address Asentum tujuan tidak valid.');
+
+  const from = asentumAddressFromPrivateKey(net, privateKey);
+  if (toAsentumHex(from).toLowerCase() === toAsentumHex(to).toLowerCase()) {
+    return { status: 'skipped', message: 'Wallet sumber sama dengan address tujuan' };
+  }
+
+  const { raw: balance, rpc } = await getAsentumBalanceRaw(net, from);
+  const balanceAse = formatAse(balance);
+
+  let amount: bigint;
+  if (opts.amountMode === 'all') {
+    const leave = opts.leaveAse && Number(opts.leaveAse) > 0 ? BigInt(parseAse(opts.leaveAse) as any) : 0n;
+    amount = balance - opts.feeWei - leave;
+  } else {
+    amount = BigInt(parseAse(opts.fixedAse || '0') as any);
+    if (amount > 0n && amount + opts.feeWei > balance) {
+      return { status: 'skipped', balanceAse, message: `Saldo ${balanceAse} ASE tidak cukup untuk jumlah + fee` };
+    }
+  }
+  if (amount <= 0n) {
+    return { status: 'skipped', balanceAse, message: `Saldo ${balanceAse} ASE tidak cukup untuk menutup fee` };
+  }
+
+  const wallet = asentumWalletFromPrivateKey(net, privateKey, rpc);
+  const sent   = await wallet.sendTransfer({ to: toAsentumHex(to), amount: amount as any });
+  await sent.wait();
+  return { status: 'success', hash: sent.hash, sentAse: String(formatAse(amount as any)), balanceAse };
 }
