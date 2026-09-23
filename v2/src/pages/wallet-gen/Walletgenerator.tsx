@@ -69,6 +69,8 @@ import {
   deriveAsentumAddress, ASENTUM_NETWORKS, getAsentumBalanceWithFallback, isValidAsentumAddress,
   sendAsentum, aseFriendlyError, ASENTUM_GAS_BUFFER, asentumAddressFromPrivateKey, requestAsentumFaucet, migrateAsentumAddresses,
   estimateAsentumFee, sweepAsentumWallet, type AsentumNetworkCfg, type AsentumFeeEstimate,
+  deployAsentumToken, finishAsentumTokenInit, estimateAsentumTokenDeployFee, validateAsentumTokenParams,
+  type AsentumTokenParams, type AsentumTokenFeeEstimate, type AsentumTokenError,
 } from './network/Asentumnet';
 import {
   deriveGramAddress, GRAM_NETWORKS, GRAM_WALLET_VERSIONS, getGramBalanceWithFallback,
@@ -112,7 +114,7 @@ import type { DeployedErc20Token, DeployedCustomContract, CreatedSplToken, Compi
 
 import type {
   BIP39Wallet, RPCNetwork, AirdropTask, TxQueueItem, AutoContractCall, ChainKind, DetectedToken,
-  GramVersion, WalletGeneratorCtx, CreatedGramToken, ChainlistChain, EvmWalletTx, EvmTokenDetail,
+  GramVersion, WalletGeneratorCtx, CreatedGramToken, CreatedAseToken, ChainlistChain, EvmWalletTx, EvmTokenDetail,
 } from './types';
 import {
   AUTO_ACTION_TEMPLATES, AUTO_SELECTOR_MAP, TX_QUEUE_KEY, TX_HISTORY_KEY, SEPOLIA_RPCS,
@@ -914,6 +916,39 @@ export const WalletGenerator: React.FC = () => {
   useEffect(() => { localStorage.setItem('gramTokens', JSON.stringify(gramTokens)); }, [gramTokens]);
 
   const tcGramSelectedNetwork = GRAM_NETWORKS.find(n => n.id === tcGramNetId) ?? GRAM_NETWORKS[0];
+
+  // ── Token Creator: Asentum (ARC-20, kontrak JavaScript) ──────────────────
+  const [tcAseNetId,       setTcAseNetId]       = useState('testnet');
+  const [tcAseWalletSel,   setTcAseWalletSel]   = useState('');
+  const [tcAsePrivKey,     setTcAsePrivKey]     = useState('');
+  const [tcAseName,        setTcAseName]        = useState('');
+  const [tcAseSymbol,      setTcAseSymbol]      = useState('');
+  const [tcAseDecimals,    setTcAseDecimals]    = useState('18');
+  const [tcAseSupply,      setTcAseSupply]      = useState('1000000');
+  const [tcAseMintable,    setTcAseMintable]    = useState(false);
+  const [tcAseBurnable,    setTcAseBurnable]    = useState(true);
+  const [tcAseCreating,    setTcAseCreating]    = useState(false);
+  const [tcAseRetryingId,  setTcAseRetryingId]  = useState('');
+  const [tcAseStatus,      setTcAseStatus]      = useState<{type:'idle'|'pending'|'success'|'error';msg:string}>({type:'idle',msg:''});
+  const [tcAseFee,         setTcAseFee]         = useState<AsentumTokenFeeEstimate | null>(null);
+  const [tcAseFeeLoading,  setTcAseFeeLoading]  = useState(false);
+  const [tcAseFeeError,    setTcAseFeeError]    = useState('');
+
+  const [aseTokens, setAseTokens] = useState<CreatedAseToken[]>(() => {
+    try { return JSON.parse(localStorage.getItem('aseTokens') || '[]'); } catch { return []; }
+  });
+  useEffect(() => { localStorage.setItem('aseTokens', JSON.stringify(aseTokens)); }, [aseTokens]);
+
+  const tcAseSelectedNetwork = ASENTUM_NETWORKS.find(n => n.id === tcAseNetId) ?? ASENTUM_NETWORKS[0];
+
+  // Address deployer (bech32 ase1...) yang diturunkan dari private key di form — buat
+  // ditampilkan supaya user yakin wallet yang dipakai benar. Keygen ML-DSA cuma jalan
+  // kalau input sudah 64 hex valid; selain itu langsung throw & dianggap kosong.
+  const tcAseDeployerAddr = useMemo(() => {
+    const pk = tcAsePrivKey.trim();
+    if (!/^(0x)?[0-9a-fA-F]{64}$/.test(pk)) return '';
+    try { return asentumAddressFromPrivateKey(tcAseSelectedNetwork, pk); } catch { return ''; }
+  }, [tcAsePrivKey, tcAseSelectedNetwork]);
   const [gramMaxLoading,       setGramMaxLoading]       = useState(false);
   const [gramSendMode,      setGramSendMode]      = useState<'native' | 'jetton' | 'swap'>('native');
   const [gramJettonMaster,  setGramJettonMaster]  = useState('');
@@ -2607,6 +2642,15 @@ export const WalletGenerator: React.FC = () => {
     setAlertData({ isOpen: true, msg, type });
 
   const copyText = async (text: string, label: string) => {
+    // Guard: navigator.clipboard.writeText(undefined) diam-diam menyalin
+    // literal string "undefined" (WebIDL DOMString coercion), bukan gagal.
+    // Ini pernah bikin address kontrak kosong ke-copy jadi teks "undefined"
+    // dan ke-paste ke dApp luar (mis. field address token di form add
+    // liquidity) — tx-nya tetap terkirim tapi revert karena address invalid.
+    if (text == null || text === '') {
+      showAlert('Tidak ada data untuk disalin (field ini masih kosong).', 'error');
+      return;
+    }
     await navigator.clipboard.writeText(text).catch(() => {});
     setCopiedKey(label);
     setTimeout(() => setCopiedKey(''), 1500);
@@ -6908,6 +6952,157 @@ export const WalletGenerator: React.FC = () => {
     });
   };
 
+  // ══ Token Creator Asentum (ARC-20) ══
+  const handleTcAseWalletSel = (val: string) => {
+    setTcAseWalletSel(val);
+    if (!val) return;
+    const [wi, ai] = val.split(',').map(Number);
+    const addr = wallets[wi]?.aseAddresses?.find(a => a.index === ai);
+    if (addr) setTcAsePrivKey(addr.privateKey);
+  };
+
+  const buildTcAseParams = (): AsentumTokenParams => ({
+    name: tcAseName.trim(),
+    symbol: tcAseSymbol.trim().toUpperCase(),
+    decimals: Number(tcAseDecimals),
+    initialSupply: tcAseSupply.trim(),
+    mintable: tcAseMintable,
+    burnable: tcAseBurnable,
+  });
+
+  // Estimasi = batas atas (gas limit penuh), bukan biaya aktual. Tidak broadcast apa pun.
+  const estimateTcAseFee = async () => {
+    setTcAseFeeLoading(true);
+    setTcAseFeeError('');
+    try {
+      setTcAseFee(await estimateAsentumTokenDeployFee(tcAseSelectedNetwork, { mintable: tcAseMintable, burnable: tcAseBurnable }));
+    } catch (e: any) {
+      setTcAseFeeError(aseFriendlyError(e) || 'Gagal mengambil estimasi fee.');
+    }
+    setTcAseFeeLoading(false);
+  };
+
+  const createAseToken = async () => {
+    if (tcAseCreating || tcAseRetryingId) return;
+    const pk = tcAsePrivKey.trim();
+    if (!pk) { showAlert('Isi private key Asentum dulu (64 hex), atau pilih dari wallet tersimpan.', 'error'); return; }
+    const net = tcAseSelectedNetwork;
+    const params = buildTcAseParams();
+
+    // Validasi SEBELUM konfirmasi & sebelum ada tx — error input tidak boleh menghabiskan gas.
+    let validated;
+    try { validated = validateAsentumTokenParams(params); }
+    catch (e: any) { showAlert(e?.message || 'Input token tidak valid.', 'error'); return; }
+    let deployer = '';
+    try { deployer = asentumAddressFromPrivateKey(net, pk); }
+    catch (e: any) { showAlert(aseFriendlyError(e) || 'Private key Asentum tidak valid.', 'error'); return; }
+
+    // Saldo 0 pasti gagal bayar gas → cegah di depan. Selain itu jangan diblok: estimasi fee cuma batas atas.
+    try {
+      const bal = await getAsentumBalanceWithFallback(net, deployer);
+      if (!(bal > 0)) {
+        showAlert(`Saldo ASE wallet ${shortAddr(deployer)} 0 — minta faucet dulu di tab Transfer → Asentum.`, 'error');
+        return;
+      }
+    } catch { /* cek saldo gagal (RPC lambat) → lanjut, biar deploy yang melaporkan error sebenarnya */ }
+
+    const ok = await requestTxConfirm({
+      title: `Deploy Token ARC-20: ${validated.name} (${validated.symbol})`,
+      network: net.name,
+      to: shortAddr(deployer),
+      value: `Supply ${params.initialSupply} ${validated.symbol} · ${validated.decimals} decimals`,
+      extra: `2 transaksi berurutan: (1) deploy kontrak JavaScript baru, (2) init() — set nama/symbol & mint seluruh supply ke ${shortAddr(deployer)}. ` +
+        `Mint lanjutan: ${validated.mintable ? 'AKTIF (owner bisa mencetak token tambahan kapan saja)' : 'TIDAK ADA — supply terkunci permanen'}. ` +
+        `Burn: ${validated.burnable ? 'ada' : 'tidak ada'}. Testnet — token tidak bernilai uang.`,
+    });
+    if (!ok) return;
+
+    setTcAseCreating(true);
+    setTcAseStatus({ type: 'pending', msg: 'Menyiapkan deploy...' });
+    try {
+      const res = await deployAsentumToken(net, pk, params, msg => setTcAseStatus({ type: 'pending', msg }));
+      const newToken: CreatedAseToken = {
+        id: Date.now().toString(),
+        contractAddress: res.contractAddress, ownerAddress: res.ownerAddress,
+        netId: net.id, networkName: net.name,
+        name: validated.name, symbol: validated.symbol, decimals: validated.decimals,
+        initialSupply: params.initialSupply, mintable: validated.mintable, burnable: validated.burnable,
+        status: 'ready', deployTxHash: res.deployTxHash, initTxHash: res.initTxHash,
+        createdAt: Date.now(), note: res.verifyWarning,
+      };
+      setAseTokens(prev => [newToken, ...prev]);
+      setTcAseStatus({ type: 'success', msg: `Token berhasil dibuat! Kontrak: ${res.contractAddress}${res.verifyWarning ? ` — ⚠ ${res.verifyWarning}` : ''}` });
+      showAlert(`Token "${validated.name}" berhasil dibuat!`, 'success');
+      saveTxHistory({
+        taskName: 'Deploy Token ARC-20', description: `Deploy ${validated.name} (${validated.symbol}) di ${net.name}`,
+        to: res.contractAddress, value: params.initialSupply, data: '',
+        status: 'success', txHash: res.deployTxHash, timestamp: Date.now(),
+      });
+      setTcAseName(''); setTcAseSymbol(''); setTcAseSupply('1000000'); setTcAseFee(null);
+    } catch (e: any) {
+      const err = e as AsentumTokenError;
+      const msg = String(aseFriendlyError(err) || err?.message || 'Gagal membuat token.');
+      // Kontrak sudah ada di chain tapi belum ter-init → SIMPAN, jangan hilang. Deploy ulang = kontrak baru + gas terbuang.
+      if (err?.contractAddress && (err.stage === 'init' || err.stage === 'deploy')) {
+        const orphan: CreatedAseToken = {
+          id: Date.now().toString(),
+          contractAddress: err.contractAddress, ownerAddress: deployer,
+          netId: net.id, networkName: net.name,
+          name: validated.name, symbol: validated.symbol, decimals: validated.decimals,
+          initialSupply: params.initialSupply, mintable: validated.mintable, burnable: validated.burnable,
+          status: 'needs-init', deployTxHash: err.deployTxHash || '', createdAt: Date.now(),
+          note: msg.slice(0, 240),
+        };
+        setAseTokens(prev => [orphan, ...prev]);
+        setTcAseStatus({ type: 'error', msg: `Kontrak ${err.contractAddress} sudah ter-deploy tapi belum ter-init: ${msg.slice(0, 160)} — tersimpan di daftar, klik "Selesaikan Inisialisasi".` });
+        showAlert('Kontrak ter-deploy tapi init() gagal — lihat daftar token untuk menyelesaikannya.', 'error');
+      } else {
+        setTcAseStatus({ type: 'error', msg: msg.slice(0, 220) });
+        showAlert('Gagal: ' + msg.slice(0, 160), 'error');
+      }
+    }
+    setTcAseCreating(false);
+  };
+
+  // Lanjutkan init() untuk token status 'needs-init'. Pakai private key di form (harus deployer aslinya).
+  const retryAseTokenInit = async (id: string) => {
+    if (tcAseCreating || tcAseRetryingId) return;
+    const t = aseTokens.find(x => x.id === id);
+    if (!t) return;
+    const pk = tcAsePrivKey.trim();
+    if (!pk) { showAlert('Isi private key deployer di form dulu (harus wallet yang sama dengan yang mendeploy kontrak ini).', 'error'); return; }
+    const net = ASENTUM_NETWORKS.find(n => n.id === t.netId) ?? ASENTUM_NETWORKS[0];
+    setTcAseRetryingId(id);
+    setTcAseStatus({ type: 'pending', msg: `Melanjutkan init() untuk ${t.symbol}...` });
+    try {
+      const res = await finishAsentumTokenInit(net, pk, t.contractAddress, {
+        name: t.name, symbol: t.symbol, decimals: t.decimals, initialSupply: t.initialSupply,
+        mintable: t.mintable, burnable: t.burnable,
+      }, t.deployTxHash, msg => setTcAseStatus({ type: 'pending', msg }));
+      setAseTokens(prev => prev.map(x => x.id === id
+        ? { ...x, status: 'ready', initTxHash: res.initTxHash || x.initTxHash, note: res.verifyWarning }
+        : x));
+      setTcAseStatus({ type: 'success', msg: `Token ${t.symbol} sekarang aktif. Kontrak: ${t.contractAddress}` });
+      showAlert(`Token "${t.name}" berhasil diinisialisasi!`, 'success');
+    } catch (e: any) {
+      const msg = String(aseFriendlyError(e) || e?.message || 'Gagal init().');
+      setTcAseStatus({ type: 'error', msg: msg.slice(0, 220) });
+      showAlert('Gagal: ' + msg.slice(0, 160), 'error');
+    }
+    setTcAseRetryingId('');
+  };
+
+  const deleteAseToken = (id: string) => {
+    const t = aseTokens.find(x => x.id === id);
+    setConfirmData({
+      isOpen: true, title: 'HAPUS DARI DAFTAR?',
+      message: t?.status === 'needs-init'
+        ? 'Kontrak ini BELUM ter-init. Menghapus catatan berarti kamu kehilangan cara mudah untuk menyelesaikannya dari app ini (kontraknya tetap ada di chain). Yakin?'
+        : 'Ini hanya menghapus catatan lokal — kontrak token tetap ada di blockchain.',
+      action: () => { setAseTokens(prev => prev.filter(x => x.id !== id)); showAlert('Catatan token dihapus.', 'hapus'); },
+    });
+  };
+
   // -- Deploy token TRC-20 (pakai ulang bytecode/ABI ERC-20, valid krn ABI Solidity sama) --
   const deployTrc20Token = async () => {
     const net = TRON_NETWORKS.find(n => n.id === tcTronNetId) ?? TRON_NETWORKS[0];
@@ -7997,6 +8192,12 @@ export const WalletGenerator: React.FC = () => {
     tcGramDecimals, setTcGramDecimals, tcGramSupply, setTcGramSupply, tcGramDescription, setTcGramDescription,
     tcGramImageUrl, setTcGramImageUrl, handleTcGramImageFile, tcGramImageUploading, tcGramCreating, tcGramStatus,
     tcGramFeeGram, tcGramFeeDetail, tcGramFeeLoading, tcGramFeeError, tcGramSelectedNetwork, tcGramMetaPreview,
+    aseTokens, deleteAseToken, createAseToken, retryAseTokenInit, estimateTcAseFee,
+    tcAseNetId, setTcAseNetId, tcAseWalletSel, setTcAseWalletSel, handleTcAseWalletSel,
+    tcAsePrivKey, setTcAsePrivKey, tcAseDeployerAddr, tcAseSelectedNetwork,
+    tcAseName, setTcAseName, tcAseSymbol, setTcAseSymbol, tcAseDecimals, setTcAseDecimals,
+    tcAseSupply, setTcAseSupply, tcAseMintable, setTcAseMintable, tcAseBurnable, setTcAseBurnable,
+    tcAseCreating, tcAseRetryingId, tcAseStatus, tcAseFee, tcAseFeeLoading, tcAseFeeError,
     tcName, tcNetworkId, tcPrivKey, tcSelectedNetwork, tcSolAddMeta, tcSolCreating, 
     tcSolDecimals, tcSolDescription, tcSolFeeDetail, tcSolFeeError, tcSolFeeLoading, tcSolFeeSol, 
     tcSolImageUploading, tcSolImageUrl, tcSolMetaPreview, tcSolName, tcSolNetId, tcSolPinataJwt, tcSolPrivKey, 
