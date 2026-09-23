@@ -21,6 +21,25 @@ interface Version {
 
 const CHANGELOG: Version[] = [
   {
+    version: '2.4.4',
+    date: '23 Sep 2026',
+    title: 'Update v2.4.4',
+    changes: [
+      { type: 'feature', text: 'Menambahkan Fitur ARC-20 Send / receive dan Fitur Dex SWAP/LP di Asentum Network ~WalletGen' },
+      { type: 'feature', text: 'Menambahkan Fitur Gas Option di Asentum Network ~WalletGen' },
+      { type: 'fix', text: 'Memperbaiki Bug di Asentum Network ~WalletGen' },
+    ],
+  }, 
+  {
+    version: '2.4.3',
+    date: '20 Sep 2026',
+    title: 'Update v2.4.3',
+    changes: [
+      { type: 'feature', text: 'Menambahkan multi send & sweep transaksi pada Asentum Network ~WalletGen' },
+      { type: 'feature', text: 'Menambahkan Tema UI di Send & Receive ~WalletGen' },
+    ],
+  }, 
+  {
     version: '2.4.2',
     date: '19 Sep 2026',
     title: 'Update v2.4.2',
