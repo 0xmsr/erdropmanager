@@ -29,9 +29,6 @@ export interface RPCNetwork {
   color: string;
 }
 
-// Bentuk data mentah satu chain dari Chainlist (chainid.network/chains.json).
-// Hanya field yang benar-benar dipakai yang dideklarasikan di sini — respons
-// aslinya punya banyak field lain (icon, faucets, parent, dll) yang diabaikan.
 export interface ChainlistChain {
   name: string;
   chain: string;
@@ -105,6 +102,25 @@ export interface CreatedGramToken {
   metadataUri?: string;
   imageUrl?: string;
   description?: string;
+}
+
+export interface CreatedAseToken {
+  id: string;
+  contractAddress: string;
+  ownerAddress: string;
+  netId: string;
+  networkName: string;
+  name: string;
+  symbol: string;
+  decimals: number;
+  initialSupply: string;
+  mintable: boolean;
+  burnable: boolean;
+  status: 'ready' | 'needs-init';
+  deployTxHash: string;
+  initTxHash?: string;
+  createdAt: number;
+  note?: string;
 }
 
 export interface EvmWalletTx {
