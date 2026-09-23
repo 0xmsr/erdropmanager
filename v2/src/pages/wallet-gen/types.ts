@@ -160,3 +160,4 @@ export interface DetectedToken {
 }
 
 export type WalletGeneratorCtx = Record<string, any>;
+// fix bug
