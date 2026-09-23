@@ -6,9 +6,1728 @@ import type { WalletGeneratorCtx, ChainKind } from './types';
 import { CHAIN_OPTIONS } from './constants';
 import { shortAddr } from './helpers';
 import { GRAM_WALLET_VERSIONS, formatGramSwapOutput } from './network/Gramnet';
-import { asentumBech32ToHex } from './network/Asentumnet';
+import {
+  asentumBech32ToHex, readAsentumToken, sendArc20Token, checkArc20SendGas, asentumUnitsFromDecimalString,
+  asentumFormatUnits, isValidAsentumAddress as isValidAseAddress, getAsentumBalanceWithFallback, aseFriendlyError,
+  AURA_SWAP_NATIVE, isAuraSwapNative, findAuraSwapPoolId, readAuraSwapPool, getAuraSwapQuote, getAuraSwapAllowance,
+  executeAuraSwap, getAuraSwapShares, createAuraSwapPool, addAuraSwapLiquidity, removeAuraSwapLiquidity,
+  detectAuraSwapTokens, detectAuraSwapPositions, previewAseGasFee, AURA_SWAP_GAS_LIMIT,
+} from './network/Asentumnet';
+import type { AsentumArc20GasCheck, AuraSwapPool, AuraSwapTokenInfo, AuraSwapPosition, AseGasSpeed, AseGasOverride } from './network/Asentumnet';
 import { chainAccent } from './wallet-themes/pixelTheme';
 import { UI_THEMES, getUiTheme, themeScope } from './wallet-themes/UiThemes';
+
+type Arc20Custom = { address: string; name: string; symbol: string; decimals: number };
+const arc20CustomKey = (netId: string) => `aseArc20Custom:${netId}`;
+function loadArc20Custom(netId: string): Arc20Custom[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(arc20CustomKey(netId)) || '[]');
+    return Array.isArray(v) ? v.filter(x => x && typeof x.address === 'string' && typeof x.symbol === 'string') : [];
+  } catch { return []; }
+}
+function saveArc20Custom(netId: string, list: Arc20Custom[]) {
+  try { localStorage.setItem(arc20CustomKey(netId), JSON.stringify(list)); } catch { /* storage penuh / diblokir */ }
+}
+
+function arc20Hex(addr: string): string {
+  const a = addr.trim();
+  return (a.toLowerCase().startsWith('0x') ? a : asentumBech32ToHex(a)).toLowerCase();
+}
+function arc20Thousands(v: string | null | undefined): string {
+  if (v == null || v === '') return '—';
+  const [w, f] = String(v).split('.');
+  return (w || '0').replace(/\B(?=(\d{3})+(?!\d))/g, ',') + (f ? '.' + f : '');
+}
+function arc20ShortAmt(v: string | null | undefined): string {
+  if (v == null || v === '') return '?';
+  const [w, f = ''] = String(v).split('.');
+  const frac = f.slice(0, 6).replace(/0+$/, '');
+  return arc20Thousands(frac ? `${w}.${frac}` : w);
+}
+
+function AseArc20PickerSheet({ ctx, net, tokens, activeAddress, loading, search, setSearch, onClose, onSelect, onRefresh,
+  customAddr, setCustomAddr, onAddCustom, adding, addError }: {
+  ctx: any; net: any;
+  tokens: { address: string; symbol: string; name: string; balance: string }[];
+  activeAddress: string; loading: boolean; search: string; setSearch: (v: string) => void;
+  onClose: () => void; onSelect: (address: string) => void; onRefresh: () => void;
+  customAddr: string; setCustomAddr: (v: string) => void; onAddCustom: () => void; adding: boolean; addError: string;
+}) {
+  const { FaSearch, FaSync, FaSpinner, FaCheckCircle, FaPlus } = ctx;
+  const q = search.trim().toLowerCase();
+  const filtered = q
+    ? tokens.filter(t => t.symbol.toLowerCase().includes(q) || t.name.toLowerCase().includes(q) || t.address.toLowerCase().includes(q))
+    : tokens;
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', display:'flex', alignItems:'flex-end', justifyContent:'center', zIndex:9999 }}
+      onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}
+        style={{
+          background:'#111', border:'1px solid #262626', borderBottom:'none', width:'100%', maxWidth:'480px',
+          maxHeight:'78vh', display:'flex', flexDirection:'column', borderRadius:'16px 16px 0 0', overflow:'hidden',
+          animation:'slideUp 0.18s ease-out',
+        }}>
+        <div style={{ display:'flex', justifyContent:'center', padding:'10px 0 4px' }}>
+          <div style={{ width:'36px', height:'4px', borderRadius:'2px', background:'#333' }} />
+        </div>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 18px 14px' }}>
+          <span style={{ fontSize:'15px', fontWeight:'bold' }}>Pilih Token</span>
+          <button onClick={onClose} style={{ background:'none', border:'none', color:'#888', cursor:'pointer', fontSize:'18px', padding:'4px', lineHeight:1 }}>×</button>
+        </div>
+
+        <div style={{ padding:'0 18px 14px' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'8px', background:'#1a1a1a', border:'1px solid #2a2a2a', borderRadius:'10px', padding:'10px 12px' }}>
+            <FaSearch size={12} color="#555"/>
+            <input
+              autoFocus
+              placeholder="Cari nama token atau tempel address..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{ flex:1, background:'none', border:'none', outline:'none', color:'#eee', fontSize:'13px' }}
+            />
+            {search && (
+              <button onClick={() => setSearch('')} style={{ background:'none', border:'none', color:'#555', cursor:'pointer', fontSize:'14px', padding:0 }}>×</button>
+            )}
+          </div>
+        </div>
+
+        <div style={{ padding:'0 10px 6px', display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <span style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', padding:'0 8px' }}>
+            Token ARC-20 Tersimpan
+          </span>
+          <button onClick={onRefresh} disabled={loading}
+            style={{ background:'none', border:'none', color:'#555', cursor:'pointer', fontSize:'10px', display:'flex', alignItems:'center', gap:'4px', padding:'0 8px' }}>
+            <FaSync size={9} style={{ animation:loading?'spin 1s linear infinite':undefined }}/> Refresh
+          </button>
+        </div>
+
+        <div style={{ overflowY:'auto', flex:1, padding:'4px 10px 14px' }}>
+          {loading && tokens.length === 0 && (
+            <div style={{ textAlign:'center', color:'#555', padding:'30px 0', fontSize:'12px' }}>
+              <FaSpinner style={{ animation:'spin 1s linear infinite', marginBottom:'8px' }} size={16}/>
+              <div>Memuat token...</div>
+            </div>
+          )}
+          {!loading && filtered.length === 0 && (
+            <div style={{ textAlign:'center', color:'#444', padding:'30px 8px', fontSize:'12px', lineHeight:1.6 }}>
+              {tokens.length === 0
+                ? 'Belum ada token ARC-20 tersimpan. Tempel address kontraknya manual di kolom bawah, atau buat token baru lewat Token Creator.'
+                : 'Tidak ada token yang cocok dengan pencarian.'}
+            </div>
+          )}
+          {filtered.map(t => {
+            const isActive = t.address.toLowerCase() === activeAddress.toLowerCase();
+            return (
+              <div key={t.address} onClick={() => onSelect(t.address)}
+                style={{
+                  display:'flex', alignItems:'center', gap:'12px', padding:'10px 8px', cursor:'pointer',
+                  borderRadius:'10px', background: isActive ? `${net.color}1a` : 'transparent',
+                }}
+                onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = '#1a1a1a'; }}
+                onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
+                <div style={{ width:34, height:34, borderRadius:'50%', background:'#222', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'11px', color:'#666', fontWeight:'bold' }}>
+                  {t.symbol.slice(0,2).toUpperCase()}
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:'13px', fontWeight:'bold', color:'#eee' }}>{t.symbol}</div>
+                  <div style={{ fontSize:'11px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{t.name}</div>
+                </div>
+                <div style={{ textAlign:'right', flexShrink:0 }}>
+                  <div style={{ fontSize:'13px', fontFamily:'monospace', color:'#eee' }}>{t.balance}</div>
+                  <div style={{ fontSize:'10px', color:'#555', fontFamily:'monospace' }}>{t.address.slice(0,6)}…{t.address.slice(-4)}</div>
+                </div>
+                {isActive && <FaCheckCircle size={13} color={net.color} style={{ flexShrink:0 }}/>}
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ padding:'10px 14px 16px', borderTop:'1px solid #1e1e1e', flexShrink:0 }}>
+          <div style={{ fontSize:'10px', color:'#555', marginBottom:'6px' }}>Gak ketemu? Tambah manual:</div>
+          <div style={{ display:'flex', gap:'6px' }}>
+            <input type="text" placeholder="Contract address token (0x...)" value={customAddr}
+              onChange={e => setCustomAddr(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && customAddr.trim() && !adding) onAddCustom(); }}
+              style={{ flex:1, boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px', padding:'9px 10px', background:'#1a1a1a', border:'1px solid #2a2a2a', color:'#eee' }}/>
+            <button onClick={onAddCustom} disabled={adding || !customAddr.trim()}
+              style={{ background:'none', border:'1px solid #333', color:net.color, padding:'0 14px', cursor:'pointer', fontSize:'11px', whiteSpace:'nowrap', opacity:(!customAddr.trim())?0.5:1 }}>
+              {adding ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : <><FaPlus size={10}/> Tambah</>}
+            </button>
+          </div>
+          {addError && <div style={{ fontSize:'11px', color:'#ff8a80', marginTop:'6px' }}>{addError}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AseArc20Panel({ ctx, net, privateKey, holderHex, holderBech32, savedTokens = [] }: {
+  ctx: any; net: any; privateKey: string; holderHex: string; holderBech32: string; savedTokens?: any[];
+}) {
+  const {
+    FaCoins, FaSync, FaSpinner, FaChevronDown, FaTrash, FaPaperPlane, FaLink, FaQrcode, FaCopy, FaCheckCircle,
+    FaGasPump, FaExclamationTriangle, copyText, copiedKey, setQrAddress,
+  } = ctx;
+
+  const [tokenAddr, setTokenAddr] = React.useState('');   // hex lowercase
+  const [info, setInfo] = React.useState<{ name: string | null; symbol: string | null; decimals: number | null; totalSupply: string | null; ownerBalance: string | null } | null>(null);
+  const [loadingInfo, setLoadingInfo] = React.useState(false);
+  const [infoError, setInfoError] = React.useState('');
+  const [to, setTo] = React.useState('');
+  const [amount, setAmount] = React.useState('');
+  const [sending, setSending] = React.useState(false);
+  const [status, setStatus] = React.useState<{ type: 'pending' | 'success' | 'error'; msg: string; hash?: string } | null>(null);
+  const [gas, setGas] = React.useState<AsentumArc20GasCheck | null>(null);
+  const [gasLoading, setGasLoading] = React.useState(false);
+  const [gasError, setGasError] = React.useState('');
+  const [custom, setCustom] = React.useState<Arc20Custom[]>(() => loadArc20Custom(net.id));
+  const [balances, setBalances] = React.useState<Record<string, any>>({});
+  const [balLoading, setBalLoading] = React.useState(false);
+  const [pickerOpen, setPickerOpen] = React.useState(false);
+  const [pickerSearch, setPickerSearch] = React.useState('');
+  const [customAddr, setCustomAddr] = React.useState('');
+  const [adding, setAdding] = React.useState(false);
+  const [addError, setAddError] = React.useState('');
+
+  const mountedRef = React.useRef(true);
+  const infoReqRef = React.useRef(0);
+  const balReqRef  = React.useRef(0);
+
+  React.useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+
+  const created = (savedTokens || [])
+    .filter(t => t && t.status === 'ready' && t.contractAddress && (!t.netId || t.netId === net.id))
+    .map(t => ({ address: String(t.contractAddress).toLowerCase(), symbol: String(t.symbol || '?'), name: String(t.name || t.symbol || 'Token'), source: 'created' as const }));
+  const needsInitCount = (savedTokens || []).filter(t => t && t.status === 'needs-init' && (!t.netId || t.netId === net.id)).length;
+  const createdSet = new Set(created.map(t => t.address));
+  const customOnly = custom
+    .filter(t => !createdSet.has(t.address.toLowerCase()))
+    .map(t => ({ address: t.address.toLowerCase(), symbol: t.symbol, name: t.name, source: 'custom' as const }));
+  const known = [...created, ...customOnly];
+  const knownKey = known.map(t => t.address).join(',');
+  const selectedKnown = known.find(t => t.address === tokenAddr.toLowerCase());
+  const balOf = (addr: string): string | null => balances[addr.toLowerCase()]?.ownerBalance ?? null;
+  const loadBalances = async () => {
+    if (!holderHex || known.length === 0) return;
+    const reqId = ++balReqRef.current;
+    setBalLoading(true);
+    const results = await Promise.all(known.map(async t => {
+      try { return [t.address, await readAsentumToken(net, t.address, holderHex)] as const; }
+      catch { return [t.address, null] as const; }
+    }));
+    if (!mountedRef.current || reqId !== balReqRef.current) return;
+    setBalances(prev => {
+      const next = { ...prev };
+      for (const [k, r] of results) if (r && r.name != null) next[k] = r;
+      return next;
+    });
+    setBalLoading(false);
+  };
+  React.useEffect(() => { loadBalances(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [net.id, holderHex, knownKey]);
+
+  const loadInfo = async (addrOverride?: string) => {
+    const addr = (addrOverride ?? tokenAddr).trim();
+    if (!addr) return;
+    if (!isValidAseAddress(addr)) { setInfoError('Address kontrak token tidak valid.'); setInfo(null); return; }
+    const reqId = ++infoReqRef.current;
+    setLoadingInfo(true); setInfoError('');
+    try {
+      const result = await readAsentumToken(net, addr, holderHex);
+      if (reqId !== infoReqRef.current || !mountedRef.current) return;
+      if (result.name == null || result.decimals == null) {
+        setInfoError('Kontrak ditemukan, tapi bukan (atau bukan versi) ARC-20 yang valid — name()/decimals() tidak terbaca.');
+        setInfo(null);
+      } else {
+        setInfo(result);
+        setBalances(prev => ({ ...prev, [addr.toLowerCase()]: result }));
+      }
+    } catch (e: any) {
+      if (reqId !== infoReqRef.current || !mountedRef.current) return;
+      setInfoError(e?.message || 'Gagal membaca kontrak token.');
+      setInfo(null);
+    } finally {
+      if (reqId === infoReqRef.current && mountedRef.current) setLoadingInfo(false);
+    }
+  };
+
+  const selectToken = (addr: string) => {
+    const hex = addr.toLowerCase();
+    setPickerOpen(false); setPickerSearch(''); setAddError(''); setCustomAddr('');
+    setStatus(null); setAmount(''); setInfoError('');
+    setTokenAddr(hex);
+    const cached = balances[hex];
+    setInfo(cached && cached.name != null && cached.decimals != null ? cached : null);
+    loadInfo(hex);
+  };
+
+  const addCustom = async () => {
+    const raw = customAddr.trim();
+    if (!isValidAseAddress(raw)) { setAddError('Address kontrak token tidak valid.'); return; }
+    let hex = '';
+    try { hex = arc20Hex(raw); } catch { setAddError('Address kontrak token tidak valid.'); return; }
+    if (known.some(t => t.address === hex)) { selectToken(hex); return; }
+    setAdding(true); setAddError('');
+    try {
+      const r = await readAsentumToken(net, hex, holderHex);
+      if (!mountedRef.current) return;
+      if (r.name == null || r.decimals == null || !r.symbol) {
+        setAddError('Kontrak ditemukan, tapi bukan (atau bukan versi) ARC-20 yang valid — name()/symbol()/decimals() tidak terbaca.');
+        return;
+      }
+      const next = [{ address: hex, name: r.name, symbol: r.symbol, decimals: r.decimals }, ...custom.filter(t => t.address.toLowerCase() !== hex)];
+      setCustom(next); saveArc20Custom(net.id, next);
+      setBalances(prev => ({ ...prev, [hex]: r }));
+      selectToken(hex);
+    } catch (e: any) {
+      if (mountedRef.current) setAddError(e?.message || 'Gagal membaca kontrak token.');
+    } finally { if (mountedRef.current) setAdding(false); }
+  };
+
+  const removeCustom = (addr: string) => {
+    const next = custom.filter(t => t.address.toLowerCase() !== addr.toLowerCase());
+    setCustom(next); saveArc20Custom(net.id, next);
+    if (tokenAddr.toLowerCase() === addr.toLowerCase()) { setTokenAddr(''); setInfo(null); setAmount(''); setStatus(null); }
+  };
+
+  const refreshGas = async () => {
+    if (!holderHex && !holderBech32) return;
+    setGasLoading(true); setGasError('');
+    try {
+      const g = await checkArc20SendGas(net, holderHex || holderBech32);
+      if (mountedRef.current) setGas(g);
+    } catch (e: any) {
+      if (mountedRef.current) { setGas(null); setGasError(e?.message || 'Gagal membaca saldo ASE / estimasi fee.'); }
+    } finally {
+      if (mountedRef.current) setGasLoading(false);
+    }
+  };
+
+  React.useEffect(() => { refreshGas();}, [net.id, holderHex]);
+
+  const refreshAll = () => { loadBalances(); refreshGas(); if (tokenAddr) loadInfo(); };
+  const amountCheck: { ok: boolean; err: string } = (() => {
+    const s = amount.trim();
+    if (!s || !info || info.decimals == null) return { ok: false, err: '' };
+    if (!/^\d+(\.\d+)?$/.test(s)) return { ok: false, err: 'Jumlah tidak valid.' };
+    const frac = s.split('.')[1] || '';
+    if (frac.length > info.decimals) return { ok: false, err: `Maksimal ${info.decimals} angka desimal untuk token ini.` };
+    try {
+      const units = asentumUnitsFromDecimalString(s, info.decimals);
+      const bal   = asentumUnitsFromDecimalString(info.ownerBalance || '0', info.decimals);
+      if (units <= 0n) return { ok: false, err: '' };
+      if (units > bal) return { ok: false, err: `Melebihi saldo token kamu (${info.ownerBalance ?? '0'} ${info.symbol}).` };
+      return { ok: true, err: '' };
+    } catch { return { ok: false, err: 'Jumlah tidak valid.' }; }
+  })();
+
+  const noGasBalance = !!gas && !gas.hasAnyBalance;
+  const canSend = !sending && !!info && isValidAseAddress(to.trim()) && amountCheck.ok && !noGasBalance;
+
+  const send = async () => {
+    if (!canSend || !info || info.decimals == null || !info.symbol) return;
+    setSending(true);
+    setStatus({ type: 'pending', msg: `Mengirim ${amount} ${info.symbol}...` });
+    try {
+      const hash = await sendArc20Token(net, privateKey, tokenAddr.trim(), to.trim(), amount.trim(), info.decimals);
+      if (!mountedRef.current) return;
+      setStatus({ type: 'success', msg: `Berhasil mengirim ${amount} ${info.symbol}.`, hash });
+      setAmount('');
+      loadInfo();
+      refreshGas();
+      loadBalances();
+    } catch (e: any) {
+      if (mountedRef.current) setStatus({ type: 'error', msg: e?.message || 'Gagal mengirim token.' });
+    } finally { if (mountedRef.current) setSending(false); }
+  };
+
+  const statusColor = status ? ({ pending:'#ffaa00', success:'#4caf50', error:'#f44336' } as const)[status.type] : '#555';
+  const selSymbol = info?.symbol ?? selectedKnown?.symbol ?? null;
+  const selName   = info?.name   ?? selectedKnown?.name   ?? null;
+  const recvAddr  = holderHex || holderBech32;
+
+  const pickerTokens = known
+    .map(t => {
+      const b = balances[t.address];
+      const bal = b?.ownerBalance ?? null;
+      const held = bal != null && /[1-9]/.test(bal);
+      return { address: t.address, symbol: b?.symbol ?? t.symbol, name: b?.name ?? t.name, held,
+        balance: bal != null ? arc20ShortAmt(bal) : (balLoading ? '…' : '?') };
+    })
+    .sort((a, b) => Number(b.held) - Number(a.held));
+
+  return (
+    <>
+      {/* ── Kartu Kirim (pola ERC-20/Jetton) ── */}
+      <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px', gap:'8px' }}>
+          <h3 style={{ fontSize:'13px', margin:0 }}><FaCoins style={{ marginRight:'6px' }}/>Kirim Token ARC-20</h3>
+          <button onClick={refreshAll} disabled={balLoading || loadingInfo || gasLoading}
+            style={{ background:'none', border:'none', color:'#555', cursor:'pointer', fontSize:'10px', display:'flex', alignItems:'center', gap:'4px' }}>
+            <FaSync size={9} style={{ animation:(balLoading||loadingInfo||gasLoading)?'spin 1s linear infinite':undefined }}/> Refresh saldo
+          </button>
+        </div>
+
+        <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Token</label>
+        <button onClick={() => setPickerOpen(true)}
+          style={{
+            width:'100%', display:'flex', alignItems:'center', gap:'10px', background:'#070707',
+            border:'1px solid #262626', borderRadius:'10px', padding:'10px 12px', cursor:'pointer',
+            textAlign:'left', boxSizing:'border-box',
+          }}>
+          {selSymbol
+            ? <div style={{ width:28, height:28, borderRadius:'50%', background:'#1a1a1a', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'10px', color:net.color, fontWeight:'bold' }}>{selSymbol.slice(0,2).toUpperCase()}</div>
+            : <div style={{ width:28, height:28, borderRadius:'50%', background:'#1a1a1a', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center' }}>
+                <FaCoins size={12} color={net.color}/>
+              </div>}
+          <div style={{ flex:1, minWidth:0 }}>
+            {selSymbol ? (
+              <>
+                <div style={{ fontSize:'13px', fontWeight:'bold', color:'#eee' }}>{selSymbol}</div>
+                <div style={{ fontSize:'11px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                  {selName}{tokenAddr ? ` · ${shortAddr(tokenAddr)}` : ''}
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize:'13px', color:'#666' }}>{balLoading ? 'Memuat token...' : 'Pilih Token ARC-20...'}</div>
+            )}
+          </div>
+          {(balLoading && !selSymbol) || loadingInfo
+            ? <FaSpinner size={12} color="#555" style={{ animation:'spin 1s linear infinite', flexShrink:0 }}/>
+            : <FaChevronDown size={12} color="#555" style={{ flexShrink:0 }}/>}
+        </button>
+
+        {known.length === 0 && (
+          <div style={{ fontSize:'10px', color:'#444', marginTop:'6px' }}>
+            Belum ada token ARC-20 yang tersimpan — buka "Pilih Token ARC-20" buat tambah lewat contract address, atau buat token baru di Token Creator.
+          </div>
+        )}
+        {needsInitCount > 0 && (
+          <div style={{ fontSize:'10px', color:'#666', marginTop:'6px' }}>
+            {needsInitCount} token belum selesai diinisialisasi dan tidak ditampilkan — selesaikan dulu lewat Token Creator ("Selesaikan Inisialisasi").
+          </div>
+        )}
+
+        {known.length > 0 && (
+          <div style={{ display:'flex', flexWrap:'wrap', gap:'6px', marginTop:'8px' }}>
+            {known.map(t => {
+              const isActive = tokenAddr.toLowerCase() === t.address;
+              const b = balOf(t.address);
+              const balLabel = b != null ? arc20ShortAmt(b) : (balLoading ? '...' : '?');
+              return (
+                <span key={t.address} onClick={() => selectToken(t.address)} style={{
+                  fontSize:'10px', color: isActive ? net.color : '#666',
+                  border:`1px solid ${isActive ? net.color : '#222'}`,
+                  padding:'3px 7px', display:'flex', alignItems:'center', gap:'6px', cursor:'pointer',
+                }}>
+                  {balances[t.address]?.symbol ?? t.symbol} · {balLabel}
+                  {t.source === 'custom' && (
+                    <FaTrash size={8} style={{ cursor:'pointer', color:'#444' }}
+                      onClick={e => { e.stopPropagation(); removeCustom(t.address); }} title="Hapus dari daftar"/>
+                  )}
+                </span>
+              );
+            })}
+          </div>
+        )}
+
+        {infoError && <div style={{ fontSize:'11px', color:'#f44336', marginTop:'8px' }}>{infoError}</div>}
+
+        {info && (
+          <div style={{ display:'flex', flexDirection:'column', gap:'14px', marginTop:'16px' }}>
+            <div>
+              <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' }}>Ke address</label>
+              <input type="text" placeholder="0x... atau ase1..." value={to} onChange={e => setTo(e.target.value)}
+                style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px' }}/>
+            </div>
+
+            <div>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'5px' }}>
+                <label style={{ fontSize:'11px', color:'#555' }}>Jumlah {info.symbol}</label>
+                <button onClick={() => setAmount(info.ownerBalance || '0')}
+                  style={{ background:'none', border:'1px solid #333', color:net.color, padding:'2px 8px', cursor:'pointer', fontSize:'10px', fontWeight:'bold', letterSpacing:'0.5px' }}>
+                  MAX
+                </button>
+              </div>
+              <input type="number" placeholder="0.0" step="any" min="0" value={amount} onChange={e => setAmount(e.target.value)}
+                style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace' }}/>
+              <div style={{ fontSize:'10px', color:'#444', marginTop:'4px' }}>
+                Saldo kamu: <span style={{ fontFamily:'monospace', color:'#888' }}>{arc20Thousands(info.ownerBalance ?? '0')} {info.symbol}</span>
+              </div>
+              {amountCheck.err && <div style={{ fontSize:'11px', color:'#f44336', marginTop:'6px' }}>{amountCheck.err}</div>}
+            </div>
+
+            {/* ── Estimasi Gas Fee (pola sama dgn kotak fee Kirim ASE) ── */}
+            <div style={{ background:'#070707', border:'1px solid #1e1e1e', padding:'10px 12px' }}>
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:'8px', marginBottom: (gas || gasError) ? '8px' : 0 }}>
+                <div style={{ display:'flex', alignItems:'center', gap:'6px', color:'#666', textTransform:'uppercase', letterSpacing:'0.5px', fontSize:'10px' }}>
+                  <FaGasPump size={10}/> Estimasi Gas Fee
+                  {gasLoading && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
+                </div>
+                <button onClick={refreshGas} disabled={gasLoading}
+                  style={{ background:'none', border:'1px solid #333', color:'#888', padding:'2px 8px', cursor:gasLoading?'not-allowed':'pointer', fontSize:'10px', display:'flex', alignItems:'center', gap:'4px' }}>
+                  <FaSync size={9} style={{ animation:gasLoading?'spin 1s linear infinite':undefined }}/> Refresh
+                </button>
+              </div>
+              {gas && (
+                <div style={{ display:'flex', flexWrap:'wrap', gap:'6px 16px', fontSize:'11px' }}>
+                  <span style={{ color:'#888' }}>Saldo ASE: <span style={{ fontFamily:'monospace', color:'#ccc' }}>{gas.balanceAse}</span></span>
+                  <span style={{ color:'#888' }}>Gas Limit: <span style={{ fontFamily:'monospace', color:'#ccc' }}>{Number(gas.gasLimit).toLocaleString('en-US')}</span> unit</span>
+                  <span style={{ color:'#888' }}>Base Fee: <span style={{ fontFamily:'monospace', color:'#ccc' }}>{gas.isFallback ? '—' : gas.baseFeePerGas}</span> wei/unit</span>
+                  <span style={{ fontFamily:'monospace', fontWeight:'bold', color: !gas.hasAnyBalance ? '#ff6666' : !gas.enough ? '#ffaa00' : '#4caf50' }}>
+                    ≤ {gas.feeAse} ASE
+                  </span>
+                </div>
+              )}
+              {gasError && (
+                <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', color:'#ffaa00', fontSize:'11px' }}>
+                  <FaExclamationTriangle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
+                  <span>{gasError}</span>
+                </div>
+              )}
+              {gas && !gas.hasAnyBalance && (
+                <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', color:'#ff6666', fontSize:'11px', marginTop:'8px' }}>
+                  <FaExclamationTriangle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
+                  <span>Saldo ASE 0 — tidak bisa bayar gas. Minta dulu lewat Faucet ASE di atas.</span>
+                </div>
+              )}
+              {gas && gas.hasAnyBalance && !gas.enough && (
+                <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', color:'#ffaa00', fontSize:'11px', marginTop:'8px' }}>
+                  <FaExclamationTriangle size={11} style={{ marginTop:'1px', flexShrink:0 }}/>
+                  <span>Saldo lebih kecil dari batas atas fee. Tx masih bisa dicoba, tapi node bisa menolaknya — tambah ASE kalau gagal.</span>
+                </div>
+              )}
+              <div style={{ fontSize:'10px', color:'#444', marginTop:'6px' }}>
+                Batas atas (gas limit penuh × fee cap){gas?.isFallback ? ' — base fee tidak terbaca dari RPC, pakai perkiraan kasar' : ''}; biaya aktual biasanya jauh lebih kecil. Gas dibayar dengan ASE, bukan dengan token.
+              </div>
+            </div>
+
+            <button onClick={send} disabled={!canSend}
+              style={{
+                padding:'13px', background: sending ? '#0a0a1a' : net.color, color:'#fff', border:'none',
+                cursor: sending ? 'wait' : (canSend ? 'pointer' : 'not-allowed'), fontSize:'14px', fontWeight:'bold',
+                display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
+                opacity: (canSend || sending) ? 1 : 0.5,
+              }}>
+              {sending
+                ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Mengirim...</>
+                : <><FaPaperPlane/> Kirim Token</>}
+            </button>
+          </div>
+        )}
+
+        {status && (
+          <div style={{ background:'#0a0a0a', border:`1px solid ${statusColor}44`, borderLeft:`3px solid ${statusColor}`, padding:'12px', fontSize:'12px', fontFamily:'monospace', color:statusColor, marginTop:'14px' }}>
+            {status.type === 'pending' && <span style={{ marginRight:'6px', animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
+            {status.type === 'success' && '✓ '}
+            {status.type === 'error'   && '✗ '}
+            {status.msg}
+            {status.hash && (
+              <div style={{ marginTop:'6px' }}>
+                <a href={`${net.explorerUrl}/tx/${status.hash}`} target="_blank" rel="noreferrer" style={{ color:net.color === '#4949DF' ? '#7a7aff' : net.color, fontSize:'11px' }}>
+                  Lihat di {net.name} Explorer ↗
+                </a>
+                <div style={{ fontSize:'10px', color:'#555', marginTop:'3px', wordBreak:'break-all' }}>{status.hash}</div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* ── Detail Token (pola ERC-20) ── */}
+      {info && tokenAddr && (
+        <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'18px' }}>
+          <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'12px', gap:'8px', flexWrap:'wrap' }}>
+            <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'flex', alignItems:'center', gap:'6px' }}>
+              <FaCoins size={11}/> Detail Token
+              {loadingInfo && <span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span>}
+            </div>
+            <a href={`${net.explorerUrl}/address/${tokenAddr}`} target="_blank" rel="noreferrer"
+              style={{ fontSize:'11px', color:'#7a7aff', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px', whiteSpace:'nowrap' }}>
+              <FaLink size={9}/> Lihat Kontrak di Explorer
+            </a>
+          </div>
+          <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(160px,1fr))', gap:'10px' }}>
+            <div>
+              <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Nama / Symbol</div>
+              <div style={{ fontSize:'12px', color:'#ccc', marginTop:'3px' }}>{info.name} ({info.symbol})</div>
+            </div>
+            <div>
+              <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Standard</div>
+              <div style={{ fontSize:'12px', color:'#ccc', marginTop:'3px' }}>ARC-20 · {info.decimals} desimal</div>
+            </div>
+            <div>
+              <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Total Supply</div>
+              <div style={{ fontSize:'12px', color:'#ccc', marginTop:'3px', fontFamily:'monospace', wordBreak:'break-all' }}>{arc20Thousands(info.totalSupply)}</div>
+            </div>
+            <div>
+              <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Saldo Kamu</div>
+              <div style={{ fontSize:'12px', color:'#4caf50', marginTop:'3px', fontFamily:'monospace', wordBreak:'break-all' }}>{arc20Thousands(info.ownerBalance ?? '0')} {info.symbol}</div>
+            </div>
+            <div style={{ gridColumn:'1/-1' }}>
+              <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Kontrak</div>
+              <div style={{ display:'flex', alignItems:'center', gap:'6px', marginTop:'3px' }}>
+                <code style={{ flex:1, fontSize:'11px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{tokenAddr}</code>
+                <button onClick={() => copyText(tokenAddr, 'arc20_contract')}
+                  style={{ background:'none', border:'1px solid #333', color:copiedKey==='arc20_contract'?'#4caf50':'#555', padding:'4px 8px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}>
+                  {copiedKey==='arc20_contract' ? <FaCheckCircle/> : <FaCopy/>}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Terima Token ── */}
+      <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'18px' }}>
+        <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'10px' }}>
+          Terima Token — kirim ke address ini
+        </div>
+        <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+          <code style={{ flex:1, fontSize:'12px', color:'#a0d0ff', fontFamily:'monospace', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+            {recvAddr || '—'}
+          </code>
+          <button onClick={() => copyText(recvAddr, 'arc20_recv')} disabled={!recvAddr}
+            style={{ background:'none', border:'1px solid #333', color:copiedKey==='arc20_recv'?'#4caf50':'#555', padding:'4px 8px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}>
+            {copiedKey==='arc20_recv' ? <FaCheckCircle/> : <FaCopy/>}
+          </button>
+          <button onClick={() => setQrAddress(recvAddr)} disabled={!recvAddr} title="QR Code"
+            style={{ background:'none', border:'1px solid #333', color:'#555', padding:'4px 8px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}>
+            <FaQrcode size={11}/>
+          </button>
+          {recvAddr && (
+            <a href={`${net.explorerUrl}/address/${recvAddr}`} target="_blank" rel="noreferrer" title="Lihat di Explorer"
+              style={{ color:'#555', padding:'4px 8px', border:'1px solid #333', display:'flex', flexShrink:0 }}>
+              <FaLink size={11}/>
+            </a>
+          )}
+        </div>
+        <div style={{ fontSize:'10px', color:'#444', marginTop:'8px' }}>
+          Address yang sama dengan address native ASE kamu (hex) — kontrak ARC-20 pakai representasi ini untuk balanceOf/transfer.
+        </div>
+      </div>
+
+      {pickerOpen && (
+        <AseArc20PickerSheet ctx={ctx} net={net}
+          tokens={pickerTokens} activeAddress={tokenAddr} loading={balLoading}
+          search={pickerSearch} setSearch={setPickerSearch}
+          onClose={() => { setPickerOpen(false); setPickerSearch(''); setAddError(''); }}
+          onSelect={selectToken} onRefresh={loadBalances}
+          customAddr={customAddr} setCustomAddr={v => { setCustomAddr(v); setAddError(''); }}
+          onAddCustom={addCustom} adding={adding} addError={addError} />
+      )}
+    </>
+  );
+}
+
+const auraPoolKey = (netId: string) => `auraSwapPool:${netId}`;
+const AURA_SWAP_DEFAULT_POOL: Record<string, string> = {
+  testnet: 'ase1v0myp2de3dhj3crvkhxqlnjaw2mvp64a9efkpl',
+};
+
+type AuraTokenSide = { mode: 'native' | 'token'; addr: string };
+
+function auraTokenEff(t: AuraTokenSide): string {
+  return t.mode === 'native' ? AURA_SWAP_NATIVE : t.addr.trim();
+}
+
+function AuraTokenPickerSheet({ ctx, net, tokens, detecting, activeMode, activeAddr, onClose, onSelectNative, onSelectToken,
+  search, setSearch, manualAddr, setManualAddr, onAddManual, manualAdding, manualError }: {
+  ctx: any; net: any; tokens: AuraSwapTokenInfo[]; detecting?: boolean;
+  activeMode: 'native' | 'token'; activeAddr: string;
+  onClose: () => void; onSelectNative: () => void; onSelectToken: (address: string) => void;
+  search: string; setSearch: (v: string) => void;
+  manualAddr: string; setManualAddr: (v: string) => void; onAddManual: () => void; manualAdding: boolean; manualError: string;
+}) {
+  const { FaSearch, FaSpinner, FaCheckCircle, FaPlus } = ctx;
+  const q = search.trim().toLowerCase();
+  const curAddr = activeAddr.trim().toLowerCase();
+
+  const arc20Tokens = tokens.filter(t => !t.isNative);
+  const held = (t: AuraSwapTokenInfo) => t.balance != null && /[1-9]/.test(t.balance);
+  const filtered = (q
+    ? arc20Tokens.filter(t => t.symbol.toLowerCase().includes(q) || t.address.toLowerCase().includes(q))
+    : arc20Tokens
+  ).slice().sort((a, b) => Number(held(b)) - Number(held(a)));
+
+  const nativeMatches = !q || net.symbol.toLowerCase().includes(q) || 'native'.includes(q);
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', display:'flex', alignItems:'flex-end', justifyContent:'center', zIndex:9999 }}
+      onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}
+        style={{
+          background:'#111', border:'1px solid #262626', borderBottom:'none', width:'100%', maxWidth:'480px',
+          maxHeight:'78vh', display:'flex', flexDirection:'column', borderRadius:'16px 16px 0 0', overflow:'hidden',
+          animation:'slideUp 0.18s ease-out',
+        }}>
+        <div style={{ display:'flex', justifyContent:'center', padding:'10px 0 4px' }}>
+          <div style={{ width:'36px', height:'4px', borderRadius:'2px', background:'#333' }} />
+        </div>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 18px 14px' }}>
+          <span style={{ fontSize:'15px', fontWeight:'bold' }}>Pilih Token</span>
+          <button onClick={onClose} style={{ background:'none', border:'none', color:'#888', cursor:'pointer', fontSize:'18px', padding:'4px', lineHeight:1 }}>×</button>
+        </div>
+
+        <div style={{ padding:'0 18px 14px' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'8px', background:'#1a1a1a', border:'1px solid #2a2a2a', borderRadius:'10px', padding:'10px 12px' }}>
+            <FaSearch size={12} color="#555"/>
+            <input
+              autoFocus
+              placeholder="Cari nama token atau tempel address..."
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              style={{ flex:1, background:'none', border:'none', outline:'none', color:'#eee', fontSize:'13px' }}
+            />
+            {search && (
+              <button onClick={() => setSearch('')} style={{ background:'none', border:'none', color:'#555', cursor:'pointer', fontSize:'14px', padding:0 }}>×</button>
+            )}
+          </div>
+        </div>
+
+        <div style={{ padding:'0 10px 6px' }}>
+          <span style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', padding:'0 8px' }}>
+            Token ARC-20 Terdeteksi di Pool
+          </span>
+        </div>
+
+        <div style={{ overflowY:'auto', flex:1, padding:'4px 10px 14px' }}>
+          {nativeMatches && (
+            <div onClick={onSelectNative}
+              style={{
+                display:'flex', alignItems:'center', gap:'12px', padding:'10px 8px', cursor:'pointer',
+                borderRadius:'10px', background: activeMode === 'native' ? `${net.color}1a` : 'transparent',
+              }}
+              onMouseEnter={e => { if (activeMode !== 'native') e.currentTarget.style.background = '#1a1a1a'; }}
+              onMouseLeave={e => { if (activeMode !== 'native') e.currentTarget.style.background = 'transparent'; }}>
+              <div style={{ width:34, height:34, borderRadius:'50%', background:'#222', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'11px', color:net.color, fontWeight:'bold' }}>
+                {net.symbol.slice(0,2).toUpperCase()}
+              </div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:'13px', fontWeight:'bold', color:'#eee' }}>{net.symbol}</div>
+                <div style={{ fontSize:'11px', color:'#666' }}>Native · {net.name}</div>
+              </div>
+              {activeMode === 'native' && <FaCheckCircle size={13} color={net.color} style={{ flexShrink:0 }}/>}
+            </div>
+          )}
+
+          {detecting && (
+            <div style={{ textAlign:'center', color:'#555', padding:'20px 0 10px', fontSize:'12px' }}>
+              <FaSpinner style={{ animation:'spin 1s linear infinite', marginBottom:'8px' }} size={16}/>
+              <div>Mendeteksi token listed di pool ini...</div>
+            </div>
+          )}
+          {!detecting && filtered.length === 0 && (
+            <div style={{ textAlign:'center', color:'#444', padding:'24px 8px 8px', fontSize:'12px', lineHeight:1.6 }}>
+              {arc20Tokens.length === 0
+                ? 'Belum ada token ARC-20 yang kedetek listed di pool ini. Tempel address kontraknya manual di kolom bawah.'
+                : 'Tidak ada token yang cocok dengan pencarian.'}
+            </div>
+          )}
+          {filtered.map(t => {
+            const isActive = activeMode === 'token' && curAddr === t.address.toLowerCase();
+            return (
+              <div key={t.address} onClick={() => onSelectToken(t.address)}
+                style={{
+                  display:'flex', alignItems:'center', gap:'12px', padding:'10px 8px', cursor:'pointer',
+                  borderRadius:'10px', background: isActive ? `${net.color}1a` : 'transparent',
+                }}
+                onMouseEnter={e => { if (!isActive) e.currentTarget.style.background = '#1a1a1a'; }}
+                onMouseLeave={e => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}>
+                <div style={{ width:34, height:34, borderRadius:'50%', background:'#222', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'11px', color:'#666', fontWeight:'bold' }}>
+                  {t.symbol.slice(0,2).toUpperCase()}
+                </div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:'13px', fontWeight:'bold', color:'#eee' }}>{t.symbol}</div>
+                  <div style={{ fontSize:'11px', color:'#666', fontFamily:'monospace' }}>{t.address.slice(0,6)}…{t.address.slice(-4)}</div>
+                </div>
+                <div style={{ textAlign:'right', flexShrink:0 }}>
+                  <div style={{ fontSize:'13px', fontFamily:'monospace', color:'#eee' }}>{t.balance != null ? arc20ShortAmt(t.balance) : '?'}</div>
+                </div>
+                {isActive && <FaCheckCircle size={13} color={net.color} style={{ flexShrink:0 }}/>}
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ padding:'10px 14px 16px', borderTop:'1px solid #1e1e1e', flexShrink:0 }}>
+          <div style={{ fontSize:'10px', color:'#555', marginBottom:'6px' }}>Belum listed di pool ini? Tambah manual:</div>
+          <div style={{ display:'flex', gap:'6px' }}>
+            <input type="text" placeholder="Contract address token (0x... / ase1...)" value={manualAddr}
+              onChange={e => setManualAddr(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && manualAddr.trim() && !manualAdding) onAddManual(); }}
+              style={{ flex:1, boxSizing:'border-box', fontFamily:'monospace', fontSize:'11px', padding:'9px 10px', background:'#1a1a1a', border:'1px solid #2a2a2a', color:'#eee' }}/>
+            <button onClick={onAddManual} disabled={manualAdding || !manualAddr.trim()}
+              style={{ background:'none', border:'1px solid #333', color:net.color, padding:'0 14px', cursor:'pointer', fontSize:'11px', whiteSpace:'nowrap', opacity:(!manualAddr.trim())?0.5:1 }}>
+              {manualAdding ? <FaSpinner style={{ animation:'spin 1s linear infinite' }}/> : <><FaPlus size={10}/> Pakai</>}
+            </button>
+          </div>
+          {manualError && <div style={{ fontSize:'11px', color:'#ff8a80', marginTop:'6px' }}>{manualError}</div>}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AuraTokenSidePicker({ ctx, net, label, side, setSide, info, tokens, detecting }: {
+  ctx: any; net: any; label: string; side: AuraTokenSide; setSide: (v: AuraTokenSide) => void;
+  info: { symbol: string; decimals: number } | null;
+  tokens?: AuraSwapTokenInfo[]; detecting?: boolean;
+}) {
+  const { FaSpinner, FaChevronDown, FaCoins } = ctx;
+  const [open, setOpen] = React.useState(false);
+  const [search, setSearch] = React.useState('');
+  const [manualAddr, setManualAddr] = React.useState('');
+  const [manualAdding, setManualAdding] = React.useState(false);
+  const [manualError, setManualError] = React.useState('');
+
+  const list = tokens || [];
+  const arc20Tokens = list.filter(t => !t.isNative);
+  const curAddr = side.addr.trim().toLowerCase();
+  const matchedToken = side.mode === 'token' ? arc20Tokens.find(t => t.address.toLowerCase() === curAddr) : undefined;
+  const selSymbol = side.mode === 'native' ? net.symbol : (matchedToken?.symbol ?? info?.symbol ?? null);
+  const closeSheet = () => { setOpen(false); setSearch(''); setManualAddr(''); setManualError(''); };
+  const selectNative = () => { setSide({ mode: 'native', addr: '' }); closeSheet(); };
+  const selectToken  = (addr: string) => { setSide({ mode: 'token', addr }); closeSheet(); };
+  const addManual = () => {
+    const raw = manualAddr.trim();
+    if (!isValidAseAddress(raw)) { setManualError('Address kontrak token tidak valid.'); return; }
+    setManualAdding(true); setManualError('');
+    try {
+      const hex = arc20Hex(raw);
+      selectToken(hex);
+    } catch { setManualError('Address kontrak token tidak valid.'); }
+    finally { setManualAdding(false); }
+  };
+
+  return (
+    <div>
+      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>{label}</label>
+      <button onClick={() => setOpen(true)}
+        style={{
+          width:'100%', display:'flex', alignItems:'center', gap:'10px', background:'#070707',
+          border:'1px solid #262626', borderRadius:'10px', padding:'10px 12px', cursor:'pointer',
+          textAlign:'left', boxSizing:'border-box',
+        }}>
+        {selSymbol
+          ? <div style={{ width:28, height:28, borderRadius:'50%', background:'#1a1a1a', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'10px', color:net.color, fontWeight:'bold' }}>{selSymbol.slice(0,2).toUpperCase()}</div>
+          : <div style={{ width:28, height:28, borderRadius:'50%', background:'#1a1a1a', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center' }}>
+              <FaCoins size={12} color={net.color}/>
+            </div>}
+        <div style={{ flex:1, minWidth:0 }}>
+          {selSymbol ? (
+            <>
+              <div style={{ fontSize:'13px', fontWeight:'bold', color:'#eee' }}>{selSymbol}</div>
+              <div style={{ fontSize:'11px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                {side.mode === 'native' ? `Native · ${net.name}` : (side.addr ? shortAddr(side.addr) : '')}
+              </div>
+            </>
+          ) : (
+            <div style={{ fontSize:'13px', color:'#666' }}>{detecting ? 'Mendeteksi token...' : 'Pilih Token...'}</div>
+          )}
+        </div>
+        {detecting && !selSymbol
+          ? <FaSpinner size={12} color="#555" style={{ animation:'spin 1s linear infinite', flexShrink:0 }}/>
+          : <FaChevronDown size={12} color="#555" style={{ flexShrink:0 }}/>}
+      </button>
+      {info && <div style={{ fontSize:'10px', color:'#555', marginTop:'4px' }}>{info.symbol} · {info.decimals} desimal</div>}
+
+      {open && (
+        <AuraTokenPickerSheet ctx={ctx} net={net} tokens={list} detecting={detecting}
+          activeMode={side.mode} activeAddr={side.addr}
+          onClose={closeSheet} onSelectNative={selectNative} onSelectToken={selectToken}
+          search={search} setSearch={setSearch}
+          manualAddr={manualAddr} setManualAddr={v => { setManualAddr(v); setManualError(''); }}
+          onAddManual={addManual} manualAdding={manualAdding} manualError={manualError} />
+      )}
+    </div>
+  );
+}
+
+function AseSwapPanel({ ctx, net, privateKey, holderHex, holderBech32 }: {
+  ctx: any; net: any; privateKey: string; holderHex: string; holderBech32: string;
+}) {
+  const { FaExchangeAlt, FaArrowRight, FaSpinner, FaExclamationTriangle, FaCheckCircle, FaSlidersH } = ctx;
+
+  const [poolAddr, setPoolAddr] = React.useState<string>(() => {
+    try { return localStorage.getItem(auraPoolKey(net.id)) || AURA_SWAP_DEFAULT_POOL[net.id] || ''; }
+    catch { return AURA_SWAP_DEFAULT_POOL[net.id] || ''; }
+  });
+  const [tokenIn,  setTokenIn]  = React.useState<AuraTokenSide>({ mode: 'native', addr: '' });
+  const [tokenOut, setTokenOut] = React.useState<AuraTokenSide>({ mode: 'token',  addr: '' });
+  const [inInfo,  setInInfo]  = React.useState<{ symbol: string; decimals: number } | null>(null);
+  const [outInfo, setOutInfo] = React.useState<{ symbol: string; decimals: number } | null>(null);
+  const [inBal,  setInBal]  = React.useState<string | null>(null);
+  const [amount, setAmount] = React.useState('');
+  const [slippage, setSlippage] = React.useState('1');
+
+  const [poolId, setPoolId] = React.useState('');
+  const [pool, setPool] = React.useState<AuraSwapPool | null>(null);
+  const [poolLoading, setPoolLoading] = React.useState(false);
+  const [poolError, setPoolError] = React.useState('');
+
+  const [detectedTokens, setDetectedTokens] = React.useState<AuraSwapTokenInfo[]>([]);
+  const [detectingTokens, setDetectingTokens] = React.useState(false);
+  const [detectNonce, setDetectNonce] = React.useState(0);
+
+  const [quoteRaw, setQuoteRaw] = React.useState('');
+  const [quoting, setQuoting] = React.useState(false);
+  const [quoteError, setQuoteError] = React.useState('');
+  const [allowanceOk, setAllowanceOk] = React.useState(true);
+
+  const [gasSpeed, setGasSpeed] = React.useState<AseGasSpeed>('normal');
+  const [customGwei, setCustomGwei] = React.useState('');
+
+  const [swapping, setSwapping] = React.useState(false);
+  const [swapProgress, setSwapProgress] = React.useState('');
+  const [status, setStatus] = React.useState<{ type: 'success' | 'error'; msg: string; hash?: string; approveHash?: string } | null>(null);
+
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  React.useEffect(() => { try { localStorage.setItem(auraPoolKey(net.id), poolAddr.trim()); } catch {} }, [poolAddr, net.id]);
+  React.useEffect(() => {
+    try { setPoolAddr(localStorage.getItem(auraPoolKey(net.id)) || AURA_SWAP_DEFAULT_POOL[net.id] || ''); }
+    catch { setPoolAddr(AURA_SWAP_DEFAULT_POOL[net.id] || ''); }
+  }, [net.id]);
+
+  const poolValid = isValidAseAddress(poolAddr.trim());
+  const inAddrEff  = auraTokenEff(tokenIn);
+  const outAddrEff = auraTokenEff(tokenOut);
+  const inValid  = tokenIn.mode === 'native'  || isValidAseAddress(tokenIn.addr.trim());
+  const outValid = tokenOut.mode === 'native' || isValidAseAddress(tokenOut.addr.trim());
+  const pairReady = poolValid && inValid && outValid
+    && !(tokenIn.mode === 'native' && tokenOut.mode === 'native')
+    && (tokenIn.mode !== 'token' || tokenIn.addr.trim()) && (tokenOut.mode !== 'token' || tokenOut.addr.trim())
+    && inAddrEff.toLowerCase() !== outAddrEff.toLowerCase();
+
+  React.useEffect(() => {
+    setDetectedTokens([]);
+    if (!poolValid) return;
+    let cancelled = false;
+    setDetectingTokens(true);
+    (async () => {
+      try {
+        const list = await detectAuraSwapTokens(net, poolAddr.trim(), holderHex || undefined);
+        if (!cancelled && mountedRef.current) setDetectedTokens(list);
+      } catch { if (!cancelled && mountedRef.current) setDetectedTokens([]); }
+      finally { if (!cancelled && mountedRef.current) setDetectingTokens(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [net, poolAddr, poolValid, holderHex, detectNonce]);
+
+  const loadSideInfo = React.useCallback(async (side: AuraTokenSide, setInfo: (v: any) => void) => {
+    if (side.mode === 'native') { setInfo({ symbol: net.symbol, decimals: 18 }); return; }
+    const addr = side.addr.trim();
+    if (!isValidAseAddress(addr)) { setInfo(null); return; }
+    try {
+      const r = await readAsentumToken(net, addr, holderHex);
+      if (!mountedRef.current) return;
+      if (r.symbol == null || r.decimals == null) { setInfo(null); return; }
+      setInfo({ symbol: r.symbol, decimals: r.decimals });
+    } catch { if (mountedRef.current) setInfo(null); }
+  }, [net, holderHex]);
+
+  React.useEffect(() => { loadSideInfo(tokenIn, setInInfo); }, [tokenIn.mode, tokenIn.addr]);
+  React.useEffect(() => { loadSideInfo(tokenOut, setOutInfo); }, [tokenOut.mode, tokenOut.addr]);
+
+  const refreshInBalance = React.useCallback(async () => {
+    if (!holderHex && !holderBech32) return;
+    try {
+      if (tokenIn.mode === 'native') {
+        const b = await getAsentumBalanceWithFallback(net, holderBech32 || holderHex);
+        if (mountedRef.current) setInBal(String(b));
+      } else if (isValidAseAddress(tokenIn.addr.trim())) {
+        const r = await readAsentumToken(net, tokenIn.addr.trim(), holderHex);
+        if (mountedRef.current) setInBal(r.ownerBalance ?? '0');
+      } else { setInBal(null); }
+    } catch { if (mountedRef.current) setInBal(null); }
+  }, [net, holderHex, holderBech32, tokenIn.mode, tokenIn.addr]);
+  React.useEffect(() => { refreshInBalance(); }, [refreshInBalance]);
+  React.useEffect(() => {
+    setPoolId(''); setPool(null); setPoolError(''); setQuoteRaw(''); setQuoteError('');
+    if (!pairReady) return;
+    let cancelled = false;
+    setPoolLoading(true);
+    (async () => {
+      try {
+        const id = await findAuraSwapPoolId(net, poolAddr.trim(), inAddrEff, outAddrEff);
+        if (cancelled || !mountedRef.current) return;
+        if (!id) { setPoolError('Pool untuk pasangan token ini belum ada di kontrak tersebut.'); return; }
+        setPoolId(id);
+        try { setPool(await readAuraSwapPool(net, poolAddr.trim(), id)); } catch { /* opsional, tidak fatal */ }
+      } catch (e: any) {
+        if (!cancelled && mountedRef.current) setPoolError(aseFriendlyError(e) || e?.message || 'Gagal membaca kontrak AuraSwap — cek address pool.');
+      } finally { if (!cancelled && mountedRef.current) setPoolLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [net, poolAddr, pairReady, inAddrEff, outAddrEff]);
+
+  React.useEffect(() => {
+    setQuoteRaw(''); setQuoteError('');
+    const s = amount.trim();
+    if (!poolId || !inInfo || !s || !/^\d+(\.\d+)?$/.test(s) || Number(s) <= 0) return;
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setQuoting(true);
+      try {
+        const raw = asentumUnitsFromDecimalString(s, inInfo.decimals).toString();
+        const out = await getAuraSwapQuote(net, poolAddr.trim(), poolId, inAddrEff, raw);
+        if (cancelled || !mountedRef.current) return;
+        if (!(BigInt(out) > 0n)) { setQuoteError('Output 0 — jumlah terlalu kecil atau liquidity pool belum cukup.'); return; }
+        setQuoteRaw(out);
+        if (tokenIn.mode === 'token' && holderHex) {
+          const allowed = await getAuraSwapAllowance(net, inAddrEff, holderHex, poolAddr.trim());
+          if (!cancelled && mountedRef.current) setAllowanceOk(allowed >= BigInt(raw));
+        } else if (mountedRef.current) setAllowanceOk(true);
+      } catch (e: any) {
+        if (!cancelled && mountedRef.current) setQuoteError(aseFriendlyError(e) || e?.message || 'Gagal mengambil quote.');
+      } finally { if (!cancelled && mountedRef.current) setQuoting(false); }
+    }, 500);
+    return () => { cancelled = true; clearTimeout(t); };
+  }, [net, poolAddr, poolId, amount, inInfo, inAddrEff, tokenIn.mode, holderHex]);
+
+  const flip = () => {
+    setTokenIn(tokenOut); setTokenOut(tokenIn);
+    setAmount(''); setQuoteRaw(''); setQuoteError(''); setStatus(null);
+  };
+
+  const spotRate = React.useMemo(() => {
+    if (!pool || !inInfo || !outInfo) return null;
+    try {
+      const aIsToken0 = pool.token0.toLowerCase() === inAddrEff.toLowerCase();
+      const [reserveInRaw, reserveOutRaw] = aIsToken0 ? [pool.reserve0, pool.reserve1] : [pool.reserve1, pool.reserve0];
+      const reserveIn  = Number(asentumFormatUnits(reserveInRaw,  inInfo.decimals));
+      const reserveOut = Number(asentumFormatUnits(reserveOutRaw, outInfo.decimals));
+      if (!(reserveIn > 0) || !(reserveOut > 0)) return null;
+      return reserveOut / reserveIn;
+    } catch { return null; }
+  }, [pool, inInfo, outInfo, inAddrEff]);
+  const spotRateStr = spotRate == null ? null
+    : spotRate < 0.000001 ? spotRate.toExponential(4)
+    : spotRate.toLocaleString('en-US', { maximumFractionDigits: 6 });
+
+  const slippageBps = (() => {
+    const n = Number(slippage);
+    if (!Number.isFinite(n) || n < 0) return 100;
+    return Math.round(Math.min(n, 50) * 100);
+  })();
+  const minOutRaw = (() => {
+    if (!quoteRaw) return '';
+    try {
+      const q = BigInt(quoteRaw);
+      return (q - (q * BigInt(slippageBps)) / 10000n).toString();
+    } catch { return ''; }
+  })();
+
+  const amountValid = (() => {
+    const s = amount.trim();
+    if (!s || !inInfo) return false;
+    if (!/^\d+(\.\d+)?$/.test(s) || Number(s) <= 0) return false;
+    const frac = s.split('.')[1] || '';
+    if (frac.length > inInfo.decimals) return false;
+    if (inBal != null) {
+      try { return asentumUnitsFromDecimalString(s, inInfo.decimals) <= asentumUnitsFromDecimalString(inBal, inInfo.decimals); } catch { return false; }
+    }
+    return true;
+  })();
+
+  const gasReady = gasSpeed !== 'custom' || /^\d+(\.\d+)?$/.test(customGwei.trim());
+  const canSwap = !swapping && poolValid && !!poolId && !!quoteRaw && !!minOutRaw && amountValid && gasReady;
+
+  const doSwap = async () => {
+    if (!canSwap || !inInfo) return;
+    setSwapping(true); setStatus(null); setSwapProgress('Menyiapkan transaksi...');
+    try {
+      const raw = asentumUnitsFromDecimalString(amount.trim(), inInfo.decimals).toString();
+      const gasOverride: AseGasOverride = { speed: gasSpeed, customMaxFeePerGasGwei: gasSpeed === 'custom' ? customGwei.trim() : undefined };
+      const res = await executeAuraSwap(net, privateKey, poolAddr.trim(), poolId, inAddrEff, raw, minOutRaw, msg => { if (mountedRef.current) setSwapProgress(msg); }, gasOverride);
+      if (!mountedRef.current) return;
+      setStatus({ type: 'success', msg: `Swap terkirim — cek explorer untuk hasil akhir.`, hash: res.swapTxHash, approveHash: res.approveTxHash });
+      setAmount(''); setQuoteRaw('');
+      refreshInBalance();
+    } catch (e: any) {
+      if (mountedRef.current) setStatus({ type: 'error', msg: aseFriendlyError(e) || e?.message || 'Swap gagal.' });
+    } finally { if (mountedRef.current) { setSwapping(false); setSwapProgress(''); } }
+  };
+
+  return (
+    <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px', display:'flex', flexDirection:'column', gap:'14px' }}>
+      <h3 style={{ fontSize:'13px', margin:0 }}><FaExchangeAlt style={{ marginRight:'6px' }}/>Swap (AuraSwap)</h3>
+      <details style={{ background:'#070707', border:'1px solid #262626' }}>
+        <summary style={{ cursor:'pointer', padding:'10px 12px', fontSize:'11px', color:'#888', display:'flex', alignItems:'center', justifyContent:'space-between', gap:'8px' }}>
+          <span>Address Kontrak AuraSwap (pool){poolValid && <span style={{ color:'#444', fontFamily:'monospace', marginLeft:'6px' }}>· {shortAddr(poolAddr.trim())}</span>}</span>
+          <span onClick={e => { e.preventDefault(); e.stopPropagation(); if (poolValid) setDetectNonce(n => n + 1); }} title="Deteksi ulang token listed di pool"
+            style={{ fontSize:'10px', color: poolValid ? net.color : '#333', cursor: poolValid ? 'pointer' : 'default', fontWeight:'bold', flexShrink:0 }}>
+            ↻ Deteksi ulang token
+          </span>
+        </summary>
+        <div style={{ padding:'0 12px 12px' }}>
+          <input placeholder="0x... / ase1..." value={poolAddr} onChange={e => setPoolAddr(e.target.value)}
+            style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px', borderColor: poolAddr.trim() && !poolValid ? '#f44336' : undefined }}/>
+          {poolAddr.trim() && !poolValid && <div style={{ fontSize:'10px', color:'#f44336', marginTop:'4px' }}>Address kontrak tidak valid.</div>}
+        </div>
+      </details>
+
+      <AuraTokenSidePicker ctx={ctx} net={net} label="Dari" side={tokenIn} setSide={setTokenIn} info={inInfo} tokens={detectedTokens} detecting={detectingTokens}/>
+
+      <div style={{ display:'flex', flexDirection:'column', gap:'4px' }}>
+        <input type="number" min="0" placeholder="0.0" value={amount} onChange={e => setAmount(e.target.value)}
+          style={{ width:'100%', boxSizing:'border-box', fontSize:'14px' }}/>
+        {inBal != null && inInfo && (
+          <div style={{ fontSize:'10px', color:'#555', display:'flex', justifyContent:'space-between' }}>
+            <span>Saldo: {arc20ShortAmt(inBal)} {inInfo.symbol}</span>
+            <span onClick={() => setAmount(inBal)} style={{ color:net.color, cursor:'pointer', fontWeight:'bold' }}>MAX</span>
+          </div>
+        )}
+      </div>
+
+      <div style={{ display:'flex', justifyContent:'center' }}>
+        <button onClick={flip} title="Tukar arah" style={{ background:'none', border:'1px solid #333', color:'#888', padding:'6px 10px', cursor:'pointer' }}>
+          <FaArrowRight style={{ transform:'rotate(90deg)' }}/>
+        </button>
+      </div>
+
+      <AuraTokenSidePicker ctx={ctx} net={net} label="Ke" side={tokenOut} setSide={setTokenOut} info={outInfo} tokens={detectedTokens} detecting={detectingTokens}/>
+
+      <div>
+        <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Estimasi diterima</label>
+        <div style={{ background:'#070707', border:'1px solid #262626', padding:'10px 12px', fontSize:'14px', color: quoteRaw ? '#eee' : '#555' }}>
+          {quoting ? <><FaSpinner size={11} style={{ animation:'spin 1s linear infinite', marginRight:'6px' }}/>Menghitung...</>
+            : quoteRaw && outInfo ? `≈ ${asentumFormatUnits(quoteRaw, outInfo.decimals)} ${outInfo.symbol}`
+            : poolLoading ? 'Mencari pool...' : '—'}
+        </div>
+        {spotRateStr && inInfo && outInfo && (
+          <div style={{ fontSize:'10px', color:'#666', marginTop:'4px' }}>
+            Rate: 1 {inInfo.symbol} ≈ {spotRateStr} {outInfo.symbol}
+          </div>
+        )}
+        {quoteError && <div style={{ fontSize:'10px', color:'#f44336', marginTop:'4px' }}>{quoteError}</div>}
+        {poolError && !poolLoading && <div style={{ fontSize:'10px', color:'#f44336', marginTop:'4px' }}>{poolError}</div>}
+        {pool && <div style={{ fontSize:'10px', color:'#444', marginTop:'4px' }}>Pool #{pool.id} · fee {Number(pool.feeBps)/100}%</div>}
+      </div>
+
+      <div>
+        <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}><FaSlidersH style={{ marginRight:'4px' }}/>Slippage tolerance (%)</label>
+        <div style={{ display:'flex', gap:'6px' }}>
+          {['0.5','1','3'].map(v => (
+            <button key={v} onClick={() => setSlippage(v)} style={{
+              flex:1, padding:'6px', fontSize:'11px', cursor:'pointer',
+              background: slippage === v ? net.color : 'none', color: slippage === v ? '#fff' : '#888',
+              border:`1px solid ${slippage === v ? net.color : '#333'}`,
+            }}>{v}%</button>
+          ))}
+          <input type="number" min="0" max="50" value={slippage} onChange={e => setSlippage(e.target.value)}
+            style={{ width:'70px', fontSize:'11px' }}/>
+        </div>
+        {minOutRaw && outInfo && (
+          <div style={{ fontSize:'10px', color:'#555', marginTop:'4px' }}>Minimum diterima: {asentumFormatUnits(minOutRaw, outInfo.decimals)} {outInfo.symbol}</div>
+        )}
+      </div>
+
+      <AuraGasFeePicker ctx={ctx} net={net} gasLimit={AURA_SWAP_GAS_LIMIT} speed={gasSpeed} setSpeed={setGasSpeed} customGwei={customGwei} setCustomGwei={setCustomGwei}/>
+
+      {!allowanceOk && tokenIn.mode === 'token' && (
+        <div style={{ fontSize:'11px', color:'#ffaa00', display:'flex', alignItems:'center', gap:'6px' }}>
+          <FaExclamationTriangle size={11}/> Perlu approve() dulu — tombol Swap di bawah akan mengirim approve lalu swap sekaligus (2 transaksi).
+        </div>
+      )}
+
+      <button onClick={doSwap} disabled={!canSwap}
+        style={{ width:'100%', padding:'12px', background: swapping ? '#0a0a1a' : net.color, color:'#fff', border:'none', cursor: canSwap ? 'pointer' : 'not-allowed', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity: canSwap ? 1 : 0.5 }}>
+        {swapping
+          ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> {swapProgress || 'Swapping...'}</>
+          : <><FaExchangeAlt/> Swap</>}
+      </button>
+
+      {status && (
+        <div style={{
+          fontSize:'12px', padding:'10px 12px', border:`1px solid ${status.type === 'success' ? '#4caf5044' : '#f4433644'}`,
+          borderLeft:`3px solid ${status.type === 'success' ? '#4caf50' : '#f44336'}`, color: status.type === 'success' ? '#8fd98f' : '#ff8a80',
+          display:'flex', flexDirection:'column', gap:'4px',
+        }}>
+          <span style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+            {status.type === 'success' ? <FaCheckCircle size={11}/> : <FaExclamationTriangle size={11}/>} {status.msg}
+          </span>
+          {status.approveHash && (
+            <a href={`${net.explorerUrl}/tx/${status.approveHash}`} target="_blank" rel="noreferrer" style={{ color:'#7a7aff', fontSize:'11px' }}>
+              Tx approve: {status.approveHash.slice(0,18)}…
+            </a>
+          )}
+          {status.hash && (
+            <a href={`${net.explorerUrl}/tx/${status.hash}`} target="_blank" rel="noreferrer" style={{ color:'#7a7aff', fontSize:'11px' }}>
+              Tx swap: {status.hash.slice(0,18)}…
+            </a>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AuraGasFeePicker({ ctx, net, gasLimit, speed, setSpeed, customGwei, setCustomGwei }: {
+  ctx: any; net: any; gasLimit: bigint; speed: AseGasSpeed; setSpeed: (v: AseGasSpeed) => void;
+  customGwei: string; setCustomGwei: (v: string) => void;
+}) {
+  const { FaGasPump, FaSpinner } = ctx;
+  const [preview, setPreview] = React.useState<{ feeAse: number; isFallback: boolean } | null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+
+  React.useEffect(() => {
+    if (speed === 'custom' && !/^\d+(\.\d+)?$/.test(customGwei.trim())) { setPreview(null); return; }
+    let cancelled = false;
+    setLoading(true);
+    const t = setTimeout(async () => {
+      try {
+        const p = await previewAseGasFee(net, gasLimit, speed === 'custom' ? { speed, customMaxFeePerGasGwei: customGwei.trim() } : { speed });
+        if (!cancelled && mountedRef.current) setPreview({ feeAse: p.feeAse, isFallback: p.isFallback });
+      } catch { if (!cancelled && mountedRef.current) setPreview(null); }
+      finally { if (!cancelled && mountedRef.current) setLoading(false); }
+    }, speed === 'custom' ? 500 : 0);
+    return () => { cancelled = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [net, gasLimit.toString(), speed, customGwei]);
+
+  const tab = (v: AseGasSpeed, label: string) => (
+    <button onClick={() => setSpeed(v)} style={{
+      flex:1, padding:'6px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
+      background: speed === v ? net.color : 'none', color: speed === v ? '#fff' : '#888',
+      border:`1px solid ${speed === v ? net.color : '#333'}`,
+    }}>{label}</button>
+  );
+
+  return (
+    <div>
+      <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}><FaGasPump style={{ marginRight:'4px' }}/>Gas Fee</label>
+      <div style={{ display:'flex', gap:'6px', marginBottom:'6px' }}>
+        {tab('normal', 'Normal')}
+        {tab('fast', 'Cepat')}
+        {tab('custom', 'Custom')}
+      </div>
+      {speed === 'custom' && (
+        <div style={{ display:'flex', alignItems:'center', gap:'6px', marginBottom:'6px' }}>
+          <input type="number" min="0" placeholder="mis. 2" value={customGwei} onChange={e => setCustomGwei(e.target.value)}
+            style={{ flex:1, fontSize:'12px' }}/>
+          <span style={{ fontSize:'11px', color:'#555' }}>Gwei (maxFeePerGas)</span>
+        </div>
+      )}
+      <div style={{ fontSize:'10px', color:'#555' }}>
+        {loading ? <><FaSpinner size={9} style={{ animation:'spin 1s linear infinite', marginRight:'4px' }}/>Menghitung estimasi fee...</>
+          : preview ? <>Estimasi fee (batas atas): ~{preview.feeAse.toFixed(6)} {net.symbol}{preview.isFallback ? ' · baseFee fallback (RPC lambat baca chain info)' : ''}</>
+          : speed === 'custom' ? 'Isi Gwei buat lihat estimasi fee.' : '—'}
+      </div>
+    </div>
+  );
+}
+
+function AseLiquidityPanel({ ctx, net, privateKey, holderHex, holderBech32 }: {
+  ctx: any; net: any; privateKey: string; holderHex: string; holderBech32: string;
+}) {
+  const { FaLayerGroup, FaSpinner, FaExclamationTriangle, FaCheckCircle, FaPlus } = ctx;
+
+  const [poolAddr, setPoolAddr] = React.useState<string>(() => {
+    try { return localStorage.getItem(auraPoolKey(net.id)) || AURA_SWAP_DEFAULT_POOL[net.id] || ''; }
+    catch { return AURA_SWAP_DEFAULT_POOL[net.id] || ''; }
+  });
+  React.useEffect(() => { try { localStorage.setItem(auraPoolKey(net.id), poolAddr.trim()); } catch { /* storage penuh/diblokir */ } }, [poolAddr, net.id]);
+  React.useEffect(() => {
+    try { setPoolAddr(localStorage.getItem(auraPoolKey(net.id)) || AURA_SWAP_DEFAULT_POOL[net.id] || ''); }
+    catch { setPoolAddr(AURA_SWAP_DEFAULT_POOL[net.id] || ''); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [net.id]);
+
+  const [lpMode, setLpMode] = React.useState<'add' | 'remove'>('add');
+
+  const [tokenA, setTokenA] = React.useState<AuraTokenSide>({ mode: 'native', addr: '' });
+  const [tokenB, setTokenB] = React.useState<AuraTokenSide>({ mode: 'token',  addr: '' });
+  const [infoA, setInfoA] = React.useState<{ symbol: string; decimals: number } | null>(null);
+  const [infoB, setInfoB] = React.useState<{ symbol: string; decimals: number } | null>(null);
+  const [balA, setBalA] = React.useState<string | null>(null);
+  const [balB, setBalB] = React.useState<string | null>(null);
+  const [amtA, setAmtA] = React.useState('');
+  const [amtB, setAmtB] = React.useState('');
+  const [lastEdited, setLastEdited] = React.useState<'a' | 'b'>('a');
+
+  const [poolId, setPoolId] = React.useState('');
+  const [pool, setPool] = React.useState<AuraSwapPool | null>(null);
+  const [poolLoading, setPoolLoading] = React.useState(false);
+  const [poolMissing, setPoolMissing] = React.useState(false);
+  const [poolError, setPoolError] = React.useState('');
+  const [myShares, setMyShares] = React.useState<string | null>(null);
+
+  const [detectedTokens, setDetectedTokens] = React.useState<AuraSwapTokenInfo[]>([]);
+  const [detectingTokens, setDetectingTokens] = React.useState(false);
+  const [detectNonce, setDetectNonce] = React.useState(0);
+
+  const [positions, setPositions] = React.useState<AuraSwapPosition[] | null>(null);
+  const [positionsLoading, setPositionsLoading] = React.useState(false);
+  const [positionsError, setPositionsError] = React.useState('');
+  const [posNonce, setPosNonce] = React.useState(0);
+
+  const [creatingPool, setCreatingPool] = React.useState(false);
+  const [feeBps, setFeeBps] = React.useState('30');
+  const [removeAmt, setRemoveAmt] = React.useState('');
+  const [busy, setBusy] = React.useState(false);
+  const [progress, setProgress] = React.useState('');
+  const [status, setStatus] = React.useState<{ type: 'success' | 'error'; msg: string; hashes?: string[] } | null>(null);
+
+  const [gasSpeed, setGasSpeed] = React.useState<AseGasSpeed>('normal');
+  const [customGwei, setCustomGwei] = React.useState('');
+  const gasReady = gasSpeed !== 'custom' || /^\d+(\.\d+)?$/.test(customGwei.trim());
+  const gasOverride = (): AseGasOverride => ({ speed: gasSpeed, customMaxFeePerGasGwei: gasSpeed === 'custom' ? customGwei.trim() : undefined });
+
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+
+  const poolValid = isValidAseAddress(poolAddr.trim());
+  const addrA = auraTokenEff(tokenA);
+  const addrB = auraTokenEff(tokenB);
+  const aValid = tokenA.mode === 'native' || isValidAseAddress(tokenA.addr.trim());
+  const bValid = tokenB.mode === 'native' || isValidAseAddress(tokenB.addr.trim());
+  const pairReady = poolValid && aValid && bValid
+    && !(tokenA.mode === 'native' && tokenB.mode === 'native')
+    && (tokenA.mode !== 'token' || tokenA.addr.trim()) && (tokenB.mode !== 'token' || tokenB.addr.trim())
+    && addrA.toLowerCase() !== addrB.toLowerCase();
+  React.useEffect(() => {
+    setDetectedTokens([]);
+    if (!poolValid) return;
+    let cancelled = false;
+    setDetectingTokens(true);
+    (async () => {
+      try {
+        const list = await detectAuraSwapTokens(net, poolAddr.trim(), holderHex || undefined);
+        if (!cancelled && mountedRef.current) setDetectedTokens(list);
+      } catch { if (!cancelled && mountedRef.current) setDetectedTokens([]); }
+      finally { if (!cancelled && mountedRef.current) setDetectingTokens(false); }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [net, poolAddr, poolValid, holderHex, detectNonce]);
+
+  const symbolFor = React.useCallback((addr: string) => {
+    if (isAuraSwapNative(addr)) return net.symbol;
+    const hit = detectedTokens.find(t => t.address.toLowerCase() === addr.toLowerCase());
+    return hit ? hit.symbol : `${addr.slice(0, 6)}…${addr.slice(-4)}`;
+  }, [detectedTokens, net.symbol]);
+
+  React.useEffect(() => {
+    setPositions(null); setPositionsError('');
+    if (!poolValid || !holderHex) return;
+    let cancelled = false;
+    setPositionsLoading(true);
+    (async () => {
+      try {
+        const list = await detectAuraSwapPositions(net, poolAddr.trim(), holderHex);
+        if (!cancelled && mountedRef.current) setPositions(list);
+      } catch (e: any) {
+        if (!cancelled && mountedRef.current) setPositionsError(aseFriendlyError(e) || e?.message || 'Gagal memindai posisi LP.');
+      } finally { if (!cancelled && mountedRef.current) setPositionsLoading(false); }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [net, poolAddr, poolValid, holderHex, posNonce]);
+  
+  const openPosition = (pos: AuraSwapPosition) => {
+    const t0Native = isAuraSwapNative(pos.pool.token0);
+    const t1Native = isAuraSwapNative(pos.pool.token1);
+    setTokenA(t0Native ? { mode: 'native', addr: '' } : { mode: 'token', addr: pos.pool.token0 });
+    setTokenB(t1Native ? { mode: 'native', addr: '' } : { mode: 'token', addr: pos.pool.token1 });
+    setPoolId(pos.poolId); setPool(pos.pool); setMyShares(pos.shares); setPoolMissing(false);
+    setLpMode('remove'); setStatus(null);
+  };
+
+  const loadSideInfo = React.useCallback(async (side: AuraTokenSide, setInfo: (v: any) => void) => {
+    if (side.mode === 'native') { setInfo({ symbol: net.symbol, decimals: 18 }); return; }
+    const addr = side.addr.trim();
+    if (!isValidAseAddress(addr)) { setInfo(null); return; }
+    try {
+      const r = await readAsentumToken(net, addr, holderHex);
+      if (!mountedRef.current) return;
+      if (r.symbol == null || r.decimals == null) { setInfo(null); return; }
+      setInfo({ symbol: r.symbol, decimals: r.decimals });
+    } catch { if (mountedRef.current) setInfo(null); }
+  }, [net, holderHex]);
+  React.useEffect(() => { loadSideInfo(tokenA, setInfoA); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tokenA.mode, tokenA.addr]);
+  React.useEffect(() => { loadSideInfo(tokenB, setInfoB); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tokenB.mode, tokenB.addr]);
+
+  const loadSideBalance = React.useCallback(async (side: AuraTokenSide, setBal: (v: string | null) => void) => {
+    if (!holderHex && !holderBech32) return;
+    try {
+      if (side.mode === 'native') {
+        const b = await getAsentumBalanceWithFallback(net, holderBech32 || holderHex);
+        if (mountedRef.current) setBal(String(b));
+      } else if (isValidAseAddress(side.addr.trim())) {
+        const r = await readAsentumToken(net, side.addr.trim(), holderHex);
+        if (mountedRef.current) setBal(r.ownerBalance ?? '0');
+      } else { setBal(null); }
+    } catch { if (mountedRef.current) setBal(null); }
+  }, [net, holderHex, holderBech32]);
+  React.useEffect(() => { loadSideBalance(tokenA, setBalA); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tokenA.mode, tokenA.addr, loadSideBalance]);
+  React.useEffect(() => { loadSideBalance(tokenB, setBalB); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [tokenB.mode, tokenB.addr, loadSideBalance]);
+
+  React.useEffect(() => {
+    setPoolId(''); setPool(null); setPoolError(''); setPoolMissing(false); setMyShares(null);
+    if (!pairReady) return;
+    let cancelled = false;
+    setPoolLoading(true);
+    (async () => {
+      try {
+        const id = await findAuraSwapPoolId(net, poolAddr.trim(), addrA, addrB);
+        if (cancelled || !mountedRef.current) return;
+        if (!id) { setPoolMissing(true); return; }
+        setPoolId(id);
+        const p = await readAuraSwapPool(net, poolAddr.trim(), id);
+        if (cancelled || !mountedRef.current) return;
+        setPool(p);
+        if (holderHex) {
+          const s = await getAuraSwapShares(net, poolAddr.trim(), id, holderHex);
+          if (!cancelled && mountedRef.current) setMyShares(s);
+        }
+      } catch (e: any) {
+        if (!cancelled && mountedRef.current) setPoolError(aseFriendlyError(e) || e?.message || 'Gagal membaca kontrak AuraSwap — cek address pool.');
+      } finally { if (!cancelled && mountedRef.current) setPoolLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [net, poolAddr, pairReady, addrA, addrB, lpMode]);
+
+  React.useEffect(() => {
+    if (!pool || !infoA || !infoB) return;
+    const r0 = BigInt(pool.reserve0 || '0'); const r1 = BigInt(pool.reserve1 || '0');
+    if (r0 <= 0n || r1 <= 0n) return;
+    const aIsToken0 = pool.token0.toLowerCase() === addrA.toLowerCase();
+    const [rA, rB] = aIsToken0 ? [r0, r1] : [r1, r0];
+    try {
+      if (lastEdited === 'a') {
+        const s = amtA.trim();
+        if (!/^\d+(\.\d+)?$/.test(s) || Number(s) <= 0) return;
+        const unitsA = asentumUnitsFromDecimalString(s, infoA.decimals);
+        const unitsB = (unitsA * rB) / rA;
+        setAmtB(asentumFormatUnits(unitsB.toString(), infoB.decimals));
+      } else {
+        const s = amtB.trim();
+        if (!/^\d+(\.\d+)?$/.test(s) || Number(s) <= 0) return;
+        const unitsB = asentumUnitsFromDecimalString(s, infoB.decimals);
+        const unitsA = (unitsB * rA) / rB;
+        setAmtA(asentumFormatUnits(unitsA.toString(), infoA.decimals));
+      }
+    } catch {}
+  }, [amtA, amtB, lastEdited, pool, infoA, infoB, addrA]);
+
+  const spotRateAB = React.useMemo(() => {
+    if (!pool || !infoA || !infoB) return null;
+    try {
+      const aIsToken0 = pool.token0.toLowerCase() === addrA.toLowerCase();
+      const [reserveARaw, reserveBRaw] = aIsToken0 ? [pool.reserve0, pool.reserve1] : [pool.reserve1, pool.reserve0];
+      const reserveA = Number(asentumFormatUnits(reserveARaw, infoA.decimals));
+      const reserveB = Number(asentumFormatUnits(reserveBRaw, infoB.decimals));
+      if (!(reserveA > 0) || !(reserveB > 0)) return null;
+      return reserveB / reserveA;
+    } catch { return null; }
+  }, [pool, infoA, infoB, addrA]);
+  const spotRateABStr = spotRateAB == null ? null
+    : spotRateAB < 0.000001 ? spotRateAB.toExponential(4)
+    : spotRateAB.toLocaleString('en-US', { maximumFractionDigits: 6 });
+
+  const amountsValid = (() => {
+    if (!infoA || !infoB) return false;
+    const sa = amtA.trim(), sb = amtB.trim();
+    if (!/^\d+(\.\d+)?$/.test(sa) || Number(sa) <= 0) return false;
+    if (!/^\d+(\.\d+)?$/.test(sb) || Number(sb) <= 0) return false;
+    try {
+      if (balA != null && asentumUnitsFromDecimalString(sa, infoA.decimals) > asentumUnitsFromDecimalString(balA, infoA.decimals)) return false;
+      if (balB != null && asentumUnitsFromDecimalString(sb, infoB.decimals) > asentumUnitsFromDecimalString(balB, infoB.decimals)) return false;
+      return true;
+    } catch { return false; }
+  })();
+
+  const doCreatePool = async () => {
+    if (!pairReady) return;
+    setCreatingPool(true); setStatus(null); setProgress('Membuat pool baru...');
+    try {
+      const fee = Math.max(0, Math.min(9999, parseInt(feeBps, 10) || 30));
+      const res = await createAuraSwapPool(net, privateKey, poolAddr.trim(), addrA, addrB, fee, msg => { if (mountedRef.current) setProgress(msg); }, gasOverride());
+      if (!mountedRef.current) return;
+      setPoolId(res.poolId); setPoolMissing(false);
+      setStatus({ type: 'success', msg: `Pool baru dibuat (#${res.poolId}). Sekarang isi jumlah di atas untuk setor likuiditas pertama.`, hashes: [res.txHash] });
+      const p = await readAuraSwapPool(net, poolAddr.trim(), res.poolId).catch(() => null);
+      if (p && mountedRef.current) setPool(p);
+    } catch (e: any) {
+      if (mountedRef.current) setStatus({ type: 'error', msg: aseFriendlyError(e) || e?.message || 'Gagal membuat pool.' });
+    } finally { if (mountedRef.current) { setCreatingPool(false); setProgress(''); } }
+  };
+
+  const doAddLiquidity = async () => {
+    if (!poolId || !infoA || !infoB || !amountsValid) return;
+    setBusy(true); setStatus(null); setProgress('Menyiapkan transaksi...');
+    try {
+      const unitsA = asentumUnitsFromDecimalString(amtA.trim(), infoA.decimals).toString();
+      const unitsB = asentumUnitsFromDecimalString(amtB.trim(), infoB.decimals).toString();
+      const aIsToken0 = pool ? pool.token0.toLowerCase() === addrA.toLowerCase() : true;
+      const [tok0, amt0, tok1, amt1] = aIsToken0 ? [addrA, unitsA, addrB, unitsB] : [addrB, unitsB, addrA, unitsA];
+      const res = await addAuraSwapLiquidity(net, privateKey, poolAddr.trim(), poolId, tok0, amt0, tok1, amt1, msg => { if (mountedRef.current) setProgress(msg); }, gasOverride());
+      if (!mountedRef.current) return;
+      setStatus({ type: 'success', msg: 'Likuiditas berhasil ditambahkan.', hashes: [...res.approveTxHashes, res.txHash] });
+      setAmtA(''); setAmtB('');
+      loadSideBalance(tokenA, setBalA); loadSideBalance(tokenB, setBalB);
+      const [p, s] = await Promise.all([readAuraSwapPool(net, poolAddr.trim(), poolId), getAuraSwapShares(net, poolAddr.trim(), poolId, holderHex)]);
+      if (mountedRef.current) { setPool(p); setMyShares(s); }
+    } catch (e: any) {
+      if (mountedRef.current) setStatus({ type: 'error', msg: aseFriendlyError(e) || e?.message || 'Gagal menambah likuiditas.' });
+    } finally { if (mountedRef.current) { setBusy(false); setProgress(''); } }
+  };
+
+  const removeValid = (() => {
+    const s = removeAmt.trim();
+    if (!s || !/^\d+$/.test(s) || !(BigInt(s) > 0n)) return false;
+    if (myShares != null) { try { return BigInt(s) <= BigInt(myShares); } catch { return false; } }
+    return true;
+  })();
+
+  const doRemoveLiquidity = async () => {
+    if (!poolId || !removeValid) return;
+    setBusy(true); setStatus(null); setProgress('Menyiapkan transaksi...');
+    try {
+      const res = await removeAuraSwapLiquidity(net, privateKey, poolAddr.trim(), poolId, removeAmt.trim(), msg => { if (mountedRef.current) setProgress(msg); }, gasOverride());
+      if (!mountedRef.current) return;
+      setStatus({ type: 'success', msg: 'Likuiditas berhasil ditarik.', hashes: [res.txHash] });
+      setRemoveAmt('');
+      const [p, s] = await Promise.all([readAuraSwapPool(net, poolAddr.trim(), poolId), getAuraSwapShares(net, poolAddr.trim(), poolId, holderHex)]);
+      if (mountedRef.current) { setPool(p); setMyShares(s); }
+    } catch (e: any) {
+      if (mountedRef.current) setStatus({ type: 'error', msg: aseFriendlyError(e) || e?.message || 'Gagal menarik likuiditas.' });
+    } finally { if (mountedRef.current) { setBusy(false); setProgress(''); } }
+  };
+
+  const modeTab = (m: 'add' | 'remove', label: string) => (
+    <button onClick={() => { setLpMode(m); setStatus(null); }} style={{
+      flex:1, padding:'8px', fontSize:'12px', fontWeight:'bold', cursor:'pointer',
+      background: lpMode === m ? net.color : 'none', color: lpMode === m ? '#fff' : '#888',
+      border:`1px solid ${lpMode === m ? net.color : '#333'}`,
+    }}>{label}</button>
+  );
+
+  return (
+    <div style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'20px', display:'flex', flexDirection:'column', gap:'14px' }}>
+      <h3 style={{ fontSize:'13px', margin:0 }}><FaLayerGroup style={{ marginRight:'6px' }}/>Likuiditas (AuraSwap LP)</h3>
+
+      <details style={{ background:'#070707', border:'1px solid #262626' }}>
+        <summary style={{ cursor:'pointer', padding:'10px 12px', fontSize:'11px', color:'#888', display:'flex', alignItems:'center', justifyContent:'space-between', gap:'8px' }}>
+          <span>Address Kontrak AuraSwap (pool){poolValid && <span style={{ color:'#444', fontFamily:'monospace', marginLeft:'6px' }}>· {shortAddr(poolAddr.trim())}</span>}</span>
+          <span onClick={e => { e.preventDefault(); e.stopPropagation(); if (poolValid) { setDetectNonce(n => n + 1); setPosNonce(n => n + 1); } }} title="Deteksi ulang token & posisi LP"
+            style={{ fontSize:'10px', color: poolValid ? net.color : '#333', cursor: poolValid ? 'pointer' : 'default', fontWeight:'bold', flexShrink:0 }}>
+            ↻ Deteksi ulang
+          </span>
+        </summary>
+        <div style={{ padding:'0 12px 12px' }}>
+          <input placeholder="0x... / ase1..." value={poolAddr} onChange={e => setPoolAddr(e.target.value)}
+            style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px', borderColor: poolAddr.trim() && !poolValid ? '#f44336' : undefined }}/>
+          {poolAddr.trim() && !poolValid && <div style={{ fontSize:'10px', color:'#f44336', marginTop:'4px' }}>Address kontrak tidak valid.</div>}
+        </div>
+      </details>
+
+      {poolValid && (
+        <div style={{ background:'#070707', border:'1px solid #262626', padding:'12px', display:'flex', flexDirection:'column', gap:'8px' }}>
+          <div style={{ fontSize:'11px', color:'#888', fontWeight:'bold' }}>Posisi LP kamu (auto-detect)</div>
+          {positionsLoading && (
+            <div style={{ fontSize:'11px', color:'#555', display:'flex', alignItems:'center', gap:'6px' }}>
+              <FaSpinner size={11} style={{ animation:'spin 1s linear infinite' }}/> Memindai semua pool di kontrak ini...
+            </div>
+          )}
+          {!positionsLoading && positionsError && <div style={{ fontSize:'11px', color:'#f44336' }}>{positionsError}</div>}
+          {!positionsLoading && !positionsError && positions && positions.length === 0 && (
+            <div style={{ fontSize:'11px', color:'#444' }}>Belum ada LP share di kontrak ini untuk wallet yang aktif.</div>
+          )}
+          {!positionsLoading && positions && positions.length > 0 && (
+            <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+              {positions.map(pos => (
+                <div key={pos.poolId} onClick={() => openPosition(pos)} style={{
+                  display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px',
+                  padding:'8px 10px', background:'#0d0d0d', border:'1px solid #1e1e1e', cursor:'pointer',
+                }}>
+                  <div style={{ fontSize:'12px', color:'#ddd' }}>
+                    {symbolFor(pos.pool.token0)} / {symbolFor(pos.pool.token1)}
+                    <span style={{ color:'#444', marginLeft:'6px' }}>Pool #{pos.poolId}</span>
+                  </div>
+                  <div style={{ fontSize:'11px', color:net.color, fontWeight:'bold' }}>{pos.shares} share</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display:'flex', gap:'6px' }}>
+        {modeTab('add', 'Tambah Likuiditas')}
+        {modeTab('remove', 'Tarik Likuiditas')}
+      </div>
+
+      <AuraTokenSidePicker ctx={ctx} net={net} label="Token A" side={tokenA} setSide={setTokenA} info={infoA} tokens={detectedTokens} detecting={detectingTokens}/>
+      <AuraTokenSidePicker ctx={ctx} net={net} label="Token B" side={tokenB} setSide={setTokenB} info={infoB} tokens={detectedTokens} detecting={detectingTokens}/>
+
+      {poolLoading && (
+        <div style={{ fontSize:'11px', color:'#555', display:'flex', alignItems:'center', gap:'6px' }}>
+          <FaSpinner size={11} style={{ animation:'spin 1s linear infinite' }}/> Mencari pool untuk pasangan ini...
+        </div>
+      )}
+      {poolError && !poolLoading && <div style={{ fontSize:'11px', color:'#f44336' }}>{poolError}</div>}
+      {pool && (
+        <div style={{ fontSize:'10px', color:'#444' }}>
+          Pool #{pool.id} · fee {Number(pool.feeBps)/100}%
+          {spotRateABStr && infoA && infoB && <> · Rate: 1 {infoA.symbol} ≈ {spotRateABStr} {infoB.symbol}</>}
+        </div>
+      )}
+      {myShares != null && <div style={{ fontSize:'10px', color:'#555' }}>LP share kamu di pool ini: {myShares}</div>}
+
+      {poolMissing && !poolLoading && pairReady && (
+        <div style={{ background:'#070707', border:'1px solid #262626', padding:'12px', display:'flex', flexDirection:'column', gap:'8px' }}>
+          <div style={{ fontSize:'11px', color:'#ffaa00', display:'flex', alignItems:'center', gap:'6px' }}>
+            <FaExclamationTriangle size={11}/> Pool untuk pasangan token ini belum ada di kontrak tersebut.
+          </div>
+          <div style={{ display:'flex', gap:'8px', alignItems:'center' }}>
+            <label style={{ fontSize:'11px', color:'#555' }}>Fee pool (bps, mis. 30 = 0.30%)</label>
+            <input type="number" min="0" max="9999" value={feeBps} onChange={e => setFeeBps(e.target.value)} style={{ width:'80px', fontSize:'11px' }}/>
+          </div>
+          <button onClick={doCreatePool} disabled={creatingPool || !gasReady}
+            style={{ padding:'10px', background: creatingPool ? '#0a0a1a' : net.color, color:'#fff', border:'none', cursor: (creatingPool || !gasReady) ? 'not-allowed' : 'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px' }}>
+            {creatingPool ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> {progress || 'Membuat pool...'}</> : <><FaPlus/> Buat Pool Baru</>}
+          </button>
+        </div>
+      )}
+
+      {poolValid && (
+        <AuraGasFeePicker ctx={ctx} net={net} gasLimit={AURA_SWAP_GAS_LIMIT} speed={gasSpeed} setSpeed={setGasSpeed} customGwei={customGwei} setCustomGwei={setCustomGwei}/>
+      )}
+
+      {lpMode === 'add' && poolId && (
+        <>
+          <div style={{ display:'flex', flexDirection:'column', gap:'4px' }}>
+            <label style={{ fontSize:'11px', color:'#555' }}>Jumlah {infoA?.symbol ?? 'Token A'}</label>
+            <input type="number" min="0" placeholder="0.0" value={amtA} onChange={e => { setAmtA(e.target.value); setLastEdited('a'); }}
+              style={{ width:'100%', boxSizing:'border-box', fontSize:'14px' }}/>
+            {balA != null && infoA && (
+              <div style={{ fontSize:'10px', color:'#555', display:'flex', justifyContent:'space-between' }}>
+                <span>Saldo: {arc20ShortAmt(balA)} {infoA.symbol}</span>
+                <span onClick={() => { setAmtA(balA); setLastEdited('a'); }} style={{ color:net.color, cursor:'pointer', fontWeight:'bold' }}>MAX</span>
+              </div>
+            )}
+          </div>
+          <div style={{ display:'flex', flexDirection:'column', gap:'4px' }}>
+            <label style={{ fontSize:'11px', color:'#555' }}>Jumlah {infoB?.symbol ?? 'Token B'}</label>
+            <input type="number" min="0" placeholder="0.0" value={amtB} onChange={e => { setAmtB(e.target.value); setLastEdited('b'); }}
+              style={{ width:'100%', boxSizing:'border-box', fontSize:'14px' }}/>
+            {balB != null && infoB && (
+              <div style={{ fontSize:'10px', color:'#555', display:'flex', justifyContent:'space-between' }}>
+                <span>Saldo: {arc20ShortAmt(balB)} {infoB.symbol}</span>
+                <span onClick={() => { setAmtB(balB); setLastEdited('b'); }} style={{ color:net.color, cursor:'pointer', fontWeight:'bold' }}>MAX</span>
+              </div>
+            )}
+          </div>
+          {pool && BigInt(pool.reserve0 || '0') > 0n && (
+            <div style={{ fontSize:'10px', color:'#444' }}>Jumlah sisi lain otomatis dihitung mengikuti rasio reserve pool saat ini.</div>
+          )}
+          <button onClick={doAddLiquidity} disabled={busy || !amountsValid || !gasReady}
+            style={{ width:'100%', padding:'12px', background: busy ? '#0a0a1a' : net.color, color:'#fff', border:'none', cursor: (busy || !amountsValid || !gasReady) ? 'not-allowed' : 'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity: (busy || !amountsValid || !gasReady) ? 0.5 : 1 }}>
+            {busy ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> {progress || 'Memproses...'}</> : <><FaLayerGroup/> Tambah Likuiditas</>}
+          </button>
+        </>
+      )}
+
+      {lpMode === 'remove' && poolId && (
+        <>
+          <div style={{ display:'flex', flexDirection:'column', gap:'4px' }}>
+            <label style={{ fontSize:'11px', color:'#555' }}>Jumlah LP share yang ditarik</label>
+            <input type="number" min="0" placeholder="0" value={removeAmt} onChange={e => setRemoveAmt(e.target.value)}
+              style={{ width:'100%', boxSizing:'border-box', fontSize:'14px' }}/>
+            {myShares != null && (
+              <div style={{ fontSize:'10px', color:'#555', display:'flex', justifyContent:'space-between' }}>
+                <span>Share kamu: {myShares}</span>
+                <span onClick={() => setRemoveAmt(myShares)} style={{ color:net.color, cursor:'pointer', fontWeight:'bold' }}>MAX</span>
+              </div>
+            )}
+          </div>
+          <button onClick={doRemoveLiquidity} disabled={busy || !removeValid || !gasReady}
+            style={{ width:'100%', padding:'12px', background: busy ? '#0a0a1a' : net.color, color:'#fff', border:'none', cursor: (busy || !removeValid || !gasReady) ? 'not-allowed' : 'pointer', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity: (busy || !removeValid || !gasReady) ? 0.5 : 1 }}>
+            {busy ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> {progress || 'Memproses...'}</> : <><FaLayerGroup/> Tarik Likuiditas</>}
+          </button>
+        </>
+      )}
+
+      {status && (
+        <div style={{
+          fontSize:'12px', padding:'10px 12px', border:`1px solid ${status.type === 'success' ? '#4caf5044' : '#f4433644'}`,
+          borderLeft:`3px solid ${status.type === 'success' ? '#4caf50' : '#f44336'}`, color: status.type === 'success' ? '#8fd98f' : '#ff8a80',
+          display:'flex', flexDirection:'column', gap:'4px',
+        }}>
+          <span style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+            {status.type === 'success' ? <FaCheckCircle size={11}/> : <FaExclamationTriangle size={11}/>} {status.msg}
+          </span>
+          {(status.hashes || []).map((h, i) => (
+            <a key={i} href={`${net.explorerUrl}/tx/${h}`} target="_blank" rel="noreferrer" style={{ color:'#7a7aff', fontSize:'11px' }}>
+              Tx: {h.slice(0,18)}…
+            </a>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AseSendAssetSection({ ctx, net, privateKey, holderHex, holderBech32, savedTokens, nativeContent }: {
+  ctx: any; net: any; privateKey: string; holderHex: string; holderBech32: string; savedTokens?: any[]; nativeContent: any;
+}) {
+  const { FaPaperPlane, FaCoins, FaExchangeAlt, FaLayerGroup } = ctx;
+  const [assetMode, setAssetMode] = React.useState<'native' | 'token' | 'swap' | 'lp'>('native');
+  const [tokenOpened, setTokenOpened] = React.useState(false);
+  const [swapOpened, setSwapOpened] = React.useState(false);
+  const [lpOpened, setLpOpened] = React.useState(false);
+
+  const tabStyle = (active: boolean): any => ({
+    flex:1, padding:'8px', fontSize:'12px', fontWeight:'bold', cursor:'pointer',
+    background: active ? net.color : 'none',
+    color: active ? '#fff' : '#888',
+    border: `1px solid ${active ? net.color : '#333'}`,
+  });
+
+  return (
+    <>
+      <div style={{ display:'flex', gap:'6px' }}>
+        <button onClick={() => setAssetMode('native')} style={tabStyle(assetMode === 'native')}>
+          <FaPaperPlane style={{ marginRight:'6px' }}/>Native ({net.symbol})
+        </button>
+        <button onClick={() => { setAssetMode('token'); setTokenOpened(true); }} style={tabStyle(assetMode === 'token')}>
+          <FaCoins style={{ marginRight:'6px' }}/>Token (ARC-20)
+        </button>
+        <button onClick={() => { setAssetMode('swap'); setSwapOpened(true); }} style={tabStyle(assetMode === 'swap')}>
+          <FaExchangeAlt style={{ marginRight:'6px' }}/>Swap
+        </button>
+        <button onClick={() => { setAssetMode('lp'); setLpOpened(true); }} style={tabStyle(assetMode === 'lp')}>
+          <FaLayerGroup style={{ marginRight:'6px' }}/>LP
+        </button>
+      </div>
+
+      {assetMode === 'native' && nativeContent}
+
+      {tokenOpened && (
+        <div style={{ display: assetMode === 'token' ? 'flex' : 'none', flexDirection:'column', gap:'14px' }}>
+          <AseArc20Panel ctx={ctx} net={net} privateKey={privateKey} holderHex={holderHex} holderBech32={holderBech32} savedTokens={savedTokens} />
+        </div>
+      )}
+
+      {swapOpened && (
+        <div style={{ display: assetMode === 'swap' ? 'flex' : 'none', flexDirection:'column', gap:'14px' }}>
+          <AseSwapPanel ctx={ctx} net={net} privateKey={privateKey} holderHex={holderHex} holderBech32={holderBech32} />
+        </div>
+      )}
+
+      {lpOpened && (
+        <div style={{ display: assetMode === 'lp' ? 'flex' : 'none', flexDirection:'column', gap:'14px' }}>
+          <AseLiquidityPanel ctx={ctx} net={net} privateKey={privateKey} holderHex={holderHex} holderBech32={holderBech32} />
+        </div>
+      )}
+    </>
+  );
+}
 
 export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
   const {
@@ -34,7 +1753,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     aseLoadingBal, aseMaxLoading, aseNetId, asePrivKey, setAsePrivKey, aseRefreshBalance, aseSend, aseSendAmt, setAseSendAmt, aseSendTo, setAseSendTo, aseSending, aseSetMaxAmount,
     aseStatus, aseWalletSel, setAseWalletSel, handleAseWalletSel, switchAseNetwork, aseFaucetLoading, aseRequestFaucet,
     aseFeeEstimate, aseFeeEstimating, aseFeeEstimateError, aseRefreshFeeEstimate,
-    aseMode, setAseMode, aseIsValidAddr, uiStyle, setUiStyle,
+    aseMode, setAseMode, aseIsValidAddr, uiStyle, setUiStyle, aseTokens = [],
     aseMultiRows, aseMultiRunning, aseMultiEqualAmt, setAseMultiEqualAmt,
     aseMultiAddRow, aseMultiRemoveRow, aseMultiUpdateRow, aseMultiApplyEqual, aseMultiSend,
     aseSweepDestAddr, setAseSweepDestAddr, aseSweepAmtMode, setAseSweepAmtMode,
@@ -110,14 +1829,6 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     txCheckAllowance, txApproveToken, txRevokeApproval, txApprovalHistoryForToken,
   } = ctx;
 
-  // Address hex "0x..." khusus buat request RPC Asentum (getBalance, sendTransfer,
-  // dst di @asentum/sdk) — istilah "RPC address" ini konsisten dipakai di
-  // ekosistem Asentum sendiri (SDK reference & wallet resmi ASENDEX yang juga
-  // nyebut ini "0x representation" yang dipakai buat native RPC request),
-  // bukan address EVM meskipun formatnya sama-sama 0x + 40 hex. Ditampilkan
-  // sebagai info tambahan di samping bentuk bech32 "ase1..." yang jadi
-  // address utama, biar user yang butuh bentuk hex-nya (mis. buat panggil
-  // RPC/kontrak langsung) ga perlu convert manual.
   let aseHexAddress = '';
   try { aseHexAddress = aseAddress ? asentumBech32ToHex(aseAddress) : ''; } catch { aseHexAddress = ''; }
 
@@ -1473,8 +3184,6 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                                 const reclaimSol = (acc.lamports / LAMPORTS_PER_SOL).toFixed(6);
                                 const isToken22  = acc.programId === TOKEN_2022_PROGRAM_ID.toBase58();
                                 const accentColor= hasBalance ? '#f4a300' : '#4caf50';
-                                // ── Nama tampilan: pakai nama/simbol on-chain kalau ketemu, kalau nggak ada
-                                //    metadata (token polos) jatuh ke label netral — bukan dibiarkan kosong. ──
                                 const displayName  = acc.name || acc.symbol || (acc.metaLoaded ? 'Token Tidak Dikenal' : '');
                                 const avatarLetter = (acc.name || acc.symbol || acc.mint).trim().charAt(0).toUpperCase() || '?';
                                 const createdLabel = acc.createdAtLoaded
@@ -2582,6 +4291,8 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                     </div>
                   </div>
 
+                  <AseSendAssetSection ctx={ctx} net={ASENTUM_NETWORK} privateKey={asePrivKey} holderHex={aseHexAddress} holderBech32={aseAddress} savedTokens={aseTokens}
+                    nativeContent={<>
                   {/* ── Mode: Kirim / Multi Send / Sweep ── */}
                   <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', padding:'2px' }}>
                     {([
@@ -2893,6 +4604,8 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                     </div>
                   )}
 
+                    </>} />
+
                   <div style={{ textAlign:'center' }}>
                     <button onClick={aseDisconnect}
                       style={{ background:'none', border:'1px solid #f4433630', color:'#f44336', padding:'8px 20px', cursor:'pointer', fontSize:'12px' }}>
@@ -2985,8 +4698,6 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         <button onClick={() => copyText(gramAddress, 'gram_recv')} style={{ background:'none', border:'1px solid #333', color:copiedKey==='gram_recv'?'#4caf50':'#888', cursor:'pointer', padding:'8px 10px' }}>
                           {copiedKey==='gram_recv' ? <FaCheckCircle size={12}/> : <FaCopy size={12}/>}
                         </button>
-                        {/* QR/link ke address ini otomatis menyertakan memo dari field
-                            "Memo / Comment" di form Kirim GRAM di bawah (satu field dipakai bareng). */}
                         <button onClick={() => setQrAddress(gramMemo.trim() ? `ton://transfer/${gramAddress}?text=${encodeURIComponent(gramMemo.trim())}` : gramAddress)}
                           style={{ background:'none', border:'1px solid #333', color:'#888', cursor:'pointer', padding:'8px 10px' }}>
                           <FaQrcode size={12}/>
