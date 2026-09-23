@@ -35,6 +35,12 @@ export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
     tcGramDecimals, setTcGramDecimals, tcGramSupply, setTcGramSupply, tcGramDescription, setTcGramDescription,
     tcGramImageUrl, setTcGramImageUrl, handleTcGramImageFile, tcGramImageUploading, tcGramCreating, tcGramStatus,
     tcGramFeeGram, tcGramFeeDetail, tcGramFeeLoading, tcGramFeeError, tcGramSelectedNetwork, tcGramMetaPreview,
+    ASENTUM_NETWORKS, aseTokens = [], deleteAseToken, createAseToken, retryAseTokenInit, estimateTcAseFee,
+    tcAseNetId, setTcAseNetId, tcAseWalletSel, setTcAseWalletSel, handleTcAseWalletSel,
+    tcAsePrivKey, setTcAsePrivKey, tcAseDeployerAddr, tcAseSelectedNetwork,
+    tcAseName, setTcAseName, tcAseSymbol, setTcAseSymbol, tcAseDecimals, setTcAseDecimals,
+    tcAseSupply, setTcAseSupply, tcAseMintable, setTcAseMintable, tcAseBurnable, setTcAseBurnable,
+    tcAseCreating, tcAseRetryingId, tcAseStatus, tcAseFee, tcAseFeeLoading, tcAseFeeError,
   } = ctx;
 
   // Detail deploy (deployer, tx hash, tanggal, chain id) di-collapse per-kartu supaya
@@ -51,7 +57,7 @@ export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
             <label style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', display:'block', marginBottom:'8px' }}>
               <FaCoins style={{ marginRight:'5px' }}/>Buat Token Baru
             </label>
-            <div style={{ display:'flex', gap:'6px' }}>
+            <div style={{ display:'flex', gap:'6px', flexWrap:'wrap' }}>
               <button onClick={() => setTcChain('evm')} style={{
                 background: tcChain === 'evm' ? '#01a2ff' : 'none',
                 color: tcChain === 'evm' ? '#000' : '#888',
@@ -76,6 +82,12 @@ export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                 border: `1px solid ${tcChain === 'gram' ? '#0098EA' : '#333'}`,
                 padding:'8px 16px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
               }}>Jetton (Gram/TON)</button>
+              <button onClick={() => setTcChain('ase')} style={{
+                background: tcChain === 'ase' ? '#4949DF' : 'none',
+                color: tcChain === 'ase' ? '#fff' : '#888',
+                border: `1px solid ${tcChain === 'ase' ? '#4949DF' : '#333'}`,
+                padding:'8px 16px', fontSize:'11px', fontWeight:'bold', cursor:'pointer',
+              }}>ARC-20 (Asentum)</button>
             </div>
           </div>
 
@@ -1342,6 +1354,291 @@ export function TokenTab({ ctx }: { ctx: WalletGeneratorCtx }) {
               )}
             </>
           )}
+
+          {/* ══════════ ARC-20 (ASENTUM) ══════════ */}
+          {tcChain === 'ase' && (() => {
+            const aseColor = tcAseSelectedNetwork?.color || '#4949DF';
+            const busy = tcAseCreating || !!tcAseRetryingId;
+            const canDeploy = !busy && !!tcAsePrivKey.trim() && !!tcAseName.trim() && !!tcAseSymbol.trim() && !!tcAseSupply.trim();
+            const hasAseWallets = wallets.some(w => (w.aseAddresses || []).length > 0);
+            return (
+            <>
+              <div className="form-container" style={{ maxWidth:'520px', margin:'16px auto 24px' }}>
+                <h2 style={{ textAlign:'center', marginBottom:'16px', fontSize:'15px' }}>
+                  <FaRocket style={{ marginRight:'8px' }}/>Deploy Token ARC-20 (Asentum)
+                </h2>
+
+                <div style={{ marginBottom:'14px', display:'flex', gap:'8px', alignItems:'center', flexWrap:'wrap' }}>
+                  <select value={tcAseNetId} onChange={e => setTcAseNetId(e.target.value)}
+                    style={{ flex:'1 1 200px', fontFamily:'monospace', fontSize:'12px', padding:'8px 10px', background:'#0d0d0d', border:'1px solid #1e1e1e', color:'#ccc' }}>
+                    {ASENTUM_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
+                  </select>
+                  <span style={{ fontSize:'10px', color:'#F1C40F', border:'1px solid #4a3f10', background:'#1a1608', padding:'4px 8px', whiteSpace:'nowrap' }}>
+                    ⚠ Testnet post-quantum — token tidak bernilai uang
+                  </span>
+                </div>
+
+                <p style={{ fontSize:'11px', color:'#444', margin:'0 0 14px' }}>
+                  <FaInfoCircle style={{ marginRight:'4px' }}/>
+                  Kontrak Asentum itu <strong style={{ color:'#666' }}>JavaScript</strong> (bukan Solidity/bytecode). Deploy = 2 transaksi
+                  berurutan: deploy kontrak, lalu <code>init()</code> yang mengisi nama/symbol dan mencetak seluruh supply ke wallet deployer.
+                </p>
+
+                {hasAseWallets && (
+                  <div style={{ marginBottom:'14px' }}>
+                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Wallet Deployer (dari BIP39 tersimpan)</label>
+                    <select value={tcAseWalletSel} onChange={e => handleTcAseWalletSel(e.target.value)} style={{ width:'100%', fontFamily:'monospace', fontSize:'12px' }}>
+                      <option value="">-- Pilih address --</option>
+                      {wallets.flatMap((w, wi) =>
+                        (w.aseAddresses || []).map(a => (
+                          <option key={`${wi},${a.index}`} value={`${wi},${a.index}`}>
+                            {w.name} · #{a.index} · {a.address.slice(0,14)}...
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </div>
+                )}
+
+                <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>
+                  <FaKey style={{ marginRight:'4px' }}/>Atau Private Key Asentum (64 hex / recovery key) manual
+                </label>
+                <input type="password" placeholder="Private key Asentum — 64 karakter hex" value={tcAsePrivKey}
+                  onChange={e => { setTcAsePrivKey(e.target.value); setTcAseWalletSel(''); }}
+                  style={{ width:'100%', boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px', marginBottom:'6px' }}/>
+                <div style={{ fontSize:'10px', color: tcAseDeployerAddr ? '#7a7aff' : '#444', fontFamily:'monospace', marginBottom:'14px', wordBreak:'break-all' }}>
+                  {tcAseDeployerAddr
+                    ? <>Deployer / owner: {tcAseDeployerAddr}</>
+                    : (tcAsePrivKey.trim() ? 'Private key belum valid (harus tepat 64 karakter hex).' : 'Address deployer akan tampil di sini setelah private key diisi.')}
+                </div>
+
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'10px', marginBottom:'10px' }}>
+                  <div>
+                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Nama Token</label>
+                    <input placeholder="misal: My Asentum Token" maxLength={50} value={tcAseName} onChange={e => setTcAseName(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Symbol (1–11 huruf/angka)</label>
+                    <input placeholder="misal: MAT" maxLength={11} value={tcAseSymbol} onChange={e => setTcAseSymbol(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))} style={{ textTransform:'uppercase' }}/>
+                  </div>
+                  <div>
+                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Decimals (0–18)</label>
+                    <input type="number" min={0} max={18} placeholder="18" value={tcAseDecimals} onChange={e => setTcAseDecimals(e.target.value)} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize:'11px', color:'#555', display:'block', marginBottom:'4px' }}>Total Supply</label>
+                    <input type="text" inputMode="decimal" placeholder="1000000" value={tcAseSupply} onChange={e => setTcAseSupply(e.target.value)} />
+                  </div>
+                </div>
+
+                {(() => {
+                  const opts = [
+                    {
+                      key: 'mint', on: tcAseMintable, set: setTcAseMintable,
+                      title: 'Mintable',
+                      badge: tcAseMintable ? 'AKTIF' : 'NONAKTIF',
+                      accent: tcAseMintable ? '#F1C40F' : '#4caf50',
+                      desc: 'Owner bisa mencetak token tambahan kapan saja.',
+                      hint: tcAseMintable
+                        ? 'Supply tidak terkunci — pemegang private key owner bisa menambah supply.'
+                        : 'Disarankan: fungsi mint() tidak dimasukkan ke kontrak, supply terkunci permanen.',
+                      hintColor: tcAseMintable ? '#F1C40F' : '#4caf50',
+                    },
+                    {
+                      key: 'burn', on: tcAseBurnable, set: setTcAseBurnable,
+                      title: 'Burnable',
+                      badge: tcAseBurnable ? 'AKTIF' : 'NONAKTIF',
+                      accent: '#4949DF',
+                      desc: 'Pemegang bisa membakar token miliknya sendiri.',
+                      hint: 'Mengurangi total supply. Tidak memberi siapa pun kuasa atas token orang lain.',
+                      hintColor: '#555',
+                    },
+                  ];
+                  return (
+                    <div style={{ margin:'14px 0', display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(210px, 1fr))', gap:'10px' }}>
+                      {opts.map(o => (
+                        <div key={o.key} role="switch" aria-checked={o.on} tabIndex={0}
+                          onClick={() => o.set(!o.on)}
+                          onKeyDown={e => { if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); o.set(!o.on); } }}
+                          style={{
+                            cursor:'pointer', userSelect:'none', padding:'12px 14px',
+                            background: o.on ? '#0f0f1c' : '#0d0d0d',
+                            border:`1px solid ${o.on ? o.accent + '66' : '#1e1e1e'}`,
+                            borderLeft:`3px solid ${o.on ? o.accent : '#333'}`,
+                            display:'flex', flexDirection:'column', gap:'8px',
+                          }}>
+                          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:'10px' }}>
+                            <div style={{ display:'flex', alignItems:'center', gap:'8px', minWidth:0 }}>
+                              <span style={{ fontSize:'13px', fontWeight:'bold', color: o.on ? '#fff' : '#aaa' }}>{o.title}</span>
+                              <span style={{ fontSize:'9px', letterSpacing:'0.5px', fontWeight:'bold', padding:'2px 6px', color: o.on ? '#000' : '#666', background: o.on ? o.accent : '#1a1a1a' }}>{o.badge}</span>
+                            </div>
+                            <span aria-hidden="true" style={{
+                              flexShrink:0, position:'relative', width:'34px', height:'18px', borderRadius:'9px',
+                              background: o.on ? o.accent : '#2a2a2a', transition:'background .15s',
+                            }}>
+                              <span style={{
+                                position:'absolute', top:'2px', left: o.on ? '18px' : '2px', width:'14px', height:'14px',
+                                borderRadius:'50%', background: o.on ? '#000' : '#777', transition:'left .15s',
+                              }}/>
+                            </span>
+                          </div>
+                          <div style={{ fontSize:'11px', color:'#999', lineHeight:1.45 }}>{o.desc}</div>
+                          <div style={{ fontSize:'10px', color:o.hintColor, lineHeight:1.45 }}>{o.hint}</div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()}
+
+                {/* ── Estimasi Fee ── */}
+                <div style={{ margin:'4px 0 16px', padding:'12px 14px', background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:`3px solid ${aseColor}` }}>
+                  <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', flexWrap:'wrap', gap:'8px' }}>
+                    <span style={{ fontSize:'11px', color:'#888', display:'flex', alignItems:'center', gap:'6px' }}>
+                      <FaGasPump size={11}/> Estimasi Fee Jaringan
+                    </span>
+                    <button onClick={estimateTcAseFee} disabled={tcAseFeeLoading}
+                      style={{ fontSize:'11px', color:aseColor, background:'none', border:`1px solid ${aseColor}55`, padding:'5px 10px', cursor:'pointer', display:'flex', alignItems:'center', gap:'5px' }}>
+                      {tcAseFeeLoading ? <><FaSpinner size={10} style={{ animation:'spin 1s linear infinite' }}/> Menghitung...</> : <><FaSync size={10}/> Cek Estimasi</>}
+                    </button>
+                  </div>
+                  {tcAseFeeError && <div style={{ marginTop:'8px', fontSize:'11px', color:'#ff6666' }}>{tcAseFeeError}</div>}
+                  {tcAseFee && !tcAseFeeError && (
+                    <div style={{ marginTop:'10px' }}>
+                      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit, minmax(120px,1fr))', gap:'10px' }}>
+                        <div>
+                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Gas Limit Deploy</div>
+                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{Number(tcAseFee.deployGasLimit).toLocaleString()}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Gas Limit init()</div>
+                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{Number(tcAseFee.initGasLimit).toLocaleString()}</div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Base Fee / Gas</div>
+                          <div style={{ fontSize:'12px', color:'#ccc', fontFamily:'monospace' }}>{tcAseFee.baseFeePerGas} wei</div>
+                        </div>
+                      </div>
+                      <div style={{ marginTop:'10px', paddingTop:'10px', borderTop:'1px solid #1e1e1e' }}>
+                        <span style={{ fontSize:'10px', color:'#444', textTransform:'uppercase', letterSpacing:'0.5px' }}>Batas Atas Fee (deploy + init)</span>
+                        <div style={{ fontSize:'14px', color:aseColor, fontFamily:'monospace', fontWeight:'bold' }}>
+                          ≤ {tcAseFee.feeAse < 0.000001 && tcAseFee.feeAse > 0 ? tcAseFee.feeAse.toExponential(2) : tcAseFee.feeAse.toFixed(6)} ASE
+                        </div>
+                        <div style={{ fontSize:'10px', color:'#555', marginTop:'4px' }}>
+                          Ini plafon (gas limit penuh × base fee × 1.5), bukan biaya aktual — gas yang terpakai biasanya jauh lebih kecil.
+                          {tcAseFee.isFallback && ' RPC tidak merespons, jadi angka ini hanya buffer statis.'}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {!tcAseFee && !tcAseFeeError && (
+                    <p style={{ fontSize:'10px', color:'#444', margin:'8px 0 0' }}>
+                      Klik "Cek Estimasi" — hanya membaca base fee dari RPC, tidak broadcast apa pun. Butuh saldo ASE di wallet deployer (faucet: tab Transfer → Asentum).
+                    </p>
+                  )}
+                </div>
+
+                {tcAseStatus.type !== 'idle' && (
+                  <div style={{
+                    marginBottom:'14px', padding:'10px 12px', fontSize:'12px',
+                    border: `1px solid ${{pending:'#ffaa0044',success:'#4caf5044',error:'#f4433644',idle:'#33333344'}[tcAseStatus.type]}`,
+                    borderLeft: `3px solid ${{pending:'#ffaa00',success:'#4caf50',error:'#f44336',idle:'#555'}[tcAseStatus.type]}`,
+                    color: {pending:'#ffcc44',success:'#4caf50',error:'#ff6666',idle:'#888'}[tcAseStatus.type],
+                    wordBreak:'break-all',
+                  }}>
+                    {tcAseStatus.type === 'pending' && <FaSpinner style={{ marginRight:'6px', animation:'spin 1s linear infinite' }}/>}
+                    {tcAseStatus.msg}
+                  </div>
+                )}
+
+                <button onClick={createAseToken} disabled={!canDeploy}
+                  className="btn-manage btn-import" style={{ width:'100%', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity: canDeploy ? 1 : 0.6 }}>
+                  {tcAseCreating ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Deploy Token...</> : <><FaHashtag/> Deploy Token</>}
+                </button>
+                <p style={{ fontSize:'10px', color:'#444', margin:'10px 0 0' }}>
+                  Catatan: address di dalam kontrak selalu berbentuk hex <code>0x…</code> (40 karakter). Kalau kirim token ke seseorang, pakai
+                  address hex-nya — bukan bentuk <code>ase1…</code>; kontrak akan menolak bentuk yang salah supaya token tidak hilang.
+                </p>
+              </div>
+
+              {aseTokens.length > 0 && (
+                <div style={{ marginBottom:'20px' }}>
+                  <h3 style={{ fontSize:'11px', textTransform:'uppercase', letterSpacing:'1.5px', color:'#4949DF', marginBottom:'10px' }}>
+                    <FaList style={{ marginRight:'6px' }}/>Token Asentum yang Sudah Dibuat ({aseTokens.length})
+                  </h3>
+                  <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))', gap:'12px' }}>
+                    {aseTokens.map(t => {
+                      const tNet = ASENTUM_NETWORKS.find(n => n.id === t.netId) ?? ASENTUM_NETWORKS[0];
+                      const needsInit = t.status === 'needs-init';
+                      const retrying = tcAseRetryingId === t.id;
+                      return (
+                      <div key={t.id} style={{ background:'#0d0d0d', border:'1px solid #1e1e1e', borderLeft:`3px solid ${needsInit ? '#F1C40F' : tNet.color}`, padding:'14px', display:'flex', flexDirection:'column', gap:'8px' }}>
+                        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'8px' }}>
+                          <div>
+                            <div style={{ fontWeight:'bold', fontSize:'13px' }}>{t.name} <span style={{ color:'#555' }}>({t.symbol})</span></div>
+                            <div style={{ fontSize:'10px', color:'#444', marginTop:'2px' }}>
+                              {t.networkName} · {t.decimals} dec · supply {Number(t.initialSupply).toLocaleString()}
+                              {t.mintable ? ' · mintable' : ' · supply terkunci'}{t.burnable ? ' · burnable' : ''}
+                            </div>
+                            {needsInit && (
+                              <div style={{ fontSize:'10px', color:'#F1C40F', marginTop:'4px' }}>⚠ Kontrak sudah ter-deploy tapi BELUM ter-init — token belum berfungsi.</div>
+                            )}
+                            {t.note && (
+                              <div style={{ fontSize:'10px', color: needsInit ? '#ff8a80' : '#8a7a2a', marginTop:'3px', wordBreak:'break-word' }}>{t.note}</div>
+                            )}
+                          </div>
+                          <button onClick={() => deleteAseToken(t.id)} title="Hapus catatan"
+                            style={{ background:'none', border:'1px solid #333', color:'#f44336', padding:'4px 7px', cursor:'pointer', fontSize:'11px', flexShrink:0 }}><FaTrash/></button>
+                        </div>
+
+                        <div style={{ display:'flex', alignItems:'center', gap:'6px' }}>
+                          <code style={{ flex:1, fontSize:'10px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap', background:'#0a0a0a', padding:'5px 8px', border:'1px solid #141414' }}>
+                            {t.contractAddress}
+                          </code>
+                          <button onClick={() => copyText(t.contractAddress, `ase_${t.id}`)} title="Salin address kontrak (hex)"
+                            style={{ background:'none', border:'none', color:copiedKey===`ase_${t.id}`?'#4caf50':'#333', cursor:'pointer', padding:'3px', flexShrink:0 }}>
+                            {copiedKey===`ase_${t.id}` ? <FaCheckCircle size={11}/> : <FaCopy size={11}/>}
+                          </button>
+                        </div>
+
+                        <div style={{ display:'flex', alignItems:'center', gap:'12px', flexWrap:'wrap' }}>
+                          <a href={`${tNet.explorerUrl}/address/${t.contractAddress}`} target="_blank" rel="noreferrer"
+                            style={{ fontSize:'11px', color:tNet.color, textDecoration:'none', display:'flex', alignItems:'center', gap:'4px' }}>
+                            <FaLink size={10}/> Lihat di Explorer
+                          </a>
+                          {t.deployTxHash && (
+                            <a href={`${tNet.explorerUrl}/tx/${t.deployTxHash}`} target="_blank" rel="noreferrer"
+                              style={{ fontSize:'11px', color:'#555', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px' }}>
+                              <FaLink size={10}/> TX Deploy
+                            </a>
+                          )}
+                          {t.initTxHash && (
+                            <a href={`${tNet.explorerUrl}/tx/${t.initTxHash}`} target="_blank" rel="noreferrer"
+                              style={{ fontSize:'11px', color:'#555', textDecoration:'none', display:'flex', alignItems:'center', gap:'4px' }}>
+                              <FaLink size={10}/> TX Init
+                            </a>
+                          )}
+                        </div>
+
+                        {needsInit && (
+                          <div>
+                            <button onClick={() => retryAseTokenInit(t.id)} disabled={retrying || busy || !tcAsePrivKey.trim()}
+                              style={{ width:'100%', background:'none', border:'1px solid #F1C40F', color:'#F1C40F', padding:'8px', cursor:'pointer', fontSize:'11px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', opacity:(busy || !tcAsePrivKey.trim()) ? 0.5 : 1 }}>
+                              {retrying ? <><FaSpinner size={10} style={{ animation:'spin 1s linear infinite' }}/> Menginisialisasi...</> : <><FaRocket size={10}/> Selesaikan Inisialisasi</>}
+                            </button>
+                            <p style={{ fontSize:'10px', color:'#555', margin:'6px 0 0' }}>
+                              Isi private key deployer yang sama di form di atas dulu. Tidak deploy ulang — hanya mengirim init() ke kontrak ini.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </>
+            );
+          })()}
         </>
   );
 }
