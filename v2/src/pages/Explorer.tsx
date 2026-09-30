@@ -17,12 +17,22 @@ import {
   type GramMasterchainInfo, type GramLatestBlock, type GramLatestTx, type GramLatestAccount,
 } from './wallet-gen/network/Gramnet';
 import {
+  ASENTUM_NETWORKS, type AsentumNetworkCfg,
+  isValidAsentumAddress, getAsentumBalanceWithFallback,
+  hexToAsentumBech32, asentumBech32ToHex, aseFriendlyError,
+  getAsentumChainStatus, getAsentumLatestBlocks, getAsentumBlockByHeight, getAsentumBlockByHash,
+  getAsentumTransactionByHash, getAsentumMempool, getAsentumValidators, getAsentumBlockTxs, getAsentumAddressHistory, getAsentumAccountInfo, asentumAddrKey,
+  formatAseGwei, formatAseAmount, asentumFeeTiers, getAsentumTxActivity,
+  type AsentumActivityRange, type AsentumTxActivity,
+  type AsentumChainStatus, type AsentumBlockSummary, type AsentumTxSummary, type AsentumValidator, type AsentumAddressHistory, type AsentumAccountInfo,
+} from './wallet-gen/network/Asentumnet';
+import {
   FaSearch, FaCube, FaExchangeAlt, FaWallet, FaFileCode, FaCopy,
   FaCheckCircle, FaTimesCircle, FaClock, FaSpinner, FaExternalLinkAlt,
   FaGlobe, FaLayerGroup, FaGasPump, FaArrowRight, FaChevronDown, FaChevronUp,
   FaExclamationTriangle, FaCompass, FaCoins, FaHistory, FaListUl,
   FaUsers, FaTag, FaChartLine, FaCog, FaSyncAlt, FaPlay, FaBolt,
-  FaPlug, FaFileImport, FaUnlink, FaPlus,
+  FaPlug, FaFileImport, FaUnlink, FaPlus, FaShieldAlt, FaChartBar,
 } from 'react-icons/fa';
 
 type ResultType = 'address' | 'tx' | 'block' | null;
@@ -225,6 +235,48 @@ function timeAgo(ts: number): string {
 function copyToClipboard(text: string) {
   navigator.clipboard.writeText(text).catch(() => {});
 }
+
+// ── Logo Asentum Explorer ───────────────────────────────────────────────
+// Heksagon (blok/chain) + huruf "A" dengan titik di puncak (node/validator).
+// `mono` = pakai currentColor supaya ikut warna teks tombol aktif/nonaktif.
+const AsentumLogo: React.FC<{ size?: number; mono?: boolean; style?: React.CSSProperties }> = ({ size = 16, mono = false, style }) => {
+  const c = mono ? 'currentColor' : 'url(#aseLogoGrad)';
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" style={{ flexShrink: 0, ...style }} role="img" aria-label="Asentum">
+      <defs>
+        <linearGradient id="aseLogoGrad" x1="4" y1="2" x2="28" y2="30" gradientUnits="userSpaceOnUse">
+          <stop stopColor="#B6AAFF" />
+          <stop offset="1" stopColor="#4949DF" />
+        </linearGradient>
+      </defs>
+      <path d="M16 2.5 28 9.25v13.5L16 29.5 4 22.75V9.25L16 2.5Z" stroke={c} strokeWidth="2" strokeLinejoin="round" />
+      <path d="M10.6 21.8 16 10.2l5.4 11.6" stroke={c} strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12.6 17.6h6.8" stroke={c} strokeWidth="2.4" strokeLinecap="round" />
+      <circle cx="16" cy="9.2" r="1.7" fill={c} />
+    </svg>
+  );
+};
+
+// Timestamp Asentum bisa detik atau milidetik → selalu jadikan detik.
+function aseTs(ts: number | null | undefined): number | null {
+  if (ts == null) return null;
+  return ts < 2e10 ? ts : Math.floor(ts / 1000);
+}
+
+// Ambil field pertama yang ada dari objek raw (header/body/receipt).
+function aseRawField(raw: any, keys: string[]): string | null {
+  const srcs = [raw, raw?.header, raw?.receipt, raw?.body];
+  for (const src of srcs) {
+    if (!src || typeof src !== 'object') continue;
+    for (const k of keys) {
+      const v = src[k];
+      if (v != null && typeof v !== 'object') return String(v);
+    }
+  }
+  return null;
+}
+
+const ASE_RECENT_KEY = 'aseExplorerRecent';
 
 function safeGramFmt(addr: string | null | undefined, net: GramNetworkCfg) {
   if (!addr) return null;
@@ -1073,6 +1125,72 @@ const COLORS = {
   muted: '#666', text: '#ddd', green: '#4caf50', red: '#f44336', amber: '#ffaa00',
 };
 
+// ── Tabel TX Asentum (dipakai di riwayat address, detail block & feed TX) ──
+const aseStatusMeta = (st: AsentumTxSummary['status']) =>
+  st === 'success' ? { label: 'Sukses', color: '#4caf50' }
+  : st === 'failed' ? { label: 'Gagal', color: '#f44336' }
+  : st === 'pending' ? { label: 'Pending', color: '#ffaa00' }
+  : { label: 'Unknown', color: '#666' };
+
+const AseBadge: React.FC<{ color: string; children: React.ReactNode; title?: string }> = ({ color, children, title }) => (
+  <span title={title} style={{
+    display: 'inline-block', fontSize: '10px', fontWeight: 'bold', color, border: `1px solid ${color}66`,
+    padding: '2px 7px', whiteSpace: 'nowrap', letterSpacing: '0.3px',
+  }}>{children}</span>
+);
+
+const aseRoleOf = (t: AsentumTxSummary, me: string): 'IN' | 'OUT' | 'SELF' | null => {
+  const f = asentumAddrKey(t.from) === me, to = asentumAddrKey(t.to) === me;
+  return f && to ? 'SELF' : f ? 'OUT' : to ? 'IN' : null;
+};
+
+const AseTxTable: React.FC<{
+  txs: AsentumTxSummary[]; symbol: string; viewer?: string | null; emptyText?: string;
+  onTx: (hash: string) => void; onAddr: (addr: string) => void; onBlock: (h: number) => void;
+}> = ({ txs, symbol, viewer, emptyText, onTx, onAddr, onBlock }) => {
+  const me = viewer ? asentumAddrKey(viewer) : null;
+  const th: React.CSSProperties = { textAlign: 'left', padding: '8px 10px', fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: '#666', borderBottom: '1px solid #222', whiteSpace: 'nowrap', fontWeight: 'normal' };
+  const td: React.CSSProperties = { padding: '8px 10px', borderBottom: '1px solid #181818', fontFamily: 'monospace', whiteSpace: 'nowrap', color: '#ddd' };
+  const link: React.CSSProperties = { color: '#836EFD', cursor: 'pointer' };
+  if (!txs.length) return <p style={{ color: '#444', fontSize: '12px', textAlign: 'center', padding: '16px 0', margin: 0 }}>{emptyText ?? 'Tidak ada transaksi.'}</p>;
+  const roleColor = { IN: '#4caf50', OUT: '#ffaa00', SELF: '#61dfff' } as const;
+  return (
+    <div style={{ overflowX: 'auto', maxHeight: '460px', overflowY: 'auto' }}>
+      <table style={{ width: '100%', minWidth: me ? 1130 : 1020, borderCollapse: 'collapse', fontSize: '11px' }}>
+        <thead style={{ position: 'sticky', top: 0, background: '#0d0d0d' }}>
+          <tr>
+            <th style={th}>Txn Hash</th><th style={th}>Method</th><th style={th}>Block</th><th style={th}>Age</th>
+            <th style={th}>From</th>{me && <th style={th}>Role</th>}<th style={th}>To</th>
+            <th style={th}>Value</th><th style={th}>Fee</th><th style={th}>Nonce</th><th style={th}>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {txs.map((t, i) => {
+            const st = aseStatusMeta(t.status);
+            const role = me ? aseRoleOf(t, me) : null;
+            const ts = t.timestamp != null ? (t.timestamp < 2e10 ? t.timestamp : Math.floor(t.timestamp / 1000)) : null;
+            return (
+              <tr key={`${t.hash}-${i}`}>
+                <td style={td}><span style={link} onClick={() => t.hash && onTx(t.hash)}>{t.hash ? shortHash(t.hash, 8, 6) : '—'}</span></td>
+                <td style={td}><AseBadge color={t.kind === 'deploy' ? '#e81899' : t.kind === 'transfer' ? '#01a2ff' : t.kind === 'call' ? '#9c27b0' : '#666'}>{t.method}</AseBadge></td>
+                <td style={td}>{t.blockHeight != null ? <span style={link} onClick={() => onBlock(t.blockHeight!)}>#{t.blockHeight.toLocaleString('en-US')}</span> : '—'}</td>
+                <td style={{ ...td, color: '#888' }}>{ts != null ? timeAgo(ts) : '—'}</td>
+                <td style={td}>{t.from ? <span style={link} title={t.from} onClick={() => onAddr(t.from!)}>{shortHash(t.from, 8, 4)}</span> : '—'}</td>
+                {me && <td style={td}>{role ? <AseBadge color={roleColor[role]}>{role}</AseBadge> : '—'}</td>}
+                <td style={td}>{t.to ? <span style={link} title={t.to} onClick={() => onAddr(t.to!)}>{shortHash(t.to, 8, 4)}</span> : <span style={{ color: '#666' }}>— (contract baru)</span>}</td>
+                <td style={td}>{t.valueAse != null ? `${t.valueAse} ${symbol}` : '—'}</td>
+                <td style={{ ...td, color: '#888' }}>{t.feeAse != null ? `${t.feeAse} ${symbol}` : '—'}</td>
+                <td style={td}>{t.nonce ?? '—'}</td>
+                <td style={td}><AseBadge color={st.color}>{st.label}</AseBadge></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+};
+
 interface AbiFunctionEntry {
   key: string;
   name: string;
@@ -1529,12 +1647,393 @@ export const Explorer: React.FC = () => {
   const [tokenTransfersSource, setTokenTransfersSource] = useState<DataSource>(null);
   const [tokenTab, setTokenTab] = useState<'transfers' | 'holders'>('transfers');
 
-  const [chain, setChain] = useState<'evm' | 'gram'>('evm');
+  const [chain, setChain] = useState<'evm' | 'gram' | 'ase'>('evm');
+  // Dipakai di useEffect parsing-URL di bawah, supaya baca chain yang lagi
+  // aktif TANPA harus masukin `chain` ke deps effect itu (yang bakal bikin
+  // effect-nya nge-loop tiap kali chain berubah).
+  const chainRef = useRef(chain);
+  useEffect(() => { chainRef.current = chain; }, [chain]);
   const [gramNetId, setGramNetId] = useState(() => GRAM_NETWORKS[0].id);
   const gramNetwork = useMemo(
     () => GRAM_NETWORKS.find(n => n.id === gramNetId) ?? GRAM_NETWORKS[0],
     [gramNetId]
   );
+
+  // ── Asentum (ASE) ──────────────────────────────────────────────────────
+  const [aseNetId, setAseNetId] = useState(() => ASENTUM_NETWORKS[0].id);
+  const aseNetwork = useMemo(
+    () => ASENTUM_NETWORKS.find(n => n.id === aseNetId) ?? ASENTUM_NETWORKS[0],
+    [aseNetId]
+  );
+  const [aseQuery, setAseQuery] = useState('');
+  const [aseRecent, setAseRecent] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem(ASE_RECENT_KEY) || '[]'); } catch { return []; }
+  });
+  const pushAseRecent = (q: string) => {
+    setAseRecent(prev => {
+      const next = [q, ...prev.filter(x => x !== q)].slice(0, 8);
+      try { localStorage.setItem(ASE_RECENT_KEY, JSON.stringify(next)); } catch { /* abaikan */ }
+      return next;
+    });
+  };
+  const clearAseRecent = () => {
+    setAseRecent([]);
+    try { localStorage.removeItem(ASE_RECENT_KEY); } catch { /* abaikan */ }
+  };
+  const [aseLoading, setAseLoading] = useState(false);
+  const [aseError, setAseError] = useState<string | null>(null);
+  const [aseAddressResult, setAseAddressResult] = useState<{
+    addressBech32: string;
+    addressHex: string;
+    balance: number;
+    balanceUsd: number | null;
+  } | null>(null);
+  const [aseTxNotFound, setAseTxNotFound] = useState<string | null>(null);
+  // Detail tx ASE hasil lookup "penuh" (bukan sekadar "belum diindeks" seperti
+  // `aseTxNotFound` di atas) — dicoba lebih dulu di `handleAseSearch`, dan
+  // hanya jatuh ke `aseTxNotFound` kalau SDK/RPC memang tidak punya datanya.
+  const [aseTxDetail, setAseTxDetail] = useState<AsentumTxSummary | null>(null);
+  // Detail block ASE — dibuka lewat search angka height, klik block di feed
+  // "Block Terbaru", atau klik link "Block #N" dari detail tx. Sama pola
+  // seperti blockResult di tab EVM.
+  const [aseBlockDetail, setAseBlockDetail] = useState<AsentumBlockSummary | null>(null);
+  const [aseBlockNotFound, setAseBlockNotFound] = useState<number | null>(null);
+  const [showRawAseBlock, setShowRawAseBlock] = useState(false);
+  const [showRawAseTx, setShowRawAseTx] = useState(false);
+
+  // ── ASE: info akun, riwayat TX address (scan block), TX per block, feed TX ──
+  const [aseAccount, setAseAccount] = useState<AsentumAccountInfo | null>(null);
+  const [aseHist, setAseHist] = useState<AsentumAddressHistory | null>(null);
+  const [aseHistLoading, setAseHistLoading] = useState(false);
+  const [aseHistError, setAseHistError] = useState<string | null>(null);
+  const [aseHistProgress, setAseHistProgress] = useState<{ done: number; total: number } | null>(null);
+  const [aseScanDepth, setAseScanDepth] = useState(100);
+  const [aseRoleFilter, setAseRoleFilter] = useState<'all' | 'IN' | 'OUT'>('all');
+  const aseHistRun = useRef(0);
+  const [aseBlockTxs, setAseBlockTxs] = useState<AsentumTxSummary[]>([]);
+  const [aseBlockTxsLoading, setAseBlockTxsLoading] = useState(false);
+  const [aseRecentTxs, setAseRecentTxs] = useState<AsentumTxSummary[]>([]);
+  const [aseRecentTxsLoading, setAseRecentTxsLoading] = useState(false);
+
+  const resetAseResults = () => {
+    setAseError(null);
+    setAseAddressResult(null);
+    setAseTxNotFound(null);
+    setAseTxDetail(null);
+    setAseBlockDetail(null);
+    setAseBlockNotFound(null);
+    setShowRawAseBlock(false);
+    setShowRawAseTx(false);
+    setAseAccount(null);
+    setAseHist(null);
+    setAseHistError(null);
+    setAseBlockTxs([]);
+    aseHistRun.current++;
+  };
+
+  // Buka detail 1 block by height — dipakai baik dari search angka maupun
+  // klik baris di feed "Block Terbaru" / link "Block #N" di detail tx.
+  const openAseBlock = useCallback(async (height: number) => {
+    resetAseResults();
+    setAseLoading(true);
+    try {
+      setAseBlockDetail(await getAsentumBlockByHeight(aseNetwork, height));
+      pushAseRecent(String(height));
+      navigate(`/explorer/block/${height}`, { replace: true });
+    } catch (e: any) {
+      setAseBlockNotFound(height);
+      setAseError(aseFriendlyError(e));
+    } finally {
+      setAseLoading(false);
+    }
+  }, [aseNetwork, navigate]);
+
+  const handleAseSearch = async (eOrValue?: React.FormEvent | string) => {
+    const directValue = typeof eOrValue === 'string' ? eOrValue : undefined;
+    if (typeof eOrValue !== 'string') eOrValue?.preventDefault();
+    const q = (directValue ?? aseQuery).trim();
+    if (!q) return;
+    if (directValue !== undefined) setAseQuery(directValue);
+
+    // Angka polos = pencarian block by height (persis pola tab EVM).
+    if (/^\d+$/.test(q)) {
+      await openAseBlock(parseInt(q, 10));
+      return;
+    }
+
+    resetAseResults();
+    setAseLoading(true);
+    try {
+      if (isValidAsentumAddress(q) || /^0x[0-9a-fA-F]{40}$/.test(q)) {
+        const addressBech32 = q.toLowerCase().startsWith('0x') ? hexToAsentumBech32(q) : q;
+        const addressHex = q.toLowerCase().startsWith('0x') ? q : asentumBech32ToHex(q);
+        const [balance, nativePrice] = await Promise.all([
+          getAsentumBalanceWithFallback(aseNetwork, addressBech32),
+          fetchNativeTokenPrice(aseNetwork.symbol).catch(() => null),
+        ]);
+        setAseAddressResult({
+          addressBech32, addressHex, balance,
+          balanceUsd: nativePrice != null ? balance * nativePrice : null,
+        });
+        pushAseRecent(addressBech32);
+        navigate(`/explorer/address/${addressBech32}`, { replace: true });
+      } else if (/^(0x)?[0-9a-fA-F]{64}$/.test(q)) {
+        const hash = q.startsWith('0x') ? q : `0x${q}`;
+        // 64-hex bisa jadi hash TX ATAU hash block — dicoba sebagai TX dulu
+        // (lebih umum diketik user), baru fallback ke block-by-hash kalau
+        // gagal. Kalau dua-duanya gagal (SDK belum support / memang belum
+        // ke-mine), baru jatuh ke pesan "belum diindeks" + link ke block
+        // explorer resmi seperti sebelumnya.
+        try {
+          setAseTxDetail(await getAsentumTransactionByHash(aseNetwork, hash));
+          pushAseRecent(hash);
+          navigate(`/explorer/tx/${hash}`, { replace: true });
+        } catch {
+          try {
+            setAseBlockDetail(await getAsentumBlockByHash(aseNetwork, hash));
+            pushAseRecent(hash);
+            navigate(`/explorer/block/${hash}`, { replace: true });
+          } catch {
+            setAseTxNotFound(hash);
+          }
+        }
+      } else {
+        setAseError('Format tidak dikenali. Masukkan address Asentum (ase1... atau 0x + 40 hex), TX hash, atau nomor block.');
+      }
+    } catch (e: any) {
+      setAseError(aseFriendlyError(e));
+    }
+    setAseLoading(false);
+  };
+
+  // ── ASE: status chain (auto-refresh), block terbaru, mempool & detail tx ──
+  // Pola & nama sama seperti gramMcInfo/gramLatestBlocks/dst (dan latestBlocks
+  // di tab EVM), tapi datanya lebih terbatas karena Asentum belum punya
+  // indexer historis se-matang TonCenter/RPC EVM (lihat catatan besar di
+  // Asentumnet.ts).
+  const [aseChainStatus, setAseChainStatus] = useState<AsentumChainStatus | null>(null);
+  const [aseChainStatusLoading, setAseChainStatusLoading] = useState(false);
+  const [aseChainStatusError, setAseChainStatusError] = useState<string | null>(null);
+  const [asePrevHeight, setAsePrevHeight] = useState<number | null>(null);
+  const [aseHeightStalledSince, setAseHeightStalledSince] = useState<number | null>(null);
+
+  const loadAseChainStatus = useCallback(async () => {
+    setAseChainStatusLoading(true);
+    try {
+      const status = await getAsentumChainStatus(aseNetwork);
+      setAseChainStatus(status);
+      setAseChainStatusError(null);
+      setAsePrevHeight(prev => {
+        if (prev != null && status.height != null && prev === status.height) {
+          setAseHeightStalledSince(since => since ?? Date.now());
+        } else {
+          setAseHeightStalledSince(null);
+        }
+        return status.height;
+      });
+    } catch (e: any) {
+      setAseChainStatusError(aseFriendlyError(e));
+    } finally {
+      setAseChainStatusLoading(false);
+    }
+  }, [aseNetwork]);
+
+  useEffect(() => {
+    setAsePrevHeight(null);
+    setAseHeightStalledSince(null);
+    loadAseChainStatus();
+  }, [aseNetId]);
+
+  useEffect(() => {
+    if (!refreshSettings.enabled || chain !== 'ase') return;
+    const id = setInterval(() => { loadAseChainStatus(); }, refreshSettings.intervalSec * 1000);
+    return () => clearInterval(id);
+  }, [refreshSettings.enabled, refreshSettings.intervalSec, chain, loadAseChainStatus]);
+
+  // Tab "Block Terbaru" vs "Mempool" — panel-nya sendiri SELALU tampil di tab
+  // ASE (gak dibalik toggle lagi), persis seperti panel "Latest Blocks" yang
+  // selalu tampil di tab EVM.
+  const [aseDetailTab, setAseDetailTab] = useState<'blocks' | 'txs' | 'mempool' | 'validators'>('blocks');
+
+  const [aseLatestBlocks, setAseLatestBlocks] = useState<AsentumBlockSummary[]>([]);
+  const [aseLatestBlocksLoading, setAseLatestBlocksLoading] = useState(false);
+  const [aseLatestBlocksError, setAseLatestBlocksError] = useState<string | null>(null);
+
+  const loadAseLatestBlocks = useCallback(async () => {
+    setAseLatestBlocksLoading(true);
+    try {
+      setAseLatestBlocks(await getAsentumLatestBlocks(aseNetwork, 10));
+      setAseLatestBlocksError(null);
+    } catch (e: any) {
+      setAseLatestBlocksError(aseFriendlyError(e));
+    } finally {
+      setAseLatestBlocksLoading(false);
+    }
+  }, [aseNetwork]);
+
+  const [aseMempool, setAseMempool] = useState<AsentumTxSummary[]>([]);
+  const [aseMempoolLoading, setAseMempoolLoading] = useState(false);
+  const [aseMempoolError, setAseMempoolError] = useState<string | null>(null);
+
+  // `getAsentumMempool` sekarang SELALU melempar error yang sama — node
+  // Asentum tidak punya endpoint buat list isi mempool sama sekali (lihat
+  // catatan panjang di Asentumnet.ts), jadi ini bukan kegagalan sementara
+  // yang perlu di-retry tiap interval refresh. Cukup panggil & tampilkan
+  // pesannya SEKALI (tanpa spinner loading, tanpa network round-trip
+  // berulang) — jumlah mempool yang beneran live tetap tampil lewat
+  // `aseChainStatus.mempoolSize` di label tab & panel status chain di atas.
+  const loadAseMempool = useCallback(async () => {
+    try {
+      setAseMempool(await getAsentumMempool(aseNetwork, 25));
+      setAseMempoolError(null);
+    } catch (e: any) {
+      setAseMempoolError(aseFriendlyError(e));
+    }
+  }, [aseNetwork]);
+
+  // Sama seperti loadLatestBlocks di tab EVM: muat begitu network ASE dipilih
+  // (baik blocks maupun mempool, biar badge jumlah mempool di tab langsung
+  // ada isinya), lalu auto-refresh feed yang lagi aktif dilihat.
+  // ── ASE: daftar validator (endpoint REST /validators di node) ──
+  const [aseValidators, setAseValidators] = useState<AsentumValidator[]>([]);
+  const [aseValidatorsLoading, setAseValidatorsLoading] = useState(false);
+  const [aseValidatorsError, setAseValidatorsError] = useState<string | null>(null);
+
+  const loadAseValidators = useCallback(async () => {
+    setAseValidatorsLoading(true);
+    try {
+      setAseValidators(await getAsentumValidators(aseNetwork));
+      setAseValidatorsError(null);
+    } catch (e: any) {
+      setAseValidatorsError(aseFriendlyError(e));
+    } finally {
+      setAseValidatorsLoading(false);
+    }
+  }, [aseNetwork]);
+
+  // ── ASE: statistik turunan dari 10 block terakhir (tanpa endpoint baru) ──
+  const aseStats = useMemo(() => {
+    const bs = aseLatestBlocks
+      .map(b => ({ h: b.height, t: aseTs(b.timestamp), tx: b.txCount ?? 0, p: b.proposer }))
+      .filter(b => b.t != null) as { h: number; t: number; tx: number; p: string | null }[];
+    const totalTx = aseLatestBlocks.reduce((a, b) => a + (b.txCount ?? 0), 0);
+    const proposers = new Map<string, number>();
+    aseLatestBlocks.forEach(b => { if (b.proposer) proposers.set(b.proposer, (proposers.get(b.proposer) ?? 0) + 1); });
+    let avgBlockTime: number | null = null;
+    let tps: number | null = null;
+    if (bs.length >= 2) {
+      const newest = bs.reduce((a, b) => (b.h > a.h ? b : a));
+      const oldest = bs.reduce((a, b) => (b.h < a.h ? b : a));
+      const dh = newest.h - oldest.h;
+      const dt = newest.t - oldest.t;
+      if (dh > 0 && dt > 0) {
+        avgBlockTime = dt / dh;
+        tps = bs.filter(b => b.h !== oldest.h).reduce((a, b) => a + b.tx, 0) / dt;
+      }
+    }
+    return {
+      count: aseLatestBlocks.length,
+      totalTx,
+      avgTxPerBlock: aseLatestBlocks.length ? totalTx / aseLatestBlocks.length : null,
+      avgBlockTime, tps,
+      proposers: [...proposers.entries()].sort((a, b) => b[1] - a[1]),
+    };
+  }, [aseLatestBlocks]);
+
+  useEffect(() => {
+    if (chain !== 'ase') return;
+    loadAseLatestBlocks();
+    loadAseMempool();
+    loadAseValidators();
+  }, [chain, aseNetId]);
+
+  const [aseActRange, setAseActRange] = useState<AsentumActivityRange>('24h');
+  const [aseActivity, setAseActivity] = useState<AsentumTxActivity | null>(null);
+  const [aseActLoading, setAseActLoading] = useState(false);
+  const [aseActError, setAseActError] = useState<string | null>(null);
+  const [aseActHover, setAseActHover] = useState<number | null>(null);
+  const aseActRun = useRef(0);
+
+  const loadAseActivity = useCallback(async (force = false) => {
+    const run = ++aseActRun.current;
+    setAseActLoading(true);
+    setAseActError(null);
+    try {
+      const res = await getAsentumTxActivity(aseNetwork, aseActRange, { force, shouldCancel: () => aseActRun.current !== run });
+      if (aseActRun.current === run) setAseActivity(res);
+    } catch (e: any) {
+      if (aseActRun.current === run) setAseActError(aseFriendlyError(e));
+    } finally {
+      if (aseActRun.current === run) setAseActLoading(false);
+    }
+  }, [aseNetwork, aseActRange]);
+
+  useEffect(() => {
+    if (chain !== 'ase') return;
+    setAseActHover(null);
+    loadAseActivity();
+  }, [chain, aseNetId, aseActRange]);
+
+  // Info akun + riwayat TX tiap kali address ASE baru dicari / kedalaman scan diganti.
+  useEffect(() => {
+    const addr = aseAddressResult?.addressHex;
+    if (!addr) return;
+    const run = ++aseHistRun.current;
+    setAseAccount(null);
+    getAsentumAccountInfo(aseNetwork, addr).then(a => { if (aseHistRun.current === run) setAseAccount(a); }).catch(() => {});
+    setAseHist(null);
+    setAseHistError(null);
+    setAseHistLoading(true);
+    setAseHistProgress({ done: 0, total: aseScanDepth });
+    getAsentumAddressHistory(aseNetwork, addr, {
+      depth: aseScanDepth, maxResults: 100,
+      onProgress: (done, total) => { if (aseHistRun.current === run) setAseHistProgress({ done, total }); },
+      // Tampilkan TX begitu ketemu — tidak perlu nunggu seluruh scan selesai.
+      onPartial: part => { if (aseHistRun.current === run) setAseHist(part); },
+      shouldCancel: () => aseHistRun.current !== run,
+    }).then(h => { if (aseHistRun.current === run) setAseHist(h); })
+      .catch(e => { if (aseHistRun.current === run) setAseHistError(aseFriendlyError(e)); })
+      .finally(() => { if (aseHistRun.current === run) { setAseHistLoading(false); setAseHistProgress(null); } });
+  }, [aseAddressResult?.addressHex, aseScanDepth, aseNetId]);
+
+  // Daftar TX lengkap untuk block yang sedang dibuka.
+  useEffect(() => {
+    if (!aseBlockDetail) { setAseBlockTxs([]); return; }
+    let cancelled = false;
+    setAseBlockTxs([]);
+    setAseBlockTxsLoading(true);
+    getAsentumBlockTxs(aseNetwork, aseBlockDetail, 100)
+      .then(t => { if (!cancelled) setAseBlockTxs(t); })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setAseBlockTxsLoading(false); });
+    return () => { cancelled = true; };
+  }, [aseBlockDetail?.height, aseBlockDetail?.hash, aseNetId]);
+
+  // Feed "Transaksi Terbaru": diturunkan dari block terbaru yang berisi TX.
+  useEffect(() => {
+    if (chain !== 'ase' || aseDetailTab !== 'txs') return;
+    const withTx = aseLatestBlocks.filter(b => b.txHashes.length > 0 || (b.txCount ?? 0) > 0).slice(0, 10);
+    if (!withTx.length) { setAseRecentTxs([]); return; }
+    let cancelled = false;
+    setAseRecentTxsLoading(true);
+    Promise.all(withTx.map(b => getAsentumBlockTxs(aseNetwork, b, 20).catch(() => [] as AsentumTxSummary[])))
+      .then(all => { if (!cancelled) setAseRecentTxs(all.flat().slice(0, 40)); })
+      .finally(() => { if (!cancelled) setAseRecentTxsLoading(false); });
+    return () => { cancelled = true; };
+  }, [chain, aseDetailTab, aseLatestBlocks, aseNetId]);
+
+  useEffect(() => {
+    if (!refreshSettings.enabled || chain !== 'ase') return;
+    const id = setInterval(() => {
+      // Mempool sengaja TIDAK di-refresh di sini — daftar TX pending memang
+      // tidak tersedia (permanen, bukan gangguan sementara), jadi tidak ada
+      // gunanya dipanggil ulang tiap tick. "Block Terbaru" tetap live.
+      if (aseDetailTab === 'blocks' || aseDetailTab === 'txs') loadAseLatestBlocks();
+      if (aseDetailTab === 'validators') loadAseValidators();
+    }, refreshSettings.intervalSec * 1000);
+    return () => clearInterval(id);
+  }, [refreshSettings.enabled, refreshSettings.intervalSec, chain, aseDetailTab, aseNetId, loadAseLatestBlocks]);
+
   const [gramQuery, setGramQuery] = useState('');
   const [gramLoading, setGramLoading] = useState(false);
   const [gramError, setGramError] = useState<string | null>(null);
@@ -1948,19 +2447,6 @@ export const Explorer: React.FC = () => {
     return () => clearInterval(id);
   }, [refreshSettings.enabled, refreshSettings.intervalSec, loadLatestBlocks]);
 
-  // ── Gas Tracker: estimasi tier Rendah / Standar / Cepat — full dari data RPC ──
-  // Gak pake angka tebakan/konstanta. Sumber data:
-  // 1) eth_feeHistory (standar EIP-1559, didukung hampir semua node modern): ambil
-  //    reward (priority fee) yang BENERAN dibayar tx-tx di beberapa block terakhir,
-  //    lalu ambil persentil 25/50/90 buat Rendah/Standar/Cepat — persis cara kerja
-  //    gas tracker Etherscan/MetaMask. baseFeePerGas terakhir dari feeHistory sudah
-  //    berupa proyeksi base fee block berikutnya (bukan block sekarang), jadi dipakai
-  //    langsung tanpa perlu kali-kali margin sendiri.
-  // 2) Kalau RPC gak dukung eth_feeHistory / network bukan EIP-1559 & gak ada reward
-  //    data: sampling gasPrice asli dari transaksi 3 block terakhir, lalu ambil
-  //    persentil yang sama (25/50/90) dari situ.
-  // 3) Kalau block terakhir kosong transaksi: fallback ke eth_gasPrice apa adanya
-  //    (masih murni saran dari node, bukan konstanta kita).
   const FEE_HISTORY_BLOCK_COUNT = 20;
   const TIER_PERCENTILES = [25, 50, 90] as const;
 
@@ -2461,9 +2947,28 @@ export const Explorer: React.FC = () => {
   useEffect(() => {
     if (!urlValue) return;
     const val = decodeURIComponent(urlValue);
-    if (val.startsWith('0x') || (urlType === 'block' && isBlockNumber(val))) {
+    if (val.startsWith('ase1')) {
+      setChain('ase');
+      handleAseSearch(val);
+    } else if (val.startsWith('0x')) {
       setChain('evm');
       handleSearch(val);
+    } else if (urlType === 'block' && isBlockNumber(val)) {
+      // Angka block polos itu AMBIGU: baik EVM (`openBlock`/`handleSearch`)
+      // maupun ASE (`openAseBlock`) sama-sama navigate ke
+      // `/explorer/block/<number>` — tidak ada prefix pembeda sama sekali.
+      // Sebelum ini kondisinya digabung ke cabang EVM di atas, jadi tiap
+      // kali openAseBlock() manggil navigate(replace:true), effect ini
+      // ke-trigger ulang, ketemu angka block polos, terus MAKSA chain balik
+      // ke 'evm' — makanya klik block di tab Asentum malah nyasar ke EVM.
+      // Fix: kalau ambigu begini, ikutin chain yang LAGI aktif (via ref,
+      // biar gak baca nilai basi) alih-alih selalu asumsi EVM.
+      if (chainRef.current === 'ase') {
+        handleAseSearch(val);
+      } else {
+        setChain('evm');
+        handleSearch(val);
+      }
     } else {
       setChain('gram');
       handleGramSearch(val);
@@ -2527,7 +3032,12 @@ export const Explorer: React.FC = () => {
   return (
     <div className="app-container">
       <header>
-        <h1><FaCompass style={{ marginRight: '8px' }} />Explorer</h1>
+        <h1>
+          {chain === 'ase'
+            ? <AsentumLogo size={26} style={{ marginRight: '10px', verticalAlign: 'middle' }} />
+            : <FaCompass style={{ marginRight: '8px' }} />}
+          {chain === 'ase' ? 'Asentum Explorer' : 'Explorer'}
+        </h1>
       </header>
       <Navbar />
 
@@ -2545,6 +3055,12 @@ export const Explorer: React.FC = () => {
           color: chain === 'gram' ? '#fff' : '#888',
           border: `1px solid ${chain === 'gram' ? '#0098EA' : COLORS.border}`,
         }}><FaCompass style={{ marginRight: '6px' }} />GRAM</button>
+        <button type="button" onClick={() => setChain('ase')} style={{
+          flex: 1, padding: '9px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer',
+          background: chain === 'ase' ? '#836EFD' : 'none',
+          color: chain === 'ase' ? '#fff' : '#888',
+          border: `1px solid ${chain === 'ase' ? '#836EFD' : COLORS.border}`,
+        }}><AsentumLogo size={14} mono style={{ marginRight: '6px', verticalAlign: 'text-bottom' }} />ASE</button>
       </div>
 
       {chain === 'evm' && (
@@ -4562,6 +5078,811 @@ export const Explorer: React.FC = () => {
         </div>
       )}
 
+      </>
+      )}
+
+      {chain === 'ase' && (
+      <>
+      {/* ── Network selector ASE ── */}
+      <div style={{
+        display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center',
+        marginBottom: '14px', padding: '12px', background: COLORS.bg, border: `1px solid ${COLORS.border}`,
+      }}>
+        <AsentumLogo size={18} />
+        <select value={aseNetId} onChange={e => { setAseNetId(e.target.value); resetAseResults(); }}
+          style={{ background: '#111', color: '#ddd', border: `1px solid ${COLORS.border}`, padding: '6px 10px', fontSize: '12px' }}>
+          {ASENTUM_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name}</option>)}
+        </select>
+        <span style={{ fontSize: '10px', color: COLORS.muted }}>
+          Chain post-quantum testnet.
+        </span>
+
+      </div>
+
+      {/* ── Status Jaringan ASE — height, mempool size, chain id. Auto refresh
+           kalau refreshSettings.enabled, sama seperti panel GRAM di atas.
+           Ada indikator "chain mungkin macet" kalau height gak berubah
+           beberapa siklus refresh berturut-turut (lihat catatan bug #5 di
+           Asentumnet.ts — testnet ini pernah beneran freeze). ── */}
+      <div className="fade-in-up" style={{
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '1px',
+        background: COLORS.border, border: `1px solid ${COLORS.border}`, borderTop: '2px solid #836EFD',
+        marginBottom: '14px', overflow: 'hidden',
+      }}>
+        <div style={{ background: COLORS.bg, padding: '10px 14px' }}>
+          <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '5px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <FaLayerGroup size={9} /> Block Terkini
+            {refreshSettings.enabled && !aseChainStatusLoading && <FaSyncAlt size={7} color={COLORS.green} />}
+          </div>
+          <div style={{ fontSize: '13px', fontFamily: 'monospace', fontWeight: 'bold', color: '#836EFD' }}>
+            {aseChainStatusLoading && !aseChainStatus ? <FaSpinner className="spin-icon" size={11} /> : aseChainStatus?.height != null ? `#${aseChainStatus.height.toLocaleString('en-US')}` : '—'}
+          </div>
+        </div>
+        <div style={{ background: COLORS.bg, padding: '10px 14px' }}>
+          <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '5px' }}>Mempool</div>
+          <div style={{ fontSize: '13px', fontFamily: 'monospace', fontWeight: 'bold', color: (aseChainStatus?.mempoolSize ?? 0) > 200 ? COLORS.red : COLORS.text }}>
+            {aseChainStatusLoading && !aseChainStatus ? <FaSpinner className="spin-icon" size={11} /> : aseChainStatus?.mempoolSize != null ? aseChainStatus.mempoolSize.toLocaleString('en-US') : '—'}
+          </div>
+        </div>
+        <div style={{ background: COLORS.bg, padding: '10px 14px' }}>
+          <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '5px' }}>Chain ID</div>
+          <div style={{ fontSize: '13px', fontFamily: 'monospace', fontWeight: 'bold', color: COLORS.text }}>
+            {aseChainStatus?.chainId ?? '—'}
+          </div>
+        </div>
+        <div style={{ background: COLORS.bg, padding: '10px 14px' }}>
+          <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '5px' }}>Status</div>
+          <div style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: aseHeightStalledSince ? COLORS.red : COLORS.green, display: 'flex', alignItems: 'center', gap: '5px' }}>
+            {aseChainStatusError ? <><FaExclamationTriangle size={10} /> Error</> : aseHeightStalledSince ? <><FaExclamationTriangle size={10} /> Mungkin Macet</> : <><FaCheckCircle size={10} /> Lancar</>}
+          </div>
+        </div>
+        <div style={{ background: COLORS.bg, padding: '10px 14px' }}>
+          <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '5px' }}>Base Fee</div>
+          <div title={aseChainStatus?.baseFeePerGas != null ? `${aseChainStatus.baseFeePerGas} wei per gas` : undefined}
+            style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {aseChainStatus?.baseFeePerGas != null ? `${formatAseGwei(aseChainStatus.baseFeePerGas)} Gwei` : '—'}
+          </div>
+          {aseChainStatus?.baseFeePerGas != null && (
+            <div style={{ fontSize: '9px', color: COLORS.muted, marginTop: '3px', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {aseChainStatus.baseFeePerGas} wei
+            </div>
+          )}
+        </div>
+        {(() => {
+          const tiers = asentumFeeTiers(aseChainStatus?.baseFeePerGas);
+          return (
+            <div style={{ background: COLORS.bg, padding: '10px 14px' }}>
+              <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '5px' }}>Est. Fee Transfer</div>
+              <div
+                title={tiers ? `${Number(tiers.gasLimit).toLocaleString('en-US')} gas × base fee. Maks normal (1.5×): ${formatAseAmount(tiers.normalMaxFeeWei)} ${aseNetwork.symbol} · Maks fast (2×): ${formatAseAmount(tiers.fastMaxFeeWei)} ${aseNetwork.symbol}` : undefined}
+                style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {tiers ? `${formatAseAmount(tiers.estimatedFeeWei)} ${aseNetwork.symbol}` : '—'}
+              </div>
+              {tiers && (
+                <div style={{ fontSize: '9px', color: COLORS.muted, marginTop: '3px', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  Maks: {formatAseAmount(tiers.normalMaxFeeWei)}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+        <div style={{ background: COLORS.bg, padding: '10px 14px' }}>
+          <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '5px' }}>Umur Block</div>
+          <div style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {aseChainStatus?.latestBlockTimestamp != null ? timeAgo(aseTs(aseChainStatus.latestBlockTimestamp)!) : '—'}
+          </div>
+        </div>
+        <div style={{ background: COLORS.bg, padding: '10px 14px' }}>
+          <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '5px' }}>Rata² Block Time</div>
+          <div style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {aseStats.avgBlockTime != null ? `${aseStats.avgBlockTime.toFixed(1)} dtk` : '—'}
+          </div>
+        </div>
+        <div style={{ background: COLORS.bg, padding: '10px 14px' }}>
+          <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '5px' }}>Est. TPS</div>
+          <div style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {aseStats.tps != null ? aseStats.tps.toFixed(2) : '—'}
+          </div>
+        </div>
+        <div style={{ background: COLORS.bg, padding: '10px 14px' }}>
+          <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '5px' }}>Proposer Terakhir</div>
+          <div style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {aseChainStatus?.proposer ? shortHash(aseChainStatus.proposer, 8, 4) : '—'}
+          </div>
+        </div>
+        <div style={{ background: COLORS.bg, padding: '10px 14px' }}>
+          <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '5px' }}>RPC Aktif</div>
+          <div style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {aseChainStatus?.rpc ? aseChainStatus.rpc.replace(/^https?:\/\//, '') : '—'}
+          </div>
+        </div>
+      </div>
+
+      {aseChainStatusError && !aseChainStatus && (
+        <p style={{ color: '#ff6666', fontSize: '11px', margin: '0 0 14px' }}>{aseChainStatusError}</p>
+      )}
+
+      {(() => {
+        const act = aseActivity && aseActivity.range === aseActRange ? aseActivity : null;
+        const W = 720, H = 190, PL = 40, PR = 8, PT = 10, PB = 22;
+        const n = act?.buckets.length ?? 0;
+        const max = act ? Math.max(1, ...act.buckets.map(b => b.txCount)) : 1;
+        const slot = n ? (W - PL - PR) / n : 0;
+        const barW = Math.max(2, slot - 3);
+        const fmtLabel = (start: number) => {
+          const d = new Date(start * 1000);
+          return aseActRange === '24h'
+            ? d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })
+            : d.toLocaleDateString('id-ID', { day: '2-digit', month: 'short' });
+        };
+        const fmtFull = (start: number, end: number) => {
+          const a = new Date(start * 1000), b = new Date(end * 1000);
+          return aseActRange === '24h'
+            ? `${a.toLocaleDateString('id-ID', { day: '2-digit', month: 'short' })} ${a.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })} – ${b.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' })}`
+            : a.toLocaleDateString('id-ID', { weekday: 'short', day: '2-digit', month: 'short', year: 'numeric' });
+        };
+        const labelEvery = aseActRange === '24h' ? 3 : aseActRange === '7d' ? 1 : 5;
+        const hov = act && aseActHover != null ? act.buckets[aseActHover] : null;
+        const peak = act ? act.buckets[act.peakIndex] : null;
+        const avg = act && n ? act.totalTx / n : null;
+        const unitLabel = aseActRange === '24h' ? 'jam' : 'hari';
+        return (
+          <div className="fade-in-up" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, padding: '14px 16px', marginBottom: '14px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '10px' }}>
+              <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '1.2px', color: '#836EFD', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <FaChartBar size={10} /> History Transaksi
+                {aseActLoading && <FaSpinner className="spin-icon" size={10} />}
+                {act && !act.exact && (
+                  <span title="Jumlah TX per periode diestimasi dari sampel block (rata-rata TX/block × jumlah block)." style={{ fontSize: '9px', color: '#ffaa00', border: '1px solid #ffaa0066', padding: '1px 6px', textTransform: 'none', letterSpacing: '0.3px' }}>/\/</span>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                {([['24h', '24 Jam'], ['7d', '7 Hari'], ['30d', '30 Hari']] as [AsentumActivityRange, string][]).map(([key, label]) => (
+                  <button key={key} type="button" onClick={() => setAseActRange(key)} style={{
+                    fontSize: '10px', padding: '4px 10px', cursor: 'pointer',
+                    background: aseActRange === key ? '#836EFD' : 'none',
+                    color: aseActRange === key ? '#fff' : COLORS.muted,
+                    border: `1px solid ${aseActRange === key ? '#836EFD' : COLORS.border}`,
+                    fontWeight: aseActRange === key ? 'bold' : 'normal',
+                  }}>{label}</button>
+                ))}
+                <button type="button" title="Muat ulang" disabled={aseActLoading} onClick={() => loadAseActivity(true)} style={{ background: 'none', border: `1px solid ${COLORS.border}`, color: COLORS.muted, cursor: aseActLoading ? 'default' : 'pointer', padding: '4px 8px', display: 'flex', alignItems: 'center' }}>
+                  <FaSyncAlt size={10} />
+                </button>
+              </div>
+            </div>
+
+            {act ? (
+              <>
+                <div style={{ display: 'flex', gap: '22px', flexWrap: 'wrap', fontSize: '12px', color: COLORS.text, fontFamily: 'monospace', marginBottom: '8px' }}>
+                  <span><span style={{ color: COLORS.muted }}>Total TX: </span>{act.totalTx.toLocaleString('en-US')}</span>
+                  <span><span style={{ color: COLORS.muted }}>Rata-rata/{unitLabel}: </span>{avg != null ? avg.toLocaleString('en-US', { maximumFractionDigits: 1 }) : '—'}</span>
+                  <span><span style={{ color: COLORS.muted }}>Puncak: </span>{peak && peak.txCount > 0 ? `${peak.txCount.toLocaleString('en-US')} (${fmtLabel(peak.start)})` : '—'}</span>
+                </div>
+                <div style={{ fontSize: '11px', color: hov ? COLORS.text : COLORS.muted, fontFamily: 'monospace', minHeight: '16px', marginBottom: '4px' }}>
+                  {hov
+                    ? `${fmtFull(hov.start, hov.end)} · ${hov.txCount.toLocaleString('en-US')} TX · ${hov.blocks.toLocaleString('en-US')} block`
+                    : 'Arahkan kursor ke bar untuk detail.'}
+                </div>
+                <svg viewBox={`0 0 ${W} ${H}`} width="100%" style={{ display: 'block', maxHeight: '240px' }} role="img" aria-label="Chart tx transaksi Asentum">
+                  {[0, 0.5, 1].map(f => {
+                    const y = PT + (H - PT - PB) * (1 - f);
+                    return (
+                      <g key={f}>
+                        <line x1={PL} x2={W - PR} y1={y} y2={y} stroke={COLORS.border} strokeWidth={1} />
+                        <text x={PL - 6} y={y + 3} textAnchor="end" fontSize={9} fill={COLORS.muted} fontFamily="monospace">{Math.round(max * f).toLocaleString('en-US')}</text>
+                      </g>
+                    );
+                  })}
+                  {act.buckets.map((b, i) => {
+                    const h = b.txCount > 0 ? Math.max(2, ((H - PT - PB) * b.txCount) / max) : 0;
+                    const x = PL + i * slot + (slot - barW) / 2;
+                    const isLast = i === n - 1;
+                    return (
+                      <g key={b.start} onMouseEnter={() => setAseActHover(i)} onMouseLeave={() => setAseActHover(null)}>
+                        <rect x={PL + i * slot} y={PT} width={slot} height={H - PT - PB} fill="transparent" />
+                        <rect x={x} y={H - PB - h} width={barW} height={h} fill={aseActHover === i ? '#a99bff' : '#836EFD'} opacity={isLast ? 0.6 : 1} />
+                        {i % labelEvery === 0 && (
+                          <text x={PL + i * slot + slot / 2} y={H - 6} textAnchor="middle" fontSize={9} fill={COLORS.muted} fontFamily="monospace">{fmtLabel(b.start)}</text>
+                        )}
+                        <title>{`${fmtFull(b.start, b.end)} — ${b.txCount.toLocaleString('en-US')} TX`}</title>
+                      </g>
+                    );
+                  })}
+                </svg>
+                <div style={{ fontSize: '9px', color: COLORS.muted, marginTop: '4px' }}>
+                  Dihitung di klien dari timestamp &amp; jumlah TX per block. Bar terakhir = {unitLabel} berjalan (belum penuh).
+                </div>
+              </>
+            ) : aseActError ? (
+              <p style={{ color: '#ff6666', fontSize: '11px', margin: 0 }}>{aseActError}</p>
+            ) : (
+              <p style={{ color: '#444', fontSize: '12px', margin: 0 }}>{aseActLoading ? 'Memuat data aktivitas…' : 'Belum ada data.'}</p>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── Statistik 10 block terakhir (dihitung di klien dari feed block) ── */}
+      {aseStats.count > 0 && (
+        <div className="fade-in-up" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, padding: '14px 16px', marginBottom: '14px' }}>
+          <div style={{ fontSize: '10px', textTransform: 'uppercase', letterSpacing: '1.2px', color: '#836EFD', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <FaChartLine size={10} /> Statistik {aseStats.count} block terakhir
+          </div>
+          <div style={{ display: 'flex', gap: '22px', flexWrap: 'wrap', fontSize: '12px', color: COLORS.text, fontFamily: 'monospace' }}>
+            <span><span style={{ color: COLORS.muted }}>Total TX: </span>{aseStats.totalTx.toLocaleString('en-US')}</span>
+            <span><span style={{ color: COLORS.muted }}>TX/block: </span>{aseStats.avgTxPerBlock != null ? aseStats.avgTxPerBlock.toFixed(2) : '—'}</span>
+            <span><span style={{ color: COLORS.muted }}>Block time: </span>{aseStats.avgBlockTime != null ? `${aseStats.avgBlockTime.toFixed(1)} dtk` : '—'}</span>
+            <span><span style={{ color: COLORS.muted }}>Proposer unik: </span>{aseStats.proposers.length}</span>
+          </div>
+          {aseStats.proposers.length > 0 && (
+            <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '5px' }}>
+              {aseStats.proposers.slice(0, 5).map(([addr, n]) => (
+                <div key={addr} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '10px' }}>
+                  <span style={{ width: '120px', color: COLORS.muted, fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{shortHash(addr, 8, 4)}</span>
+                  <div style={{ flex: 1, height: '6px', background: '#111' }}>
+                    <div style={{ width: `${(n / aseStats.count) * 100}%`, height: '100%', background: '#836EFD' }} />
+                  </div>
+                  <span style={{ width: '64px', textAlign: 'right', color: COLORS.text, fontFamily: 'monospace' }}>{n} block</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <form onSubmit={handleAseSearch} style={{ marginBottom: '14px' }}>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <input
+            type="search"
+            placeholder="Address (ase1.../0x+40hex), TX hash (0x+64hex), atau nomor block"
+            value={aseQuery}
+            onChange={e => setAseQuery(e.target.value)}
+            style={{ flex: 1 }}
+          />
+          <button type="submit" disabled={aseLoading} style={{
+            background: '#836EFD', color: '#fff', border: 'none', padding: '0 18px',
+            cursor: aseLoading ? 'default' : 'pointer', fontSize: '13px', fontWeight: 'bold',
+            display: 'flex', alignItems: 'center', gap: '6px', opacity: aseLoading ? 0.6 : 1,
+          }}>
+            {aseLoading ? <FaSpinner className="spin-icon" /> : <FaSearch />} Cari
+          </button>
+        </div>
+      </form>
+
+      {/* ── Pintasan & riwayat pencarian ── */}
+      <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '24px' }}>
+        {aseChainStatus?.height != null && (
+          <button type="button" onClick={() => openAseBlock(aseChainStatus.height!)} style={{ fontSize: '10px', color: '#836EFD', border: '1px solid #836EFD55', background: 'none', padding: '4px 9px', cursor: 'pointer' }}>
+            Block terkini
+          </button>
+        )}
+        <button type="button" onClick={() => openAseBlock(0)} style={{ fontSize: '10px', color: '#836EFD', border: '1px solid #836EFD55', background: 'none', padding: '4px 9px', cursor: 'pointer' }}>
+          Genesis #0
+        </button>
+        {aseRecent.length > 0 && <span style={{ fontSize: '10px', color: COLORS.muted, marginLeft: '6px' }}><FaHistory size={9} /> Terakhir:</span>}
+        {aseRecent.map(r => (
+          <button key={r} type="button" onClick={() => handleAseSearch(r)} title={r} style={{
+            fontSize: '10px', fontFamily: 'monospace', color: COLORS.text, border: `1px solid ${COLORS.border}`,
+            background: '#111', padding: '4px 9px', cursor: 'pointer',
+          }}>{/^\d+$/.test(r) ? `#${r}` : shortHash(r, 8, 4)}</button>
+        ))}
+        {aseRecent.length > 0 && (
+          <button type="button" onClick={clearAseRecent} style={{ fontSize: '10px', color: COLORS.muted, background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}>
+            hapus
+          </button>
+        )}
+      </div>
+
+      {aseError && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '8px', padding: '12px 14px',
+          border: '1px solid #f4433644', borderLeft: '3px solid #f44336', marginBottom: '20px',
+        }}>
+          <FaExclamationTriangle color="#f44336" size={13} />
+          <span style={{ color: '#ff6666', fontSize: '12px' }}>{aseError}</span>
+        </div>
+      )}
+
+      {aseAddressResult && (() => {
+        const me = asentumAddrKey(aseAddressResult.addressHex);
+        const allTxs = aseHist?.txs ?? [];
+        const shown = allTxs.filter(t => {
+          if (aseRoleFilter === 'all') return true;
+          const r = aseRoleOf(t, me);
+          return r === aseRoleFilter || r === 'SELF'; // TX ke diri sendiri masuk IN maupun OUT
+        });
+        const sum = (role: 'IN' | 'OUT') => allTxs
+          .filter(t => t.status !== 'failed' && aseRoleOf(t, me) === role)
+          .reduce((a, t) => a + (parseFloat(t.valueAse ?? '0') || 0), 0);
+        const inCount = allTxs.filter(t => aseRoleOf(t, me) === 'IN').length;
+        const outCount = allTxs.filter(t => aseRoleOf(t, me) === 'OUT').length;
+        return (
+        <div className="fade-in-up" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderTop: '2px solid #836EFD', padding: '18px', marginBottom: '24px' }}>
+          <h3 style={{ margin: '0 0 14px', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1.5px', color: '#836EFD', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <FaWallet /> {aseAccount?.token ? 'Token ARC-20' : aseAccount?.isContract ? 'Smart Contract (ASE)' : 'Wallet Address (ASE)'}
+          </h3>
+          <Row label="Address (bech32)" value={aseAddressResult.addressBech32} copy={aseAddressResult.addressBech32} />
+          <Row label="Address (hex)" value={aseAddressResult.addressHex} copy={aseAddressResult.addressHex} />
+          <Row label="Saldo" value={
+            <span style={{ fontFamily: 'monospace', fontWeight: 'bold', color: '#836EFD' }}>
+              {aseAddressResult.balance.toLocaleString('en-US', { maximumFractionDigits: 6 })} {aseNetwork.symbol}
+            </span>
+          } mono={false} />
+          {aseAddressResult.balanceUsd != null && (
+            <Row label="Saldo (USD)" value={`$${aseAddressResult.balanceUsd.toLocaleString('en-US', { maximumFractionDigits: 2 })}`} mono={false} />
+          )}
+          <Row label="Tipe Akun" value={aseAccount ? <AseBadge color={aseAccount.isContract ? '#9c27b0' : '#01a2ff'}>{aseAccount.token ? 'CONTRACT · ARC-20' : aseAccount.isContract ? 'CONTRACT' : 'WALLET (EOA)'}</AseBadge> : <FaSpinner className="spin-icon" size={11} />} mono={false} />
+          <Row label="Nonce" value={aseAccount ? (aseAccount.nonce ?? '—') : <FaSpinner className="spin-icon" size={11} />} />
+          {aseAccount?.token && (
+            <>
+              <Row label="Nama Token" value={aseAccount.token.name ?? '—'} mono={false} />
+              <Row label="Simbol" value={aseAccount.token.symbol ?? '—'} mono={false} />
+              <Row label="Decimals" value={aseAccount.token.decimals ?? '—'} />
+              <Row label="Total Supply" value={aseAccount.token.totalSupply ?? aseAccount.token.totalSupplyRaw ?? '—'} />
+            </>
+          )}
+          <Row label="Salin Link" value={
+            <span onClick={() => copyToClipboard(`${window.location.origin}/explorer/address/${aseAddressResult.addressBech32}`)} style={{ color: '#836EFD', cursor: 'pointer', fontSize: '12px' }}>
+              <FaCopy size={9} /> Salin link halaman ini
+            </span>
+          } mono={false} />
+
+          {/* ── Riwayat TX (hasil scan block terakhir) ── */}
+          <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: `1px solid ${COLORS.border}` }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '10px' }}>
+              <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1.5px', color: '#836EFD', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <FaHistory size={11} /> Riwayat TX
+                {aseHistLoading && <FaSpinner className="spin-icon" size={11} />}
+                {aseHistLoading && (
+                  <button type="button" onClick={() => { aseHistRun.current++; setAseHistLoading(false); setAseHistProgress(null); }} style={{
+                    fontSize: '10px', padding: '3px 8px', cursor: 'pointer', background: 'none', color: COLORS.red,
+                    border: `1px solid ${COLORS.red}66`, textTransform: 'none', letterSpacing: 0,
+                  }}>Hentikan</button>
+                )}
+              </span>
+              <span style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '10px', color: COLORS.muted }}>Scan</span>
+                <select value={aseScanDepth} onChange={e => setAseScanDepth(parseInt(e.target.value, 10))} style={{ background: '#111', color: '#ddd', border: `1px solid ${COLORS.border}`, padding: '4px 8px', fontSize: '11px' }}>
+                  {[100, 10000, 50000, 1000000000000000000].map(n => <option key={n} value={n}>{n.toLocaleString('en-US')} block terakhir</option>)}
+                </select>
+                {(['all', 'IN', 'OUT'] as const).map(f => (
+                  <button key={f} type="button" onClick={() => setAseRoleFilter(f)} style={{
+                    fontSize: '10px', padding: '4px 10px', cursor: 'pointer', fontWeight: aseRoleFilter === f ? 'bold' : 'normal',
+                    background: aseRoleFilter === f ? '#836EFD' : 'none', color: aseRoleFilter === f ? '#fff' : COLORS.muted,
+                    border: `1px solid ${aseRoleFilter === f ? '#836EFD' : COLORS.border}`,
+                  }}>{f === 'all' ? 'Semua' : f}</button>
+                ))}
+              </span>
+            </div>
+
+            {aseHistProgress && (
+              <div style={{ marginBottom: '10px' }}>
+                <div style={{ height: '4px', background: '#111' }}>
+                  <div style={{ width: `${Math.min(100, (aseHistProgress.done / Math.max(1, aseHistProgress.total)) * 100)}%`, height: '100%', background: '#836EFD', transition: 'width .2s' }} />
+                </div>
+                <div style={{ fontSize: '10px', color: COLORS.muted, marginTop: '4px' }}>
+                  Memindai block {aseHistProgress.done.toLocaleString('en-US')} / {aseHistProgress.total.toLocaleString('en-US')}…
+                </div>
+              </div>
+            )}
+
+            {aseHistError && <p style={{ color: '#ff6666', fontSize: '12px', margin: '0 0 10px' }}>{aseHistError}</p>}
+            {aseHistLoading && !aseHist && !aseHistError && (
+              <p style={{ color: COLORS.muted, fontSize: '11px', margin: '0 0 10px' }}>Belum ada TX ditemukan — TX akan muncul di sini begitu ketemu…</p>
+            )}
+
+            {aseHist && (
+              <>
+                <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', fontSize: '11px', fontFamily: 'monospace', marginBottom: '8px', color: COLORS.text }}>
+                  <span><span style={{ color: COLORS.muted }}>Ditemukan: </span>{allTxs.length} TX</span>
+                  <span><span style={{ color: COLORS.muted }}>IN: </span><span style={{ color: COLORS.green }}>{inCount} ({sum('IN').toLocaleString('en-US', { maximumFractionDigits: 6 })} {aseNetwork.symbol})</span></span>
+                  <span><span style={{ color: COLORS.muted }}>OUT: </span><span style={{ color: '#ffaa00' }}>{outCount} ({sum('OUT').toLocaleString('en-US', { maximumFractionDigits: 6 })} {aseNetwork.symbol})</span></span>
+                </div>
+                <p style={{ fontSize: '10px', color: COLORS.muted, margin: '0 0 10px', lineHeight: 1.5 }}>
+                  Dipindai block #{aseHist.fromHeight.toLocaleString('en-US')} – #{aseHist.toHeight.toLocaleString('en-US')} ({aseHist.scannedBlocks.toLocaleString('en-US')} block, {aseHist.blocksWithTx.toLocaleString('en-US')} berisi TX).
+                  {' '}Node Asentum belum punya indexer per-address, jadi riwayat ini hanya mencakup rentang tersebut
+                  {aseHistLoading ? ' (masih memindai — hasil bertambah otomatis)' : aseHist.complete ? '' : ' (sebagian block gagal dimuat / pemindaian dihentikan)'}
+                  {allTxs.length >= 100 ? ' dan dibatasi 100 TX terbaru' : ''}. Naikkan jumlah block untuk menjangkau lebih lama.
+                </p>
+                <AseTxTable
+                  txs={shown} viewer={aseAddressResult.addressHex} symbol={aseNetwork.symbol}
+                  emptyText={`Tidak ada TX untuk address ini pada ${aseHist.scannedBlocks.toLocaleString('en-US')} block terakhir.`}
+                  onTx={h => handleAseSearch(h)} onAddr={a => handleAseSearch(a)} onBlock={h => openAseBlock(h)}
+                />
+              </>
+            )}
+          </div>
+        </div>
+        );
+      })()}
+
+      {aseTxDetail && (() => {
+        const t = aseTxDetail;
+        const st = aseStatusMeta(t.status);
+        const ts = aseTs(t.timestamp);
+        const selfTx = t.from && t.to && asentumAddrKey(t.from) === asentumAddrKey(t.to);
+        const confirmations = t.blockHeight != null && aseChainStatus?.height != null ? Math.max(0, aseChainStatus.height - t.blockHeight + 1) : null;
+        const jsonRaw = (v: any) => JSON.stringify(v, (_k, x) => typeof x === 'bigint' ? x.toString() : x, 2);
+        // ── Detail fee (EIP-1559) ──
+        const toBI = (v: string | null): bigint | null => { try { return v == null ? null : BigInt(v); } catch { return null; } };
+        const gUsed = toBI(t.gasUsed), gLimit = toBI(t.gasLimit);
+        const baseFee = toBI(t.baseFeePerGas), effPrice = toBI(t.effectiveGasPrice), maxFee = toBI(t.maxFeePerGas);
+        const gasPct = gUsed != null && gLimit != null && gLimit > 0n ? Number((gUsed * 10000n) / gLimit) / 100 : null;
+        const baseCost = gUsed != null && baseFee != null && effPrice != null ? gUsed * (baseFee < effPrice ? baseFee : effPrice) : null;
+        const tipCost = gUsed != null && effPrice != null && baseCost != null ? gUsed * effPrice - baseCost : null;
+        const savings = gUsed != null && maxFee != null && effPrice != null && maxFee > effPrice ? (maxFee - effPrice) * gUsed : null;
+        const gweiWei = (w: string | null) => w != null ? `${formatAseGwei(w)} Gwei (${w} wei)` : '—';
+        const aseAmt = (w: bigint) => `${formatAseAmount(w)} ${aseNetwork.symbol}`;
+        return (
+        <div className="fade-in-up" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderTop: '2px solid #836EFD', padding: '18px', marginBottom: '24px' }}>
+          <h3 style={{ margin: '0 0 14px', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1.5px', color: '#836EFD', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <FaExchangeAlt /> Transaksi ASE
+          </h3>
+          <Row label="Txn Hash" value={t.hash} copy={t.hash} />
+          <Row label="Status" value={<AseBadge color={st.color}>{st.label}</AseBadge>} mono={false} />
+          <Row label="Method" value={<AseBadge color={t.kind === 'deploy' ? '#e81899' : t.kind === 'transfer' ? '#01a2ff' : t.kind === 'call' ? '#9c27b0' : '#666'}>{t.method}</AseBadge>} mono={false} />
+          <Row label="Jenis" value={t.kind === 'transfer' ? 'Transfer native' : t.kind === 'deploy' ? 'Deploy smart contract' : t.kind === 'call' ? 'Panggilan smart contract' : 'Tidak diketahui'} mono={false} />
+          {t.blockHeight != null && (
+            <Row label="Block" value={
+              <span onClick={() => openAseBlock(t.blockHeight!)} style={{ color: '#836EFD', cursor: 'pointer' }}>#{t.blockHeight.toLocaleString('en-US')}</span>
+            } mono={false} />
+          )}
+          {confirmations != null && <Row label="Konfirmasi" value={`${confirmations.toLocaleString('en-US')} block`} mono={false} />}
+          {ts != null && <Row label="Age" value={`${timeAgo(ts)} · ${new Date(ts * 1000).toLocaleString('id-ID')}`} mono={false} />}
+          <Row label="Nonce" value={t.nonce ?? '—'} />
+          {t.from && <Row label="From" value={
+            <span style={{ display: 'inline-flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <AseBadge color="#ffaa00">{selfTx ? 'SELF' : 'PENGIRIM'}</AseBadge>
+              <span onClick={() => handleAseSearch(t.from!)} style={{ color: '#836EFD', cursor: 'pointer' }}>{t.from}</span>
+            </span>
+          } copy={t.from} />}
+          <Row label="To" value={t.to ? (
+            <span style={{ display: 'inline-flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              <AseBadge color="#4caf50">{t.kind === 'call' ? 'CONTRACT' : 'PENERIMA'}</AseBadge>
+              <span onClick={() => handleAseSearch(t.to!)} style={{ color: '#836EFD', cursor: 'pointer' }}>{t.to}</span>
+            </span>
+          ) : <span style={{ color: COLORS.muted }}>— (pembuatan contract)</span>} copy={t.to ?? undefined} />
+          <Row label="Value" value={t.valueAse != null ? `${t.valueAse} ${aseNetwork.symbol}` : '—'} mono={false} />
+          <Row label="Fee Transaksi" value={t.feeAse != null ? `${t.feeAse} ${aseNetwork.symbol}` : '—'} mono={false} />
+          <Row label="Gas Price (efektif)" value={gweiWei(t.effectiveGasPrice)} mono={false} />
+          <Row label="Base Fee (block)" value={gweiWei(t.baseFeePerGas)} mono={false} />
+          {t.maxFeePerGas != null && <Row label="Max Fee / Gas" value={gweiWei(t.maxFeePerGas)} mono={false} />}
+          {t.maxPriorityFeePerGas != null && <Row label="Max Priority Fee / Gas" value={gweiWei(t.maxPriorityFeePerGas)} mono={false} />}
+          <Row label="Gas Limit" value={gLimit != null ? gLimit.toLocaleString('en-US') : '—'} />
+          <Row label="Gas Used" value={gUsed != null ? `${gUsed.toLocaleString('en-US')}${gasPct != null ? ` (${gasPct.toFixed(2)}%)` : ''}` : '—'} />
+          {baseCost != null && tipCost != null && (
+            <Row label="Rincian Fee" value={`Base ${aseAmt(baseCost)} · Tip ${aseAmt(tipCost)}`} mono={false} />
+          )}
+          {savings != null && <Row label="Hemat vs Max Fee" value={aseAmt(savings)} mono={false} />}
+          {t.input && (
+            <Row label="Input Data" value={
+              <span style={{ display: 'block', maxHeight: '110px', overflowY: 'auto', fontSize: '11px', color: '#888' }}>{t.input}</span>
+            } copy={t.input} />
+          )}
+          <Row label="Salin Link" value={
+            <span onClick={() => copyToClipboard(`${window.location.origin}/explorer/tx/${t.hash}`)} style={{ color: '#836EFD', cursor: 'pointer', fontSize: '12px' }}>
+              <FaCopy size={9} /> Salin link halaman ini
+            </span>
+          } mono={false} />
+          <div style={{ marginTop: '14px' }}>
+            <div onClick={() => setShowRawAseTx(v => !v)} style={{
+              display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer',
+              fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '1px',
+            }}>
+              <FaFileCode /> Raw TX (JSON)
+              {showRawAseTx ? <FaChevronUp size={10} /> : <FaChevronDown size={10} />}
+            </div>
+            {showRawAseTx && (
+              <pre style={{
+                marginTop: '8px', background: '#000', border: `1px solid ${COLORS.border}`, padding: '10px',
+                fontSize: '10px', color: '#888', fontFamily: 'monospace', whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all', maxHeight: '260px', overflowY: 'auto', position: 'relative',
+              }}>
+                <FaCopy size={11} style={{ position: 'absolute', top: 8, right: 8, cursor: 'pointer', color: COLORS.muted }}
+                  onClick={() => copyToClipboard(jsonRaw(t.raw))} title="Copy" />
+                {jsonRaw(t.raw)}
+              </pre>
+            )}
+          </div>
+        </div>
+        );
+      })()}
+
+      {/* ── BLOCK RESULT ASE — persis pola blockResult di tab EVM: klik nomor
+           block (search angka, klik baris di feed, atau link "Block #N" dari
+           detail tx) buka kartu ini, lengkap dengan daftar tx di block itu
+           (klik salah satu → buka detail tx-nya) & raw JSON toggle. ── */}
+      {aseBlockDetail && (
+        <div className="fade-in-up" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderTop: '2px solid #836EFD', padding: '18px', marginBottom: '24px' }}>
+          <h3 style={{ margin: '0 0 10px', fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1.5px', color: '#836EFD', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <FaCube /> Block #{aseBlockDetail.height.toLocaleString('en-US')}
+          </h3>
+          {aseBlockDetail.hash && <Row label="Block Hash" value={aseBlockDetail.hash} copy={aseBlockDetail.hash} />}
+          {aseBlockDetail.height > 0 && (
+            <Row label="Parent" value={
+              <span onClick={() => openAseBlock(aseBlockDetail.height - 1)} style={{ color: '#836EFD', cursor: 'pointer' }}>
+                #{(aseBlockDetail.height - 1).toLocaleString('en-US')}
+              </span>
+            } mono={false} />
+          )}
+          {aseBlockDetail.timestamp != null && (
+            <Row label="Timestamp" value={new Date(aseBlockDetail.timestamp * (aseBlockDetail.timestamp < 2e10 ? 1000 : 1)).toLocaleString('id-ID')} mono={false} />
+          )}
+          {aseBlockDetail.proposer && <Row label="Proposer / Validator" value={aseBlockDetail.proposer} copy={aseBlockDetail.proposer} />}
+          {aseChainStatus?.height != null && aseBlockDetail.height < aseChainStatus.height && (
+            <Row label="Berikutnya" value={
+              <span onClick={() => openAseBlock(aseBlockDetail.height + 1)} style={{ color: '#836EFD', cursor: 'pointer' }}>
+                #{(aseBlockDetail.height + 1).toLocaleString('en-US')}
+              </span>
+            } mono={false} />
+          )}
+          {aseBlockDetail.timestamp != null && <Row label="Umur" value={timeAgo(aseTs(aseBlockDetail.timestamp)!)} mono={false} />}
+          {aseChainStatus?.height != null && (
+            <Row label="Konfirmasi" value={`${Math.max(0, aseChainStatus.height - aseBlockDetail.height + 1).toLocaleString('en-US')} block`} mono={false} />
+          )}
+          <Row label="Transactions" value={aseBlockDetail.txCount ?? aseBlockDetail.txHashes.length} />
+          {(() => {
+            const b = aseBlockDetail;
+            const used = b.gasUsed != null ? BigInt(b.gasUsed) : null;
+            const limit = b.gasLimit != null ? BigInt(b.gasLimit) : null;
+            const base = b.baseFeePerGas != null ? BigInt(b.baseFeePerGas) : null;
+            const pct = used != null && limit != null && limit > 0n ? Number((used * 10000n) / limit) / 100 : null;
+            return (
+              <>
+                {used != null && <Row label="Gas Used" value={`${used.toLocaleString('en-US')}${pct != null ? ` (${pct.toFixed(2)}%)` : ''}`} />}
+                {limit != null && <Row label="Gas Limit" value={limit.toLocaleString('en-US')} />}
+                {base != null && <Row label="Base Fee" value={`${formatAseGwei(b.baseFeePerGas)} Gwei (${b.baseFeePerGas} wei)`} mono={false} />}
+                {used != null && base != null && <Row label="Total Base Fee" value={`${formatAseAmount(used * base)} ${aseNetwork.symbol}`} mono={false} />}
+              </>
+            );
+          })()}
+          {([
+            ['State Root', ['stateRoot']],
+            ['Parent Hash', ['parentHash', 'prevHash']],
+          ] as [string, string[]][]).map(([label, keys]) => {
+            const v = aseRawField(aseBlockDetail.raw, keys);
+            return v != null ? <Row key={label} label={label} value={v} copy={v} /> : null;
+          })}
+          <Row label="Salin Link" value={
+            <span onClick={() => copyToClipboard(`${window.location.origin}/explorer/block/${aseBlockDetail.height}`)} style={{ color: '#836EFD', cursor: 'pointer', fontSize: '12px' }}>
+              <FaCopy size={9} /> Salin link halaman ini
+            </span>
+          } mono={false} />
+
+          {(aseBlockDetail.txHashes.length > 0 || (aseBlockDetail.txCount ?? 0) > 0) && (
+            <div style={{ marginTop: '14px' }}>
+              <p style={{ fontSize: '10px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                {aseBlockDetail.txHashes.length || aseBlockDetail.txCount} TX di block ini
+                {aseBlockTxsLoading && <FaSpinner className="spin-icon" size={10} />}
+                {aseBlockDetail.txHashes.length > 100 && <span style={{ textTransform: 'none' }}>(100 pertama)</span>}
+              </p>
+              {aseBlockTxsLoading && aseBlockTxs.length === 0 ? (
+                <p style={{ color: '#444', fontSize: '12px', margin: 0 }}>Memuat detail transaksi…</p>
+              ) : (
+                <AseTxTable txs={aseBlockTxs} symbol={aseNetwork.symbol}
+                  onTx={h => handleAseSearch(h)} onAddr={a => handleAseSearch(a)} onBlock={h => openAseBlock(h)} />
+              )}
+            </div>
+          )}
+
+          <div style={{ marginTop: '14px' }}>
+            <div onClick={() => setShowRawAseBlock(s => !s)} style={{
+              display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer',
+              fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '1px',
+            }}>
+              <FaFileCode /> Raw Block (JSON)
+              {showRawAseBlock ? <FaChevronUp size={10} /> : <FaChevronDown size={10} />}
+            </div>
+            {showRawAseBlock && (
+              <pre style={{
+                marginTop: '8px', background: '#000', border: `1px solid ${COLORS.border}`, padding: '10px',
+                fontSize: '10px', color: '#888', fontFamily: 'monospace', whiteSpace: 'pre-wrap',
+                wordBreak: 'break-all', maxHeight: '260px', overflowY: 'auto', position: 'relative',
+              }}>
+                <FaCopy size={11} style={{ position: 'absolute', top: 8, right: 8, cursor: 'pointer', color: COLORS.muted }}
+                  onClick={() => copyToClipboard(JSON.stringify(aseBlockDetail.raw, null, 2))} title="Copy" />
+                {JSON.stringify(aseBlockDetail.raw, null, 2)}
+              </pre>
+            )}
+          </div>
+        </div>
+      )}
+
+      {aseTxNotFound && (
+        <div className="fade-in-up" style={{
+          background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderTop: '2px solid #836EFD',
+          padding: '24px', textAlign: 'center',
+        }}>
+          <FaExchangeAlt size={20} color="#836EFD" style={{ marginBottom: '10px' }} />
+          <p style={{ color: COLORS.text, fontSize: '13px', fontWeight: 'bold', margin: '0 0 6px' }}>
+            Detail transaksi ASE belum diindeks di sini
+          </p>
+          <p style={{ color: COLORS.muted, fontSize: '11px', margin: '0 0 14px', wordBreak: 'break-all' }}>
+            {aseTxNotFound}
+          </p>
+          <button onClick={() => handleAseSearch(aseTxNotFound)} style={{
+            display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#836EFD',
+            border: '1px solid #836EFD', padding: '8px 16px', background: 'none', cursor: 'pointer', fontWeight: 'bold',
+          }}>
+            <FaSyncAlt size={11} /> Coba Cari Lagi
+          </button>
+        </div>
+      )}
+
+      {aseBlockNotFound != null && (
+        <div className="fade-in-up" style={{
+          background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderTop: '2px solid #836EFD',
+          padding: '24px', textAlign: 'center',
+        }}>
+          <FaCube size={20} color="#836EFD" style={{ marginBottom: '10px' }} />
+          <p style={{ color: COLORS.text, fontSize: '13px', fontWeight: 'bold', margin: '0 0 6px' }}>
+            Block #{aseBlockNotFound.toLocaleString('en-US')} tidak bisa dimuat
+          </p>
+          <p style={{ color: COLORS.muted, fontSize: '11px', margin: '0 0 14px' }}>
+            SDK/RPC yang dipakai mungkin belum expose data block ini langsung.
+          </p>
+          <button onClick={() => openAseBlock(aseBlockNotFound)} style={{
+            display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: '#836EFD',
+            border: '1px solid #836EFD', padding: '8px 16px', background: 'none', cursor: 'pointer', fontWeight: 'bold',
+          }}>
+            <FaSyncAlt size={11} /> Coba Lagi
+          </button>
+        </div>
+      )}
+
+      {!aseAddressResult && !aseTxDetail && !aseBlockDetail && !aseTxNotFound && !aseBlockNotFound && !aseError && (
+        <div style={{ textAlign: 'center', padding: '24px 20px', color: '#333' }}>
+          <AsentumLogo size={44} style={{ marginBottom: '10px', opacity: 0.55 }} />
+          <p style={{ fontSize: '12px', margin: 0 }}>
+            Cari address, TX hash, atau nomor block Asentum di atas — atau klik langsung salah satu baris
+            di feed "Block Terbaru" / "Transaksi" / "Validator" di bawah.
+          </p>
+        </div>
+      )}
+
+      {/* ── Block Terbaru & Mempool ASE — SELALU tampil (persis panel "Latest
+           Blocks" di tab EVM), bukan cuma pas kosong hasil pencarian, biar
+           mudah pantau chain post-quantum ini yang sempat dilaporkan macet
+           (lihat catatan bug #5 di Asentumnet.ts). ── */}
+      <div className="fade-in-up" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderTop: '2px solid #836EFD', padding: '18px', marginBottom: '24px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', flexWrap: 'wrap', gap: '8px' }}>
+          <h3 style={{ margin: 0, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1.5px', color: '#836EFD', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <AsentumLogo size={14} /> Block, Mempool &amp; Validator — {aseNetwork.name}
+            {refreshSettings.enabled && (
+              <span style={{
+                fontSize: '9px', fontWeight: 'bold', color: COLORS.green, border: `1px solid ${COLORS.green}`,
+                padding: '2px 6px', display: 'flex', alignItems: 'center', gap: '4px', textTransform: 'none', letterSpacing: '0.3px',
+              }}>
+                <FaSyncAlt size={8} /> live · {refreshSettings.intervalSec}s
+              </span>
+            )}
+          </h3>
+          {(aseDetailTab === 'blocks' ? aseLatestBlocksLoading : aseDetailTab === 'validators' ? aseValidatorsLoading : aseDetailTab === 'txs' ? aseRecentTxsLoading : aseMempoolLoading) && <FaSpinner className="spin-icon" color="#836EFD" size={12} />}
+        </div>
+
+        <div style={{ display: 'flex', gap: '6px', marginBottom: '12px' }}>
+          {(['blocks', 'txs', 'mempool', 'validators'] as const).map(key => (
+            <button key={key} onClick={() => setAseDetailTab(key)} style={{
+              flex: 1, padding: '7px 10px', fontSize: '11px', cursor: 'pointer',
+              background: aseDetailTab === key ? '#836EFD' : 'none',
+              color: aseDetailTab === key ? '#fff' : COLORS.muted,
+              border: `1px solid ${aseDetailTab === key ? '#836EFD' : COLORS.border}`,
+              fontWeight: aseDetailTab === key ? 'bold' : 'normal',
+            }}>
+              {key === 'blocks' ? 'Block Terbaru' : key === 'txs' ? 'Transaksi' : key === 'validators' ? `Validator (${aseValidators.length})` : `Mempool (${aseChainStatus?.mempoolSize ?? aseMempool.length ?? 0})`}
+            </button>
+          ))}
+        </div>
+
+        {aseDetailTab === 'txs' ? (
+          <AseTxTable txs={aseRecentTxs} symbol={aseNetwork.symbol}
+            emptyText={aseRecentTxsLoading ? 'Memuat transaksi terbaru…' : 'Belum ada transaksi di 10 block terbaru yang berisi TX.'}
+            onTx={h => handleAseSearch(h)} onAddr={a => handleAseSearch(a)} onBlock={h => openAseBlock(h)} />
+        ) : aseDetailTab === 'validators' ? (
+          aseValidatorsError ? (
+            <p style={{ color: '#ff6666', fontSize: '12px', textAlign: 'center', padding: '16px 0', margin: 0 }}>{aseValidatorsError}</p>
+          ) : !aseValidatorsLoading && aseValidators.length === 0 ? (
+            <p style={{ color: '#333', fontSize: '12px', textAlign: 'center', padding: '16px 0', margin: 0 }}>Tidak ada data validator.</p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {aseValidators.map((v, idx) => (
+                <div key={`${v.address ?? v.moniker ?? idx}`} className="explorer-row"
+                  onClick={() => v.address && handleAseSearch(v.address)}
+                  style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px',
+                    padding: '9px 12px', background: '#111', border: `1px solid ${COLORS.border}`, cursor: v.address ? 'pointer' : 'default', flexWrap: 'wrap',
+                  }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                    <span style={{ fontSize: '10px', color: COLORS.muted, fontFamily: 'monospace', minWidth: '22px' }}>{idx + 1}</span>
+                    <span style={{ fontSize: '12px', color: '#836EFD', fontFamily: 'monospace', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {v.moniker ?? (v.address ? shortHash(v.address, 10, 6) : '—')}
+                    </span>
+                  </span>
+                  <span style={{ fontSize: '11px', color: COLORS.text, fontFamily: 'monospace' }}>
+                    {v.power != null ? v.power : '—'}
+                  </span>
+                  {v.missedBlocks != null && (
+                    <span style={{ fontSize: '10px', color: v.missedBlocks > 0 ? '#ffaa00' : COLORS.muted }}>miss {v.missedBlocks}</span>
+                  )}
+                  {v.jailed != null && (
+                    <span style={{
+                      fontSize: '10px', padding: '3px 8px', flexShrink: 0,
+                      color: v.jailed ? COLORS.red : COLORS.green, border: `1px solid ${v.jailed ? COLORS.red : COLORS.green}55`,
+                    }}>{v.jailed ? 'JAILED' : 'AKTIF'}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )
+        ) : aseDetailTab === 'blocks' ? (
+          aseLatestBlocksError ? (
+            <p style={{ color: '#ff6666', fontSize: '12px', textAlign: 'center', padding: '16px 0', margin: 0 }}>{aseLatestBlocksError}</p>
+          ) : !aseLatestBlocksLoading && aseLatestBlocks.length === 0 ? (
+            <p style={{ color: '#333', fontSize: '12px', textAlign: 'center', padding: '16px 0', margin: 0 }}>
+              {aseLatestBlocksLoading ? 'Memuat block terbaru…' : 'Tidak ada data (cek RPC).'}
+            </p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {aseLatestBlocks.map((b, idx) => (
+                <div key={`${b.height}-${idx}`} className="explorer-row" onClick={() => openAseBlock(b.height)} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px',
+                  padding: '9px 12px', background: '#111', border: `1px solid ${COLORS.border}`, cursor: 'pointer', flexWrap: 'wrap',
+                }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: '#836EFD', fontFamily: 'monospace', fontWeight: 'bold' }}>
+                    <FaCube size={11} /> #{b.height.toLocaleString('en-US')}
+                  </span>
+                  <span style={{ fontSize: '11px', color: COLORS.muted }}>
+                    {b.timestamp ? timeAgo(b.timestamp < 2e10 ? b.timestamp : Math.floor(b.timestamp / 1000)) : (b.hash ? `${b.hash.slice(0, 10)}…` : '—')}
+                  </span>
+                  {b.proposer && (
+                    <span title={b.proposer} style={{ fontSize: '10px', color: COLORS.muted, fontFamily: 'monospace' }}>
+                      {shortHash(b.proposer, 6, 4)}
+                    </span>
+                  )}
+                  <span style={{ fontSize: '11px', color: COLORS.text, fontFamily: 'monospace' }}>
+                    {b.txCount != null ? `${b.txCount} txns` : '—'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )
+        ) : (
+          aseMempoolError ? (
+            <div style={{ textAlign: 'center', padding: '16px 0' }}>
+              <p style={{ color: COLORS.muted, fontSize: '12px', margin: '0 0 6px' }}>{aseMempoolError}</p>
+              {aseChainStatus?.mempoolSize != null && (
+                <p style={{ color: '#836EFD', fontSize: '12px', fontFamily: 'monospace', margin: 0 }}>
+                  Jumlah saat ini: {aseChainStatus.mempoolSize.toLocaleString('en-US')} tx pending
+                </p>
+              )}
+            </div>
+          ) : !aseMempoolLoading && aseMempool.length === 0 ? (
+            <p style={{ color: '#333', fontSize: '12px', textAlign: 'center', padding: '16px 0', margin: 0 }}>
+              {aseMempoolLoading ? 'Memuat mempool…' : 'Mempool kosong (atau data belum tersedia).'}
+            </p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {aseMempool.map((t, idx) => (
+                <div key={`${t.hash}-${idx}`} className="explorer-row" onClick={() => handleAseSearch(t.hash)} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px',
+                  padding: '9px 12px', background: '#111', border: `1px solid ${COLORS.border}`, cursor: 'pointer',
+                }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: '11px', fontFamily: 'monospace', color: '#836EFD', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {t.hash ? `${t.hash.slice(0, 16)}…${t.hash.slice(-6)}` : '—'}
+                    </div>
+                    <div style={{ fontSize: '10px', color: COLORS.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {t.from ? `dari ${t.from.slice(0, 8)}…` : 'menunggu di-mine'}
+                    </div>
+                  </div>
+                  <span style={{ fontSize: '10px', color: '#ffaa00', border: '1px solid #ffaa0040', padding: '3px 8px', flexShrink: 0 }}>PENDING</span>
+                </div>
+              ))}
+            </div>
+          )
+        )}
+      </div>
       </>
       )}
 
