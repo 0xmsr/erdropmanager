@@ -2,55 +2,11 @@ import { ethers } from 'ethers';
 import { derivePath as deriveEd25519Path } from 'ed25519-hd-key';
 import { bech32 } from 'bech32';
 import { AsentumClient, AsentumWallet, AsentumContract, parseAse, formatAse } from '@asentum/sdk';
-// Dipakai HANYA untuk workaround bug fee di bawah (lihat komentar di dekat
-// `signAndSubmitAse`) — keduanya sudah otomatis ke-install lewat @asentum/sdk
-// (dependency-nya), tapi tambahkan eksplisit ke package.json:
-// `npm i @asentum/crypto@^0.1.0 @asentum/types@^0.1.0` biar tidak bergantung
-// pada hoisting node_modules.
 import { blake3, sign } from '@asentum/crypto';
 import { TransactionBodySchema, SignedTransactionSchema } from '@asentum/types';
 
 // Copyright (c) 2026 ErdropManager — MIT License
 // Author - 0xmsr
-
-// ── CATATAN PENTING SEBELUM PAKAI ──────────────────────────────────────────
-// Asentum adalah chain testnet post-quantum yang masih sangat baru & kecil
-// (Dilithium3 / ML-DSA-65, bukan secp256k1/ed25519 biasa).
-//   1. Address AsentumChain itu 20 byte, TAPI ada DUA representasi yang sah
-//      buat account yang sama (pola mirip Cosmos EVM: cosmos1... vs 0x...):
-//        - hex "0x" + 40 hex char — dipakai @asentum/sdk di level RPC
-//          (getBalance, SendTransferOpts.to, dst — dikonfirmasi dari
-//          @asentum/types ADDRESS_BYTES=20 & komentar d.ts-nya).
-//        - bech32 "ase1..." (38 char setelah prefix "ase1": 32 char data +
-//          6 char checksum, pas buat 20 byte) — ini yang ditampilkan di
-//          Asentum Wallet extension beneran, dikonfirmasi langsung dari
-//          address yang muncul di wallet dev kamu.
-//      Jadi di file ini `address` yang disimpan/dipakai di app = bentuk
-//      bech32 (biar sama persis kayak yang kelihatan di extension), dan
-//      dikonversi ke hex on-the-fly tiap manggil @asentum/sdk. Perlu
-//      `npm i bech32` kalau belum ada di package.json.
-//   2. Asentum Wallet (extension resmi) cuma bisa import via PRIVATE KEY
-//      mentah, bukan mnemonic — jadi path derivasi di bawah ini
-//      (m/44'/1'/{index}'/0'/0') murni konvensi internal app ini untuk
-//      menurunkan banyak address ASE secara deterministik dari satu master
-//      mnemonic wallet. Nggak perlu cocok ke standar resmi manapun (memang
-//      belum ada).
-//   3. Private key Asentum = SEED 32 byte, ditulis 64 karakter hex (tanpa
-//      atau dengan prefix "0x"). Ini sama persis dengan "recovery key" di
-//      Asentum Wallet extension: Settings → Reveal recovery key → paste 64
-//      karakter itu. Jadi `privateKey` yang disimpan di app = 64 hex seed itu,
-//      dan wallet dibentuk lewat `AsentumWallet.fromSeed(client, seed)`.
-//      Format lama "secretKeyHex:publicKeyHex" SUDAH TIDAK DIDUKUNG. Wallet
-//      lama yang tersimpan dimigrasi paksa lewat `migrateAsentumAddresses()`
-//      (derive ulang dari mnemonic — address tetap sama, cuma key-nya diganti
-//      jadi seed 64 hex).
-//   4. Per 18 Sep 2026, ada beberapa issue terbuka di
-//      github.com/asentum-network/asentum-explorer yang melaporkan testnet
-//      Asentum macet (block height beku) & validator banyak yang miss block
-//      tanpa ke-jail. Jangan kaget kalau balance/kirim tx gagal terus — itu
-//      kemungkinan besar dari sisi chain-nya, bukan bug di kode ini.
-//   5. Testnet only — ASE di testnet tidak ada nilai uang.
-// ────────────────────────────────────────────────────────────────────────
 
 export interface AsentumNetworkCfg {
   id: string;
@@ -59,10 +15,10 @@ export interface AsentumNetworkCfg {
   color: string;
   explorerUrl: string;
   rpcUrls: string[];
-  faucetUrl?: string;   // endpoint HTTP faucet (airdrop dashboard)
+  faucetUrl?: string;
+  indexerUrl?: string;
 }
 
-// Hanya testnet — Asentum belum punya mainnet.
 export const ASENTUM_NETWORKS: AsentumNetworkCfg[] = [
   {
     id: 'testnet',
@@ -74,6 +30,7 @@ export const ASENTUM_NETWORKS: AsentumNetworkCfg[] = [
       'https://testnet.asentum.com',
     ],
     faucetUrl: 'https://airdrop.asentum.com/api/faucet',
+    indexerUrl: 'https://explorer.asentum.com/api/indexer',
   },
 ];
 
@@ -83,15 +40,12 @@ function makeClient(net: AsentumNetworkCfg, rpc?: string): AsentumClient {
 
 const ASENTUM_HRP = 'ase';
 
-// hex "0x..40hex" (yang dipahami @asentum/sdk)  →  bech32 "ase1..." (yang
-// ditampilkan Asentum Wallet extension). Sama address, beda tulisan.
 export function hexToAsentumBech32(hexAddress: string): string {
   const clean = hexAddress.trim().replace(/^0x/i, '');
   const bytes = Buffer.from(clean, 'hex');
   return bech32.encode(ASENTUM_HRP, bech32.toWords(bytes));
 }
 
-// bech32 "ase1..."  →  hex "0x..40hex".
 export function asentumBech32ToHex(bech32Address: string): string {
   const { prefix, words } = bech32.decode(bech32Address.trim());
   if (prefix !== ASENTUM_HRP) throw new Error('Prefix address Asentum tidak valid (harus "ase1...").');
@@ -99,16 +53,11 @@ export function asentumBech32ToHex(bech32Address: string): string {
   return '0x' + bytes.toString('hex');
 }
 
-// Terima address dalam bentuk apa pun (bech32 ATAU hex) dan selalu balikin
-// hex — dipakai tiap kali mau manggil @asentum/sdk (client.getBalance,
-// sendTransfer({to}), dst), karena SDK-nya cuma paham hex.
 function toAsentumHex(address: string): string {
   const a = address.trim();
   return a.toLowerCase().startsWith('0x') ? a : asentumBech32ToHex(a);
 }
 
-// Normalisasi input private key Asentum: 64 hex seed, boleh pakai "0x".
-// Balikin 64 hex lowercase tanpa "0x", atau lempar error kalau formatnya salah.
 export function normalizeAsentumSeed(input: string): string {
   const clean = input.trim().replace(/^0x/i, '');
   if (!/^[0-9a-fA-F]{64}$/.test(clean)) {
@@ -117,11 +66,6 @@ export function normalizeAsentumSeed(input: string): string {
   return clean.toLowerCase();
 }
 
-// ── Derivasi address Asentum ──────────────────────────────────────────────
-// Dilithium3/ML-DSA-65 seed-nya 32 byte (sama seperti seed ed25519), jadi
-// dipakai ed25519-hd-key (SLIP-0010) untuk turunkan 32 byte deterministik
-// dari mnemonic, lalu 32 byte itu dipakai sebagai seed keygen ML-DSA-65 via
-// AsentumWallet.fromSeed(). Lihat CATATAN di atas soal path & format key.
 export function deriveAsentumAddress(mnemonic: string, index: number): { address: string; privateKey: string } {
   const seedHex = ethers.utils.mnemonicToSeed(mnemonic).slice(2);
   const path    = `m/44'/1'/${index}'/0'/0'`;
@@ -130,13 +74,9 @@ export function deriveAsentumAddress(mnemonic: string, index: number): { address
   const client = makeClient(ASENTUM_NETWORKS[0]);
   const wallet = AsentumWallet.fromSeed(client, key);
 
-  // wallet.address dari SDK berupa hex — dikonversi ke bech32 supaya sama
-  // persis dengan yang ditampilkan Asentum Wallet extension.
-  // privateKey = seed 64 hex (sama dengan recovery key di extension).
   return { address: hexToAsentumBech32(wallet.address), privateKey: Buffer.from(key).toString('hex') };
 }
 
-// true kalau privateKey sudah berformat baru (64 hex seed, boleh "0x").
 export function isAsentumSeedKey(privateKey: string): boolean {
   return /^[0-9a-fA-F]{64}$/.test((privateKey || '').trim().replace(/^0x/i, ''));
 }
@@ -148,18 +88,6 @@ export function migrateAsentumAddresses(
   let changed = false;
   const out = (list || []).map(entry => {
     if (isAsentumSeedKey(entry.privateKey)) {
-      // BUG (fixed): sebelumnya baris ini langsung `return entry;` tanpa
-      // cross-check apa pun — begitu privateKey sudah berformat seed 64 hex
-      // yang "benar", field `address` yang TERSIMPAN dipercaya selamanya,
-      // walau algoritma address/checksum (hexToAsentumBech32, checksum di
-      // @asentum/crypto, dst) berubah setelah wallet itu dibuat/dimigrasi.
-      // Akibatnya: address yang ditampilkan di daftar wallet bisa berbeda
-      // permanen dari address yang benar-benar dipakai saat deploy/kirim tx
-      // (yang selalu dihitung ULANG dari privateKey tiap kali dipakai).
-      // Fix: tetap hitung ulang address dari privateKey yang tersimpan tiap
-      // migrasi jalan, dan perbaiki kalau ternyata sudah tidak match —
-      // supaya address yang ditampilkan SELALU konsisten dengan address
-      // yang benar-benar dipakai untuk transaksi.
       try {
         const correct = asentumAddressFromPrivateKey(ASENTUM_NETWORKS[0], entry.privateKey);
         if (correct !== entry.address) {
@@ -167,7 +95,7 @@ export function migrateAsentumAddresses(
           changed = true;
           return { ...entry, address: correct };
         }
-      } catch { /* privateKey ternyata tidak valid — biarkan entry apa adanya */ }
+      } catch { }
       return entry;
     }
     try {
@@ -208,17 +136,6 @@ export async function getAsentumBalanceWithFallback(net: AsentumNetworkCfg, addr
   throw lastErr || new Error(`Tidak dapat connect ke ${net.name}. Cek koneksi / RPC.`);
 }
 
-// Minta ASE gratis dari faucet testnet lewat endpoint HTTP airdrop dashboard
-// (POST https://airdrop.asentum.com/api/faucet). SEBELUMNYA pakai
-// `wallet.requestFaucet()` dari @asentum/sdk (JSON-RPC ke node), tapi node
-// sekarang menolak dengan `{accepted:false, reason:"unauthorized: the faucet
-// is available through the airdrop dashboard, the Telegram wallet, or a
-// validator install"}` — jadi jalur SDK sudah tidak bisa dipakai dari app ini.
-// Respons sukses endpoint dashboard: {ok:true, txHash, amount:"5", to:"0x..."}.
-//
-// Body request = {address: "0x..."} (hex 20 byte; bech32 "ase1..." dikonversi
-// dulu). Kalau dashboard ternyata memakai nama field lain, cukup ubah
-// FAUCET_BODY_KEYS di bawah — semua key dicoba berurutan.
 const FAUCET_BODY_KEYS = ['address', 'to', 'wallet'];
 
 export interface AsentumFaucetResult {
@@ -232,8 +149,6 @@ export async function requestAsentumFaucet(net: AsentumNetworkCfg, privateKey: s
   const url = net.faucetUrl;
   if (!url) throw new Error(`Faucet tidak dikonfigurasi untuk ${net.name}.`);
 
-  // Address diturunkan dari privateKey (sama seperti sebelumnya) supaya
-  // pemanggil tidak perlu berubah.
   const hexAddr = toAsentumHex(asentumAddressFromPrivateKey(net, privateKey));
 
   let lastErr: any;
@@ -257,9 +172,6 @@ export async function requestAsentumFaucet(net: AsentumNetworkCfg, privateKey: s
       }
       const reason = data?.reason || data?.error || data?.message || `HTTP ${res.status}`;
       lastErr = new Error(String(reason));
-      // Error karena rate limit / unauthorized tidak akan berubah kalau ganti
-      // nama field — berhenti di sini. Coba key lain hanya untuk error
-      // validasi body (400/422).
       if (res.status !== 400 && res.status !== 422) break;
     } catch (e: any) {
       lastErr = e?.name === 'AbortError' ? new Error('timeout') : e;
@@ -271,43 +183,30 @@ export async function requestAsentumFaucet(net: AsentumNetworkCfg, privateKey: s
 
 function asentumWalletFromPrivateKey(net: AsentumNetworkCfg, privateKey: string, rpc?: string): AsentumWallet {
   const client = makeClient(net, rpc);
-  // 64 hex seed (recovery key extension / seed hex mentah, boleh 0x)
   const seed = Buffer.from(normalizeAsentumSeed(privateKey), 'hex');
   return AsentumWallet.fromSeed(client, seed);
 }
 
-// Turunkan address (bech32 "ase1...") dari privateKey yang tersimpan
-// (64 hex seed / recovery key) — dipakai TransferTab saat user "Connect"
-// pakai private key hasil paste manual atau hasil pilih wallet tersimpan,
 export function asentumAddressFromPrivateKey(net: AsentumNetworkCfg, privateKey: string, rpc?: string): string {
   const wallet = asentumWalletFromPrivateKey(net, privateKey, rpc);
   return hexToAsentumBech32(wallet.address);
 }
 
 export const ASENTUM_GAS_BUFFER = 0.01;
-
-// ── Opsi gas fee (dipakai user, mis. di Swap/LP AuraSwap) ───────────────
-// 'normal' = default lama (baseFee × 1.5), 'fast' = baseFee × 2 (prioritas
-// lebih tinggi biar lebih cepat masuk blok saat network lagi padat),
-// 'custom' = maxFeePerGas diisi manual dalam Gwei oleh user.
 export type AseGasSpeed = 'normal' | 'fast' | 'custom';
 export interface AseGasOverride {
-  speed?: AseGasSpeed;              // default 'normal'
-  customMaxFeePerGasGwei?: string;  // wajib diisi kalau speed === 'custom'
+  speed?: AseGasSpeed;
+  customMaxFeePerGasGwei?: string;
 }
 
 function gweiToWeiBig(gwei: string): bigint {
   const s = (gwei || '').trim();
   if (!/^\d+(\.\d+)?$/.test(s)) return 0n;
   const [whole, frac = ''] = s.split('.');
-  const fracPadded = (frac + '000000000').slice(0, 9); // 1 gwei = 1e9 wei
+  const fracPadded = (frac + '000000000').slice(0, 9);
   return BigInt(whole || '0') * 1_000_000_000n + BigInt(fracPadded || '0');
 }
 
-// ── Estimasi gas fee ASE  ───────────────────────────────────────────────
-// AsentumClient RPC-nya mirip gaya Ethereum (EIP-1559): tiap block header
-// punya `baseFeePerGas`, dan SendTransferOpts (@asentum/types) bilang
-// gasLimit default transfer native = 21.000 kalau tidak dioverride. SDK-nya
 export const ASENTUM_TRANSFER_GAS_LIMIT = 21000n;
 export const ASENTUM_FEE_SAFETY_MARGIN_NUM = 3n;
 export const ASENTUM_FEE_SAFETY_MARGIN_DEN = 2n;
@@ -319,30 +218,6 @@ export interface AsentumFeeEstimate {
   feeAse: number;
   isFallback: boolean;
 }
-
-// ══════════════════════════════════════════════════════════════════════════
-// WORKAROUND: @asentum/sdk@0.1.0 mengunci `maxFeePerGas` ke `1n` (1 wei) untuk
-// SEMUA transaksi — lihat AsentumWallet.sendTransfer/sendCall/deploy di
-// node_modules/@asentum/sdk/src/wallet.ts (`signAndSubmit`). SendTransferOpts,
-// SendCallOpts, dan DeployOpts TIDAK punya field untuk override ini.
-// Transaksi Asentum bertipe EIP-1559 asli (lihat @asentum/types
-// transaction.ts: "mirrors Ethereum's EIP-1559 transaction"), yang berarti
-// node akan menolak / tidak pernah menambang tx dengan maxFeePerGas di bawah
-// baseFeePerGas blok saat itu. Karena baseFeePerGas testnet nyaris pasti jauh
-// di atas 1 wei, SETIAP transaksi lewat SDK ini (transfer, deploy, sendCall —
-// termasuk deploy & init() Token Creator) akan underpriced: kadang ditolak
-// langsung di submitRawTx, kadang malah "accepted" ke mempool tapi tidak
-// pernah ditambang sampai timeout — persis gejala "deploy/init gagal di
-// tengah jalan" yang bikin token nyangkut di status needs-init.
-//
-// Fix di level app (tanpa nunggu rilis SDK baru): re-implement signing +
-// submit sendiri pakai primitive publik dari @asentum/crypto & @asentum/types
-// (persis yang dipakai SDK secara internal), tapi maxFeePerGas dihitung dari
-// baseFeePerGas asli chain (pola sama seperti estimateAsentumFee /
-// estimateAsentumTokenDeployFee di bawah: base fee × 3/2). AsentumWallet
-// tetap dipakai untuk keypair + address (wallet.keypair, wallet.address,
-// wallet.client) — bukan untuk mengirim tx.
-// ══════════════════════════════════════════════════════════════════════════
 
 function aseAddressBytes20(hex: string): Uint8Array {
   const clean = hex.trim().replace(/^0x/i, '');
@@ -358,13 +233,6 @@ function aseBytesToHex(bytes: Uint8Array): string {
   return hex;
 }
 
-// baseFeePerGas asli × 3/2 (margin sama seperti estimasi fee lain di file
-// ini) — kalau RPC gagal dibaca, fallback ke 1 gwei-equivalent (bukan 1n!)
-// supaya tx tidak otomatis underpriced saat RPC lagi lambat/timeout.
-// `gas` opsional: 'fast' pakai margin lebih tinggi (×2) biar lebih diprioritaskan
-// node saat network padat; 'custom' pakai maxFeePerGas persis sesuai input
-// user (Gwei) — TIDAK divalidasi terhadap baseFeePerGas asli, jadi kalau user
-// isi kekecilan tx-nya bisa underpriced (sama risikonya kayak wallet lain).
 async function aseFeeCap(client: AsentumClient, gas?: AseGasOverride): Promise<{ maxFeePerGas: bigint; maxPriorityFeePerGas: bigint }> {
   if (gas?.speed === 'custom') {
     const custom = gweiToWeiBig(gas.customMaxFeePerGasGwei || '');
@@ -374,7 +242,7 @@ async function aseFeeCap(client: AsentumClient, gas?: AseGasOverride): Promise<{
   try {
     const info: any = await client.getChainInfo();
     baseFee = parseFeeBigInt(info?.latestHeader?.baseFeePerGas);
-  } catch { /* pakai fallback di bawah */ }
+  } catch { }
   const fast = gas?.speed === 'fast';
   const maxFeePerGas = baseFee > 0n
     ? (baseFee * (fast ? 2n : ASENTUM_FEE_SAFETY_MARGIN_NUM)) / (fast ? 1n : ASENTUM_FEE_SAFETY_MARGIN_DEN)
@@ -382,19 +250,12 @@ async function aseFeeCap(client: AsentumClient, gas?: AseGasOverride): Promise<{
   return { maxFeePerGas, maxPriorityFeePerGas: 0n };
 }
 
-// Receipt "palsu" dari node untuk tx yang belum ditambang — bentuknya mirip
-// receipt gagal ({success:false, returnValue:{error:'receipt not found'}}),
-// makanya sebelumnya init() langsung dilaporkan "gagal on-chain" padahal tx
-// cuma belum masuk blok.
 function isReceiptPending(r: any): boolean {
   if (!r) return true;
   const txt = (v: unknown) => (v == null ? '' : typeof v === 'string' ? v : JSON.stringify(v, (_k, x) => typeof x === 'bigint' ? x.toString() : x));
   const re = /receipt not found|tx not found|not yet (mined|included)|pending/i;
   if (re.test(txt(r.error))) return true;
   if (r.success === false && re.test(txt(r.returnValue))) return true;
-  // SDK bisa menormalisasi respons "receipt not found" jadi {success:false}
-  // TANPA teks error & TANPA info blok. Receipt gagal yang ASLI selalu punya
-  // salah satu: nomor/hash blok, gasUsed, atau returnValue (alasan revert).
   if (r.success === false) {
     const hasChainInfo = ['blockNumber', 'blockHeight', 'blockHash', 'block', 'gasUsed', 'returnValue']
       .some(k => r[k] !== undefined && r[k] !== null);
@@ -405,9 +266,6 @@ function isReceiptPending(r: any): boolean {
 
 interface AseSentTx { hash: string; nonce: bigint; wait(timeoutMs?: number): Promise<any>; }
 
-// Pengganti AsentumWallet['signAndSubmit'] privat (yang mengunci maxFeePerGas
-// ke 1n) — bangun body, hash (BLAKE3), tanda tangan (Dilithium3 via
-// wallet.keypair.secretKey), serialize, lalu submitRawTx() seperti biasa.
 async function signAndSubmitAse(
   wallet: AsentumWallet,
   partial: { to: Uint8Array; value: bigint; data: Uint8Array; gasLimit: bigint; nonce?: bigint },
@@ -449,7 +307,7 @@ async function signAndSubmitAse(
         await new Promise(r => setTimeout(r, 1500));
       }
       let last = '';
-      try { last = lastRaw ? ` — respons node terakhir: ${JSON.stringify(lastRaw, (_k, x) => typeof x === 'bigint' ? x.toString() : x).slice(0, 200)}` : ''; } catch { /* abaikan */ }
+      try { last = lastRaw ? ` — respons node terakhir: ${JSON.stringify(lastRaw, (_k, x) => typeof x === 'bigint' ? x.toString() : x).slice(0, 200)}` : ''; } catch { }
       throw new Error(`transaction ${txHash} not confirmed within ${timeoutMs}ms${last}`);
     },
   };
@@ -490,6 +348,48 @@ function parseFeeBigInt(v: string | undefined | null): bigint {
   try { return BigInt(v); } catch { return 0n; }
 }
 
+export function formatAseGwei(wei: string | bigint | null | undefined, maxDecimals = 9): string {
+  if (wei == null || wei === '') return '—';
+  let v: bigint;
+  try { v = typeof wei === 'bigint' ? wei : BigInt(wei); } catch { return '—'; }
+  const unit  = 1_000_000_000n;
+  const whole = v / unit;
+  const frac  = (v % unit).toString().padStart(9, '0').slice(0, Math.max(0, maxDecimals)).replace(/0+$/, '');
+  return frac ? `${whole}.${frac}` : whole.toString();
+}
+
+export function formatAseAmount(wei: string | bigint | null | undefined): string {
+  if (wei == null || wei === '') return '—';
+  try { return String(formatAse(typeof wei === 'bigint' ? wei : BigInt(wei))); } catch { return '—'; }
+}
+
+export interface AsentumFeeTiers {
+  gasLimit: string;
+  baseFeePerGas: string;
+  estimatedFeeWei: string;
+  normalMaxFeePerGas: string;
+  fastMaxFeePerGas: string;
+  normalMaxFeeWei: string;
+  fastMaxFeeWei: string;
+}
+
+export function asentumFeeTiers(baseFeePerGas: string | bigint | null | undefined, gasLimit: bigint = ASENTUM_TRANSFER_GAS_LIMIT): AsentumFeeTiers | null {
+  let base: bigint;
+  try { base = baseFeePerGas == null || baseFeePerGas === '' ? 0n : BigInt(baseFeePerGas); } catch { return null; }
+  if (!(base > 0n)) return null;
+  const normalMax = (base * ASENTUM_FEE_SAFETY_MARGIN_NUM) / ASENTUM_FEE_SAFETY_MARGIN_DEN;
+  const fastMax   = base * 2n;
+  return {
+    gasLimit: gasLimit.toString(),
+    baseFeePerGas: base.toString(),
+    estimatedFeeWei: (gasLimit * base).toString(),
+    normalMaxFeePerGas: normalMax.toString(),
+    fastMaxFeePerGas: fastMax.toString(),
+    normalMaxFeeWei: (gasLimit * normalMax).toString(),
+    fastMaxFeeWei: (gasLimit * fastMax).toString(),
+  };
+}
+
 export interface AseGasPreview {
   gasLimit: string;
   maxFeePerGasWei: string;
@@ -504,7 +404,7 @@ export async function previewAseGasFee(net: AsentumNetworkCfg, gasLimit: bigint,
   try {
     const info: any = await client.getChainInfo();
     if (parseFeeBigInt(info?.latestHeader?.baseFeePerGas) > 0n) isFallback = false;
-  } catch { /* isFallback tetap true */ }
+  } catch { }
   const { maxFeePerGas } = await aseFeeCap(client, gas);
   const maxFeeWei = gasLimit * maxFeePerGas;
   return {
@@ -1072,7 +972,7 @@ async function initAndVerify(
       if (isTimeout) {
         for (let i = 0; i < 6 && !landed; i++) {
           await new Promise(r => setTimeout(r, 3000));
-          try { landed = (await readAsentumToken(net, contractAddress, wallet.address, rpc)).name === v.name; } catch { /* retry */ }
+          try { landed = (await readAsentumToken(net, contractAddress, wallet.address, rpc)).name === v.name; } catch { }
         }
       }
       if (!landed) throw waitErr;
@@ -1457,4 +1357,735 @@ export async function detectAuraSwapPositions(
     } catch { return { poolId: p.id, pool: p, shares: '0' }; }
   }));
   return results.filter(r => { try { return BigInt(r.shares) > 0n; } catch { return false; } });
+}
+
+function toNumOrNull(v: any): number | null {
+  if (v === null || v === undefined) return null;
+  const n = typeof v === 'bigint' ? Number(v) : Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toBigStrOrNull(v: any): string | null {
+  try { return v == null || typeof v === 'object' ? null : BigInt(v).toString(); } catch { return null; }
+}
+
+function assertAsentumClientMethod(client: any, names: string[]): { name: string; fn: (...args: any[]) => any } {
+  for (const n of names) {
+    if (typeof client?.[n] === 'function') return { name: n, fn: client[n].bind(client) };
+  }
+  throw new Error(
+    `Fitur ini belum didukung oleh @asentum/sdk versi yang terpasang (butuh salah satu method: ${names.join(', ')}).`
+  );
+}
+
+export interface AsentumChainStatus {
+  height: number | null;
+  chainId: number | null;
+  mempoolSize: number | null;
+  baseFeePerGas: string | null;
+  latestBlockHash: string | null;
+  latestBlockTimestamp: number | null;
+  proposer: string | null;
+  rpc: string;
+  fetchedAt: number;
+  raw: any;
+}
+
+export async function getAsentumChainStatus(net: AsentumNetworkCfg, rpc?: string): Promise<AsentumChainStatus> {
+  let lastErr: any;
+  for (const r of (rpc ? [rpc] : net.rpcUrls)) {
+    try {
+      const client = makeClient(net, r);
+      const info: any = await Promise.race([
+        client.getChainInfo(),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 8000)),
+      ]);
+      const header = info?.latestHeader ?? info?.header ?? null;
+      return {
+        height: toNumOrNull(info?.height ?? info?.latestHeight ?? info?.blockHeight ?? header?.height),
+        chainId: toNumOrNull(info?.chainId),
+        mempoolSize: toNumOrNull(info?.mempoolSize ?? info?.mempoolCount ?? info?.pendingCount),
+        baseFeePerGas: info?.latestHeader?.baseFeePerGas != null ? String(info.latestHeader.baseFeePerGas) : null,
+        latestBlockHash: header?.hash ?? info?.latestBlockHash ?? null,
+        latestBlockTimestamp: toNumOrNull(header?.timestamp ?? info?.latestBlockTimestamp),
+        proposer: header?.proposer ?? header?.validator ?? null,
+        rpc: r,
+        fetchedAt: Date.now(),
+        raw: info,
+      };
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error(`Tidak dapat mengambil status chain dari ${net.name}.`);
+}
+
+export interface AsentumBlockSummary {
+  height: number;
+  hash: string | null;
+  timestamp: number | null;
+  proposer: string | null;
+  txCount: number | null;
+  txHashes: string[];
+  baseFeePerGas: string | null;
+  gasUsed: string | null;
+  gasLimit: string | null;
+  raw: any;
+}
+
+function normalizeAsentumBlock(blk: any, fallbackHeight?: number): AsentumBlockSummary {
+  const header = blk?.header ?? blk;
+  const txs: any[] = blk?.transactions ?? blk?.txs ?? blk?.body?.transactions ?? [];
+  const receipts: any[] = Array.isArray(blk?.receipts) ? blk.receipts : [];
+  const txHashes = Array.isArray(txs)
+    ? txs.map((t, i) => (typeof t === 'string' ? t : (t?.hash ?? receipts[i]?.txHash))).filter(Boolean)
+    : [];
+  return {
+    height: toNumOrNull(header?.height ?? header?.number ?? blk?.height) ?? fallbackHeight ?? 0,
+    hash: header?.hash ?? blk?.hash ?? null,
+    timestamp: toNumOrNull(header?.timestamp ?? blk?.timestamp),
+    proposer: header?.proposer ?? header?.validator ?? blk?.proposer ?? null,
+    txCount: Array.isArray(txs) ? txs.length : toNumOrNull(blk?.txCount),
+    txHashes,
+    baseFeePerGas: toBigStrOrNull(header?.baseFeePerGas ?? blk?.baseFeePerGas),
+    gasUsed: toBigStrOrNull(header?.gasUsed ?? blk?.gasUsed),
+    gasLimit: toBigStrOrNull(header?.gasLimit ?? blk?.gasLimit),
+    raw: blk,
+  };
+}
+
+export async function getAsentumBlockByHeight(net: AsentumNetworkCfg, height: number, rpc?: string): Promise<AsentumBlockSummary> {
+  const client = makeClient(net, rpc || net.rpcUrls[0]);
+  const { fn } = assertAsentumClientMethod(client, ['getBlockByHeight', 'getBlock']);
+  const blk = await fn(height);
+  if (!blk) throw new Error(`Block #${height} tidak ditemukan.`);
+  return normalizeAsentumBlock(blk, height);
+}
+
+export async function getAsentumBlockByHash(net: AsentumNetworkCfg, hash: string, rpc?: string): Promise<AsentumBlockSummary> {
+  const cleanHash = hash.startsWith('0x') ? hash : `0x${hash}`;
+  const client = makeClient(net, rpc || net.rpcUrls[0]);
+  const { fn } = assertAsentumClientMethod(client, ['getBlockByHash', 'getBlock']);
+  const blk = await fn(cleanHash);
+  if (!blk) throw new Error(`Block dengan hash ${cleanHash} tidak ditemukan.`);
+  return normalizeAsentumBlock(blk);
+}
+
+export async function getAsentumLatestBlocks(net: AsentumNetworkCfg, count = 10, rpc?: string): Promise<AsentumBlockSummary[]> {
+  const status = await getAsentumChainStatus(net, rpc);
+  if (status.height == null) throw new Error('Tinggi block terkini tidak diketahui — tidak bisa mengambil daftar block terbaru.');
+  const heights: number[] = [];
+  for (let h = status.height; h > Math.max(0, status.height - count) && heights.length < count; h--) heights.push(h);
+
+  const client = makeClient(net, status.rpc);
+  const { fn } = assertAsentumClientMethod(client, ['getBlockByHeight', 'getBlock']);
+  const blocks = await Promise.all(heights.map(async h => {
+    try { return normalizeAsentumBlock(await fn(h), h); }
+    catch { return normalizeAsentumBlock({}, h); }
+  }));
+  return blocks;
+}
+
+export interface AsentumTxSummary {
+  hash: string;
+  from: string | null;
+  to: string | null;
+  valueAse: string | null;
+  status: 'success' | 'failed' | 'pending' | 'unknown';
+  blockHeight: number | null;
+  timestamp: number | null;
+  nonce: string | null;
+  method: string;
+  kind: 'transfer' | 'deploy' | 'call' | 'unknown';
+  input: string | null;
+  gasLimit: string | null;
+  gasUsed: string | null;
+  feeAse: string | null;
+  baseFeePerGas: string | null;
+  maxFeePerGas: string | null;
+  maxPriorityFeePerGas: string | null;
+  effectiveGasPrice: string | null;
+  raw: any;
+}
+
+const ASE_KNOWN_SELECTORS: Record<string, string> = {
+  '0xa9059cbb': 'Transfer Token', '0x095ea7b3': 'Approve', '0x23b872dd': 'Transfer From',
+  '0xa0712d68': 'Mint', '0x40c10f19': 'Mint', '0x42966c68': 'Burn', '0x4e71d92d': 'Claim',
+  '0xd0e30db0': 'Deposit', '0x2e1a7d4d': 'Withdraw', '0xa694fc3a': 'Stake',
+};
+
+function pickField(raw: any, keys: string[]): any {
+  for (const src of [raw, raw?.body, raw?.tx, raw?.transaction, raw?.receipt]) {
+    if (!src || typeof src !== 'object') continue;
+    for (const k of keys) if (src[k] != null) return src[k];
+  }
+  return null;
+}
+
+export function asentumTxMethod(raw: any): { method: string; kind: AsentumTxSummary['kind']; input: string | null } {
+  const inputRaw = pickField(raw, ['input', 'data', 'calldata', 'payload']);
+  const input = typeof inputRaw === 'string' && inputRaw !== '0x' && inputRaw !== '' ? inputRaw : null;
+  const to = pickField(raw, ['to', 'recipient']);
+  const named = pickField(raw, ['method', 'function', 'functionName', 'action']) ?? raw?.call?.method ?? null;
+  const typeRaw = pickField(raw, ['type', 'kind', 'txType']);
+  const typeStr = typeof typeRaw === 'string' ? typeRaw.toLowerCase() : null;
+  const pretty = (x: string) => x.replace(/[_-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+
+  if (typeof raw?.kind === 'string' && /^(transfer|deploy|call)$/.test(raw.kind) && !(typeof named === 'string' && named)) {
+    const k = raw.kind as 'transfer' | 'deploy' | 'call';
+    return { method: k === 'deploy' ? 'Deploy Contract' : k === 'transfer' ? 'Transfer' : 'Contract Call', kind: k, input };
+  }
+  if (typeof named === 'string' && named) {
+    const low = named.toLowerCase();
+    const kind = raw?.kind === 'call' ? 'call' : /deploy|create/.test(low) ? 'deploy' : /transfer|send/.test(low) ? 'transfer' : 'call';
+    return { method: pretty(named), kind, input };
+  }
+  if (typeStr && /deploy|create/.test(typeStr)) return { method: 'Deploy Contract', kind: 'deploy', input };
+  if (!to) return { method: input ? 'Deploy Contract' : 'Unknown', kind: input ? 'deploy' : 'unknown', input };
+  if (!input) return { method: 'Transfer', kind: 'transfer', input: null };
+  const sel = input.slice(0, 10).toLowerCase();
+  return { method: ASE_KNOWN_SELECTORS[sel] ?? (input.length >= 10 ? sel : 'Contract Call'), kind: 'call', input };
+}
+
+const ASE_ZERO_ADDR_RE = /^(0x)?0{40}$/i;
+
+function mergeAseTxReceipt(tx: any, receipt: any, baseFeePerGas?: string | null): any {
+  const body = tx?.body ?? {};
+  return {
+    ...(tx && typeof tx === 'object' ? tx : {}),
+    hash: tx?.hash ?? receipt?.txHash ?? receipt?.hash,
+    from: tx?.from ?? receipt?.sender,
+    to: tx?.to ?? (body.to && !ASE_ZERO_ADDR_RE.test(String(body.to)) ? body.to : null) ?? (receipt?.recipient && !ASE_ZERO_ADDR_RE.test(String(receipt.recipient)) ? receipt.recipient : null),
+    value: tx?.value ?? body.value,
+    nonce: tx?.nonce ?? body.nonce,
+    gasLimit: tx?.gasLimit ?? body.gasLimit,
+    maxFeePerGas: body.maxFeePerGas,
+    maxPriorityFeePerGas: body.maxPriorityFeePerGas,
+    gasUsed: receipt?.gasUsed ?? tx?.gasUsed,
+    success: receipt?.success,
+    blockHeight: receipt?.blockNumber ?? tx?.blockHeight,
+    receipt,
+    baseFeePerGas: baseFeePerGas ?? null,
+  };
+}
+
+function normalizeAsentumTx(raw: any, fallbackHash?: string): AsentumTxSummary {
+  const rc = raw?.receipt;
+  const statusRaw = raw?.status ?? rc?.status ?? (typeof raw?.success === 'boolean' ? raw.success : rc?.success);
+  let status: AsentumTxSummary['status'] = 'unknown';
+  if (statusRaw === true || statusRaw === 1 || statusRaw === 'success') status = 'success';
+  else if (statusRaw === false || statusRaw === 0 || statusRaw === 'failed') status = 'failed';
+  else if (statusRaw === 'pending' || isReceiptPending(raw)) status = 'pending';
+  const big = (v: any): string | null => { try { return v == null || typeof v === 'object' ? null : BigInt(v).toString(); } catch { return null; } };
+  const bigi = (v: any): bigint | null => { try { return v == null || typeof v === 'object' ? null : BigInt(v); } catch { return null; } };
+  let valueAse: string | null = null;
+  try { const v = pickField(raw, ['value']); if (v != null) valueAse = formatAse(BigInt(v)); } catch { }
+  const { method, kind, input } = asentumTxMethod(raw);
+  let feeAse: string | null = null;
+  try {
+    const f = pickField(raw, ['fee', 'feePaid', 'fees']);
+    if (f != null && typeof f !== 'object') feeAse = formatAse(BigInt(f));
+    else {
+      const used = bigi(pickField(raw, ['gasUsed']));
+      const maxFee = bigi(pickField(raw, ['maxFeePerGas', 'gasPrice']));
+      const base = bigi(raw?.baseFeePerGas);
+      const tip = bigi(pickField(raw, ['maxPriorityFeePerGas'])) ?? 0n;
+      if (used != null && maxFee != null) {
+        let price = maxFee;
+        if (base != null) { const eff = base + tip; price = eff < maxFee ? eff : maxFee; }
+        feeAse = formatAse(used * price);
+      }
+    }
+  } catch { }
+
+  const maxFeeBI = bigi(pickField(raw, ['maxFeePerGas', 'gasPrice']));
+  const tipBI    = bigi(pickField(raw, ['maxPriorityFeePerGas']));
+  const baseBI   = bigi(raw?.baseFeePerGas);
+  let effBI      = bigi(pickField(raw, ['effectiveGasPrice']));
+  if (effBI == null && baseBI != null && maxFeeBI != null) {
+    const cand = baseBI + (tipBI ?? 0n);
+    effBI = cand < maxFeeBI ? cand : maxFeeBI;
+  }
+
+  const to = raw?.to ?? raw?.recipient ?? raw?.body?.to ?? null;
+  return {
+    hash: raw?.hash ?? raw?.txHash ?? rc?.txHash ?? fallbackHash ?? '',
+    from: raw?.from ?? raw?.sender ?? rc?.sender ?? raw?.body?.from ?? null,
+    to: to && !ASE_ZERO_ADDR_RE.test(String(to)) ? to : null,
+    valueAse,
+    status,
+    blockHeight: toNumOrNull(raw?.blockHeight ?? raw?.blockNumber ?? raw?.height ?? rc?.blockNumber),
+    timestamp: toNumOrNull(raw?.timestamp),
+    nonce: big(pickField(raw, ['nonce'])),
+    method, kind, input,
+    gasLimit: big(pickField(raw, ['gasLimit', 'gas'])),
+    gasUsed: big(pickField(raw, ['gasUsed'])),
+    feeAse,
+    baseFeePerGas: baseBI != null ? baseBI.toString() : null,
+    maxFeePerGas: maxFeeBI != null ? maxFeeBI.toString() : null,
+    maxPriorityFeePerGas: tipBI != null ? tipBI.toString() : null,
+    effectiveGasPrice: effBI != null ? effBI.toString() : null,
+    raw,
+  };
+}
+
+async function withBlockBaseFee(client: any, raw: any): Promise<any> {
+  if (!raw || raw.baseFeePerGas != null) return raw;
+  const bn = toNumOrNull(raw?.blockHeight ?? raw?.blockNumber ?? raw?.receipt?.blockNumber);
+  if (bn == null) return raw;
+  try {
+    const blk = await client.getBlock(bn);
+    const bf = blk?.header?.baseFeePerGas ?? blk?.baseFeePerGas;
+    if (bf != null) return { ...raw, baseFeePerGas: bf };
+  } catch { }
+  return raw;
+}
+
+export async function getAsentumTransactionByHash(net: AsentumNetworkCfg, hash: string, rpc?: string): Promise<AsentumTxSummary> {
+  const cleanHash = hash.startsWith('0x') ? hash : `0x${hash}`;
+  const client: any = makeClient(net, rpc || net.rpcUrls[0]);
+  if (typeof client.getTransaction === 'function') {
+    try {
+      const raw = await client.getTransaction(cleanHash);
+      if (raw) return normalizeAsentumTx(await withBlockBaseFee(client, raw), cleanHash);
+    } catch { }
+  }
+
+  const receipt = await client.getReceipt(cleanHash);
+  if (!receipt) throw new Error(`Transaksi ${cleanHash} tidak ditemukan.`);
+  try {
+    const bn = toNumOrNull(receipt.blockNumber);
+    if (bn != null) {
+      const blk = await client.getBlock(bn);
+      const txs: any[] = blk?.transactions ?? [];
+      const rcs: any[] = blk?.receipts ?? [];
+      let idx = typeof receipt.txIndex === 'number' ? receipt.txIndex : -1;
+      if (idx < 0 || !txs[idx]) idx = rcs.findIndex(r => String(r?.txHash).toLowerCase() === cleanHash.toLowerCase());
+      if (idx >= 0 && txs[idx]) {
+        const merged = mergeAseTxReceipt(txs[idx], rcs[idx] ?? receipt, blk?.header?.baseFeePerGas);
+        merged.blockHeight = bn;
+        merged.timestamp = blk?.header?.timestamp ?? null;
+        return normalizeAsentumTx(merged, cleanHash);
+      }
+    }
+  } catch { }
+  return normalizeAsentumTx(mergeAseTxReceipt(null, receipt), cleanHash);
+}
+
+export async function getAsentumMempool(_net: AsentumNetworkCfg, _limit = 25, _rpc?: string): Promise<AsentumTxSummary[]> {
+  throw new Error(
+    'Node Asentum belum menyediakan daftar transaksi pending — API-nya cuma kasih JUMLAH mempool.' +
+    'Akan tersedia nanti'
+  );
+}
+
+export interface AsentumValidator {
+  address: string | null;
+  moniker: string | null;
+  power: string | null;
+  jailed: boolean | null;
+  missedBlocks: number | null;
+  raw: any;
+}
+
+function normalizeAsentumValidator(v: any): AsentumValidator {
+  const power = v?.power ?? v?.stake ?? v?.votingPower ?? v?.bonded ?? v?.weight;
+  const jailedRaw = v?.jailed ?? (v?.status != null ? /jail/i.test(String(v.status)) : null);
+  return {
+    address: v?.address ?? v?.operator ?? v?.validator ?? v?.id ?? null,
+    moniker: v?.moniker ?? v?.name ?? null,
+    power: power != null && typeof power !== 'object' ? String(power) : null,
+    jailed: jailedRaw == null ? null : Boolean(jailedRaw),
+    missedBlocks: toNumOrNull(v?.missedBlocks ?? v?.missed ?? v?.missed_blocks),
+    raw: v,
+  };
+}
+
+export async function getAsentumValidators(net: AsentumNetworkCfg, rpc?: string): Promise<AsentumValidator[]> {
+  let lastErr: any;
+  for (const r of (rpc ? [rpc] : net.rpcUrls)) {
+    try {
+      const client: any = makeClient(net, r);
+      let data: any;
+      if (typeof client?.getValidators === 'function') {
+        data = await client.getValidators();
+      } else {
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), 8000);
+        try {
+          const res = await fetch(`${r.replace(/\/+$/, '')}/validators`, { signal: ctrl.signal });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          data = await res.json();
+        } finally { clearTimeout(timer); }
+      }
+      const list: any[] = Array.isArray(data) ? data : (data?.validators ?? data?.data ?? data?.items ?? []);
+      if (!Array.isArray(list)) throw new Error('Format respons validator tidak dikenali.');
+      return list.map(normalizeAsentumValidator);
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error(`Tidak dapat mengambil daftar validator dari ${net.name}.`);
+}
+
+export function asentumAddrKey(a: string | null | undefined): string {
+  if (!a) return '';
+  const t = a.trim();
+  try { return (t.toLowerCase().startsWith('ase1') ? asentumBech32ToHex(t) : t).toLowerCase(); } catch { return t.toLowerCase(); }
+}
+
+async function pool<T, R>(items: T[], size: number, fn: (x: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(size, items.length) }, async () => {
+    while (i < items.length) { const idx = i++; out[idx] = await fn(items[idx]); }
+  }));
+  return out;
+}
+
+type AseLimiter = <T>(fn: () => Promise<T>) => Promise<T>;
+function makeLimiter(max: number): AseLimiter {
+  let active = 0;
+  const queue: (() => void)[] = [];
+  const next = () => { active--; queue.shift()?.(); };
+  return <T,>(fn: () => Promise<T>) => new Promise<T>((resolve, reject) => {
+    const start = () => { active++; fn().then(resolve, reject).finally(next); };
+    active < max ? start() : queue.push(start);
+  });
+}
+
+const ASE_TX_CACHE = new Map<string, AsentumTxSummary>();
+const ASE_BLOCK_CACHE = new Map<string, AsentumBlockSummary>();
+const aseCacheSet = <V,>(m: Map<string, V>, k: string, v: V) => { if (m.size > 6000) m.delete(m.keys().next().value as string); m.set(k, v); };
+
+export async function getAsentumBlockTxs(
+  net: AsentumNetworkCfg, block: AsentumBlockSummary, limit = 50, rpc?: string, limiter?: AseLimiter,
+): Promise<AsentumTxSummary[]> {
+  const rawTxs: any[] = block.raw?.transactions ?? block.raw?.txs ?? block.raw?.body?.transactions ?? [];
+  const stamp = (t: AsentumTxSummary): AsentumTxSummary => ({
+    ...t, blockHeight: t.blockHeight ?? block.height, timestamp: t.timestamp ?? block.timestamp,
+  });
+  if (Array.isArray(rawTxs) && rawTxs.length && typeof rawTxs[0] === 'object') {
+    const rcs: any[] = Array.isArray(block.raw?.receipts) ? block.raw.receipts : [];
+    const baseFee = block.raw?.header?.baseFeePerGas ?? null;
+    return rawTxs.slice(0, limit).map((t, i) => stamp(normalizeAsentumTx(mergeAseTxReceipt(t, rcs[i], baseFee))));
+  }
+  const hashes = block.txHashes.slice(0, limit);
+  const run: AseLimiter = limiter ?? (fn => fn());
+  const one = async (h: string): Promise<AsentumTxSummary> => {
+    const hit = ASE_TX_CACHE.get(h);
+    if (hit) return hit;
+    try {
+      const t = stamp(await run(() => getAsentumTransactionByHash(net, h, rpc)));
+      aseCacheSet(ASE_TX_CACHE, h, t);
+      return t;
+    } catch {
+      return stamp(normalizeAsentumTx({}, h));
+    }
+  };
+  return limiter ? Promise.all(hashes.map(one)) : pool(hashes, 6, one);
+}
+
+export interface AsentumAddressHistory {
+  txs: AsentumTxSummary[];
+  fromHeight: number;
+  toHeight: number;
+  scannedBlocks: number;
+  blocksWithTx: number;
+  complete: boolean;
+}
+
+export async function getAsentumAddressHistory(
+  net: AsentumNetworkCfg, address: string,
+  opts: {
+    depth?: number; maxResults?: number;
+    onProgress?: (scanned: number, total: number) => void;
+    onPartial?: (partial: AsentumAddressHistory) => void;
+    shouldCancel?: () => boolean;
+  } = {},
+): Promise<AsentumAddressHistory> {
+  const depth = Math.max(1, opts.depth ?? 200);
+  const maxResults = opts.maxResults ?? 100;
+  const me = asentumAddrKey(address);
+  const status = await getAsentumChainStatus(net);
+  if (status.height == null) throw new Error('Tinggi block terkini tidak diketahui.');
+  const top = status.height;
+  const bottom = Math.max(0, top - depth + 1);
+
+  const client = makeClient(net, status.rpc);
+  const { fn } = assertAsentumClientMethod(client, ['getBlockByHeight', 'getBlock']);
+  const limiter = makeLimiter(16);
+  const found: AsentumTxSummary[] = [];
+  let next = top, scanned = 0, withTx = 0, failed = 0, cancelled = false, stopped = false;
+
+  const snapshot = (): AsentumAddressHistory => ({
+    txs: [...found].sort((x, y) => (y.blockHeight ?? 0) - (x.blockHeight ?? 0)).slice(0, maxResults),
+    fromHeight: bottom, toHeight: top,
+    scannedBlocks: scanned, blocksWithTx: withTx,
+    complete: !cancelled && failed === 0 && scanned === top - bottom + 1,
+  });
+
+  const loadBlock = async (h: number): Promise<AsentumBlockSummary | null> => {
+    const key = `${net.id}:${h}`;
+    const hit = h < top ? ASE_BLOCK_CACHE.get(key) : undefined;
+    if (hit) return hit;
+    try {
+      const b = normalizeAsentumBlock(await limiter(() => fn(h)), h);
+      if (h < top) aseCacheSet(ASE_BLOCK_CACHE, key, b);
+      return b;
+    } catch { failed++; return null; }
+  };
+
+  const worker = async () => {
+    while (!stopped) {
+      if (opts.shouldCancel?.()) { cancelled = true; stopped = true; return; }
+      const h = next--;
+      if (h < bottom) return;
+      const b = await loadBlock(h);
+      scanned++;
+      if (b && (b.txHashes.length || (b.txCount ?? 0) > 0)) {
+        withTx++;
+        const txs = await getAsentumBlockTxs(net, b, 100, status.rpc, limiter);
+        const mine = txs.filter(t => asentumAddrKey(t.from) === me || asentumAddrKey(t.to) === me);
+        if (mine.length) {
+          found.push(...mine);
+          if (found.length >= maxResults) stopped = true;
+          opts.onPartial?.(snapshot());
+        }
+      }
+      if (scanned % 10 === 0 || scanned === top - bottom + 1) opts.onProgress?.(scanned, top - bottom + 1);
+    }
+  };
+  await Promise.all(Array.from({ length: 16 }, worker));
+  opts.onProgress?.(scanned, top - bottom + 1);
+  const res = snapshot();
+  if (stopped && !cancelled) res.complete = failed === 0;
+  return res;
+}
+
+export interface AsentumAccountInfo {
+  nonce: string | null;
+  isContract: boolean;
+  token: AsentumTokenInfo | null;
+}
+
+export async function getAsentumAccountInfo(net: AsentumNetworkCfg, address: string, rpc?: string): Promise<AsentumAccountInfo> {
+  const client: any = makeClient(net, rpc || net.rpcUrls[0]);
+  const hex = toAsentumHex(address);
+  const [nonceRaw, source] = await Promise.all([
+    Promise.resolve().then(() => client.getNonce(hex)).catch(() => null),
+    Promise.resolve().then(() => client.getContractSource(hex)).catch(() => null),
+  ]);
+  const isContract = !!source;
+  let token: AsentumTokenInfo | null = null;
+  if (isContract) {
+    try {
+      const t = await readAsentumToken(net, hex, undefined, rpc);
+      if (t.symbol || t.name || t.totalSupplyRaw) token = t;
+    } catch { }
+  }
+  return { nonce: nonceRaw == null ? null : String(nonceRaw), isContract, token };
+}
+
+export interface AsentumAddressTxPage {
+  txs: AsentumTxSummary[];
+  total: number;
+  page: number;
+  size: number;
+}
+
+export async function getAsentumAddressTxs(
+  net: AsentumNetworkCfg, address: string,
+  opts: { page?: number; size?: number; role?: 'from' | 'to' | 'created' | null } = {},
+): Promise<AsentumAddressTxPage> {
+  const base = net.indexerUrl;
+  if (!base) throw new Error(`Indexer tidak dikonfigurasi untuk ${net.name}.`);
+  const page = Math.max(1, opts.page ?? 1);
+  const size = Math.min(100, Math.max(1, opts.size ?? 25));
+  const hex = toAsentumHex(address).toLowerCase();
+  const qs = new URLSearchParams({ page: String(page), size: String(size) });
+  if (opts.role) qs.set('role', opts.role);
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 12000);
+  let res: Response;
+  try {
+    res = await fetch(`${base.replace(/\/+$/, '')}/address/${hex}/txs?${qs}`, { signal: ctrl.signal, headers: { Accept: 'application/json' } });
+  } catch (e: any) {
+    throw new Error(e?.name === 'AbortError' ? 'timeout' : `Failed to fetch indexer (${e?.message || 'network/CORS'})`);
+  } finally { clearTimeout(timer); }
+  const data: any = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || `Indexer HTTP ${res.status}`);
+
+  const rows: any[] = Array.isArray(data?.rows) ? data.rows : [];
+  const txs = rows.map((r): AsentumTxSummary => {
+    const created = r.contract_created ? String(r.contract_created) : null;
+    const kind: AsentumTxSummary['kind'] = created ? 'deploy' : r.has_input ? 'call' : 'transfer';
+    let valueAse: string | null = null;
+    try { if (r.value != null) valueAse = formatAse(BigInt(r.value)); } catch { }
+    const st = r.status === 1 || r.status === '1' ? 'success' : r.status === 0 || r.status === '0' ? 'failed' : 'pending';
+    return {
+      hash: String(r.hash || ''), from: r.from_addr ?? null, to: r.to_addr ?? created,
+      valueAse, status: st, blockHeight: toNumOrNull(r.block_number), timestamp: toNumOrNull(r.timestamp),
+      nonce: null,
+      method: kind === 'deploy' ? 'Deploy Contract' : kind === 'call' ? 'Contract Call' : 'Transfer',
+      kind, input: null, gasLimit: null,
+      gasUsed: r.gas_used != null ? String(r.gas_used) : null,
+      feeAse: null,
+      baseFeePerGas: null, maxFeePerGas: null, maxPriorityFeePerGas: null, effectiveGasPrice: null,
+      raw: r,
+    };
+  });
+  return { txs, total: Number(data?.total) || txs.length, page, size };
+}
+
+export type AsentumActivityRange = '24h' | '7d' | '30d';
+
+export interface AsentumActivityBucket {
+  start: number;
+  end: number;
+  txCount: number;
+  blocks: number;
+  exact: boolean;
+}
+
+export interface AsentumTxActivity {
+  range: AsentumActivityRange;
+  stepSeconds: number;
+  buckets: AsentumActivityBucket[];
+  totalTx: number;
+  peakIndex: number;
+  exact: boolean;
+  latestHeight: number;
+  latestBlockTimestamp: number | null;
+  fetchedAt: number;
+}
+
+const ASE_ACTIVITY_CFG: Record<AsentumActivityRange, { buckets: number; step: number }> = {
+  '24h': { buckets: 24, step: 3600 },
+  '7d': { buckets: 7, step: 86400 },
+  '30d': { buckets: 30, step: 86400 },
+};
+const ASE_ACTIVITY_SAMPLES = 10;
+const ASE_ACTIVITY_TTL_MS = 60_000;
+const ASE_ACTIVITY_RESULTS = new Map<string, AsentumTxActivity>();
+const ASE_ACTIVITY_BLOCKS = new Map<string, { ts: number | null; tx: number | null }>();
+
+function aseToSeconds(ts: number): number {
+  return ts < 2e10 ? ts : Math.floor(ts / 1000);
+}
+
+export async function getAsentumTxActivity(
+  net: AsentumNetworkCfg, range: AsentumActivityRange,
+  opts: { rpc?: string; force?: boolean; shouldCancel?: () => boolean } = {},
+): Promise<AsentumTxActivity> {
+  const cacheKey = `${net.id}:${range}`;
+  const cached = ASE_ACTIVITY_RESULTS.get(cacheKey);
+  if (!opts.force && cached && Date.now() - cached.fetchedAt < ASE_ACTIVITY_TTL_MS) return cached;
+
+  const cfg = ASE_ACTIVITY_CFG[range];
+  const cancelCheck = () => { if (opts.shouldCancel?.()) throw new Error('cancelled'); };
+
+  const status = await getAsentumChainStatus(net, opts.rpc);
+  if (status.height == null) throw new Error('Tinggi block terkini tidak diketahui.');
+  const top = status.height;
+  const client = makeClient(net, status.rpc);
+  const { fn } = assertAsentumClientMethod(client, ['getBlockByHeight', 'getBlock']);
+  const limiter = makeLimiter(12);
+
+  const inflight = new Map<number, Promise<{ ts: number | null; tx: number | null }>>();
+  const getBlk = (h: number): Promise<{ ts: number | null; tx: number | null }> => {
+    const key = `${net.id}:${h}`;
+    const hit = h < top ? ASE_ACTIVITY_BLOCKS.get(key) : undefined;
+    if (hit) return Promise.resolve(hit);
+    const pending = inflight.get(h);
+    if (pending) return pending;
+    const p = limiter(async () => {
+      try {
+        const b = normalizeAsentumBlock(await fn(h), h);
+        const out = { ts: b.timestamp != null ? aseToSeconds(b.timestamp) : null, tx: b.txCount };
+        if (h < top) aseCacheSet(ASE_ACTIVITY_BLOCKS, key, out);
+        return out;
+      } catch {
+        return { ts: null, tx: null };
+      }
+    });
+    inflight.set(h, p);
+    return p;
+  };
+
+  const topBlk = await getBlk(top);
+  const topTs = topBlk.ts ?? Math.floor(Date.now() / 1000);
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const alignedEnd = Math.floor(nowSec / cfg.step) * cfg.step + cfg.step;
+  const firstStart = alignedEnd - cfg.buckets * cfg.step;
+
+  let blockTime = 1;
+  if (top > 0) {
+    const k = Math.min(top, 500);
+    const earlier = await getBlk(top - k);
+    if (earlier.ts != null && topTs > earlier.ts) blockTime = (topTs - earlier.ts) / k;
+  }
+
+  const firstHeightAtOrAfter = async (t: number): Promise<number> => {
+    if (t > topTs) return top + 1;
+    let lo = -1;
+    let hi = top;
+    let guess = Math.round(top - (topTs - t) / blockTime);
+    for (let i = 0; i < 40 && hi - lo > 1; i++) {
+      let h = guess;
+      if (!(h > lo && h < hi)) h = Math.floor((lo + hi) / 2);
+      const blk = await getBlk(h);
+      if (blk.ts == null) {
+        lo = h;
+        guess = Math.floor((lo + hi) / 2);
+        continue;
+      }
+      if (blk.ts >= t) hi = h; else lo = h;
+      guess = i % 4 === 3 ? Math.floor((lo + hi) / 2) : h + Math.round((t - blk.ts) / blockTime);
+    }
+    return hi;
+  };
+
+  cancelCheck();
+  const edgeTimes = Array.from({ length: cfg.buckets + 1 }, (_, i) => firstStart + i * cfg.step);
+  const edgeHeights = await Promise.all(edgeTimes.map(firstHeightAtOrAfter));
+  cancelCheck();
+
+  const buckets: AsentumActivityBucket[] = await Promise.all(edgeTimes.slice(0, -1).map(async (start, i) => {
+    const h0 = edgeHeights[i];
+    const h1 = Math.min(edgeHeights[i + 1], top + 1);
+    const blocks = Math.max(0, h1 - h0);
+    if (blocks === 0) return { start, end: start + cfg.step, txCount: 0, blocks: 0, exact: true };
+
+    const heights: number[] = [];
+    if (blocks <= ASE_ACTIVITY_SAMPLES) {
+      for (let h = h0; h < h1; h++) heights.push(h);
+    } else {
+      for (let j = 0; j < ASE_ACTIVITY_SAMPLES; j++) heights.push(h0 + Math.floor(((j + 0.5) * blocks) / ASE_ACTIVITY_SAMPLES));
+    }
+    const got = await Promise.all(heights.map(getBlk));
+    const counts = got.map(g => g.tx).filter((x): x is number => x != null);
+    const allRead = counts.length === heights.length;
+    if (blocks <= ASE_ACTIVITY_SAMPLES) {
+      return { start, end: start + cfg.step, txCount: counts.reduce((x, y) => x + y, 0), blocks, exact: allRead };
+    }
+    const avg = counts.length ? counts.reduce((x, y) => x + y, 0) / counts.length : 0;
+    return { start, end: start + cfg.step, txCount: Math.round(avg * blocks), blocks, exact: false };
+  }));
+  cancelCheck();
+
+  let peakIndex = 0;
+  buckets.forEach((b, i) => { if (b.txCount > buckets[peakIndex].txCount) peakIndex = i; });
+
+  const result: AsentumTxActivity = {
+    range,
+    stepSeconds: cfg.step,
+    buckets,
+    totalTx: buckets.reduce((x, b) => x + b.txCount, 0),
+    peakIndex,
+    exact: buckets.every(b => b.exact),
+    latestHeight: top,
+    latestBlockTimestamp: topBlk.ts,
+    fetchedAt: Date.now(),
+  };
+  ASE_ACTIVITY_RESULTS.set(cacheKey, result);
+  return result;
 }
