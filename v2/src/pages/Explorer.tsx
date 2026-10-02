@@ -30,7 +30,7 @@ import {
   FaSearch, FaCube, FaExchangeAlt, FaWallet, FaFileCode, FaCopy,
   FaCheckCircle, FaTimesCircle, FaClock, FaSpinner, FaExternalLinkAlt,
   FaGlobe, FaLayerGroup, FaGasPump, FaArrowRight, FaChevronDown, FaChevronUp,
-  FaExclamationTriangle, FaCompass, FaCoins, FaHistory, FaListUl,
+  FaExclamationTriangle, FaCoins, FaHistory, FaListUl,
   FaUsers, FaTag, FaChartLine, FaCog, FaSyncAlt, FaPlay, FaBolt,
   FaPlug, FaFileImport, FaUnlink, FaPlus, FaShieldAlt, FaChartBar,
 } from 'react-icons/fa';
@@ -117,6 +117,16 @@ interface LatestBlock {
   timestamp: number;
   txCount: number;
   miner: string;
+}
+
+interface LatestTx {
+  hash: string;
+  from: string;
+  to: string | null;
+  value: string;
+  method: string;
+  blockNumber: number;
+  timestamp: number;
 }
 
 interface RecentTx {
@@ -257,6 +267,133 @@ const AsentumLogo: React.FC<{ size?: number; mono?: boolean; style?: React.CSSPr
   );
 };
 
+// ── RPC EVM dengan failover ─────────────────────────────────────────────
+// Dulu provider cuma pakai `rpcUrls[0]`. RPC publik Ethereum/Base (mis.
+// mainnet.base.org) gampang kena rate-limit / timeout / CORS, apalagi halaman
+// ini nembak banyak request paralel sekaligus (latest blocks, gas tracker,
+// feeHistory) — begitu satu RPC itu gagal, semua panel jadi kosong.
+// Sekarang tiap request dicoba ke RPC berikutnya kalau yang pertama gagal.
+const EVM_FALLBACK_RPCS: Record<number, string[]> = {
+  1:    ['https://ethereum-rpc.publicnode.com', 'https://1rpc.io/eth'],
+  8453: ['https://base-rpc.publicnode.com', 'https://1rpc.io/base'],
+};
+
+function buildEvmRpcList(net: { chainId: number; rpcUrls?: string[] }): string[] {
+  const all = [...(net.rpcUrls ?? []), ...(EVM_FALLBACK_RPCS[Number(net.chainId)] ?? [])]
+    .map(u => String(u || '').trim())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  return all.filter(u => { const k = u.replace(/\/+$/, '').toLowerCase(); if (seen.has(k)) return false; seen.add(k); return true; });
+}
+
+// Error "definitif" dari node (revert, nonce salah, saldo kurang, dll) tidak
+// ada gunanya dicoba ulang ke RPC lain — langsung lempar ke pemanggil.
+function isDefinitiveRpcError(method: string, e: any): boolean {
+  if (!/^eth_(call|estimateGas|sendRawTransaction)$/.test(method)) return false;
+  const msg = `${e?.error?.message ?? ''} ${e?.message ?? ''} ${typeof e?.body === 'string' ? e.body : ''}`;
+  return /revert|nonce|insufficient|underpriced|already known|execution|invalid sender|intrinsic gas/i.test(msg);
+}
+
+// Ambil pesan error "dalam" dari error ethers. Error "processing response error"
+// itu cuma pembungkus: node-nya sebenarnya membalas JSON-RPC error (mis.
+// "over rate limit", "method not supported") yang isinya ada di `error.message`
+// atau di `body`.
+function rpcInnerMessage(e: any): string {
+  let m: any = e?.error?.message || e?.reason || '';
+  if (!m && typeof e?.body === 'string') {
+    try {
+      const j = JSON.parse(e.body);
+      m = j?.error?.message || (typeof j?.error === 'string' ? j.error : '');
+    } catch { m = e.body.slice(0, 120); }
+  }
+  if (!m) m = e?.message || String(e ?? '');
+  return String(m).replace(/\s*\([^]*$/, '').trim().slice(0, 140) || 'error tidak diketahui';
+}
+
+class MultiRpcProvider extends ethers.providers.StaticJsonRpcProvider {
+  private readonly _rpcEps: ethers.providers.StaticJsonRpcProvider[];
+  private _rpcBest = 0;
+  // Batasi request paralel ke RPC publik supaya tidak langsung kena rate-limit.
+  private _rpcActive = 0;
+  private readonly _rpcQueue: (() => void)[] = [];
+
+  constructor(urls: string[], net: { chainId: number; name: string }) {
+    super(urls[0], net);
+    this._rpcEps = urls.map(u => new ethers.providers.StaticJsonRpcProvider(u, net));
+  }
+
+  private async _rpcAcquire(): Promise<void> {
+    if (this._rpcActive < 4) { this._rpcActive++; return; }
+    await new Promise<void>(r => this._rpcQueue.push(r));
+  }
+  private _rpcRelease(): void {
+    const next = this._rpcQueue.shift();
+    if (next) next(); else this._rpcActive--;
+  }
+
+  async send(method: string, params: Array<any>): Promise<any> {
+    await this._rpcAcquire();
+    try { return await this._sendWithFailover(method, params); }
+    finally { this._rpcRelease(); }
+  }
+
+  private async _sendWithFailover(method: string, params: Array<any>): Promise<any> {
+    const n = this._rpcEps.length;
+    const attempts: { host: string; msg: string }[] = [];
+    for (let i = 0; i < n; i++) {
+      const idx = (this._rpcBest + i) % n;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const res = await Promise.race([
+          this._rpcEps[idx].send(method, params),
+          new Promise<never>((_, rej) => { timer = setTimeout(() => rej(Object.assign(new Error('timeout'), { code: 'TIMEOUT' })), 10000); }),
+        ]);
+        this._rpcBest = idx;
+        return res;
+      } catch (e: any) {
+        if (isDefinitiveRpcError(method, e)) throw e;
+        let host = this._rpcEps[idx].connection.url;
+        try { host = new URL(host).host; } catch { /* pakai url mentah */ }
+        attempts.push({ host, msg: rpcInnerMessage(e) });
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    const err: any = new Error(`Semua RPC gagal untuk ${method}: ${attempts.map(a => `${a.host} → ${a.msg}`).join(' | ')}`);
+    err.code = 'SERVER_ERROR';
+    err.rpcAttempts = attempts;
+    throw err;
+  }
+}
+
+// ── Logo EVM Explorer ───────────────────────────────────────────────────
+// Oktahedron bergaya Ethereum (puncak atas + bawah, garis tengah).
+// `mono` = currentColor supaya ikut warna teks tombol aktif/nonaktif.
+const EvmLogo: React.FC<{ size?: number; mono?: boolean; style?: React.CSSProperties }> = ({ size = 16, mono = false, style }) => {
+  const c = mono ? 'currentColor' : '#627EEA';
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" style={{ flexShrink: 0, ...style }} role="img" aria-label="EVM">
+      <path d="M16 2.5 6.5 16.4 16 22l9.5-5.6L16 2.5Z" stroke={c} strokeWidth="2.2" strokeLinejoin="round" />
+      <path d="M6.5 19.4 16 29.5l9.5-10.1L16 25l-9.5-5.6Z" stroke={c} strokeWidth="2.2" strokeLinejoin="round" />
+      <path d="M6.5 16.4 16 12l9.5 4.4" stroke={c} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+};
+
+// ── Logo Gram Explorer ──────────────────────────────────────────────────
+// Berlian (diamond) bergaya TON dengan garis tengah. `mono` = currentColor
+// supaya ikut warna teks tombol aktif/nonaktif.
+const GramLogo: React.FC<{ size?: number; mono?: boolean; style?: React.CSSProperties }> = ({ size = 16, mono = false, style }) => {
+  const c = mono ? 'currentColor' : '#0098EA';
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" style={{ flexShrink: 0, ...style }} role="img" aria-label="Gram">
+      <path d="M6.5 6.5h19a1.6 1.6 0 0 1 1.4 2.4L17.4 26.1a1.6 1.6 0 0 1-2.8 0L5.1 8.9a1.6 1.6 0 0 1 1.4-2.4Z" stroke={c} strokeWidth="2.2" strokeLinejoin="round" />
+      <path d="M16 8v18" stroke={c} strokeWidth="2.2" strokeLinecap="round" />
+      <path d="M7 9.5 16 22l9-12.5" stroke={c} strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+};
+
 // Timestamp Asentum bisa detik atau milidetik → selalu jadikan detik.
 function aseTs(ts: number | null | undefined): number | null {
   if (ts == null) return null;
@@ -310,6 +447,9 @@ function isRateLimitError(e: any): boolean {
 // version=providers/5.8.0)" jadi cukup "Gagal konek ke RPC.". Kalau gak kenal polanya,
 // balik ke pesan fallback yang sudah manusiawi (bukan raw error).
 function friendlyRpcError(e: any, fallback: string): string {
+  if (Array.isArray(e?.rpcAttempts) && e.rpcAttempts.length > 0) {
+    return `Semua RPC gagal — ${e.rpcAttempts.map((a: { host: string; msg: string }) => `${a.host}: ${a.msg}`).join(' · ')}`;
+  }
   const raw = String(e?.error?.message || e?.message || e || '');
   if (/could not detect network|no.?network|network.?error/i.test(raw)) {
     return 'Gagal konek ke RPC. Coba ganti RPC atau network lain.';
@@ -322,6 +462,9 @@ function friendlyRpcError(e: any, fallback: string): string {
   }
   if (/failed to fetch|networkerror when attempting to fetch|load failed/i.test(raw)) {
     return 'Gagal konek ke server. Cek koneksi internet kamu.';
+  }
+  if (/processing response error|bad response|missing response|server_error/i.test(`${raw} ${e?.message ?? ''} ${e?.code ?? ''}`)) {
+    return `RPC membalas dengan error: ${rpcInnerMessage(e)}. Coba ganti RPC atau network.`;
   }
   if (/insufficient funds/i.test(raw)) {
     return 'Saldo tidak cukup untuk bayar gas.';
@@ -1596,6 +1739,10 @@ export const Explorer: React.FC = () => {
   const [txRevertLoading, setTxRevertLoading] = useState(false);
   const [latestBlocks, setLatestBlocks] = useState<LatestBlock[]>([]);
   const [latestLoading, setLatestLoading] = useState(false);
+  const [latestError, setLatestError] = useState<string | null>(null);
+  const [latestTxs, setLatestTxs] = useState<LatestTx[]>([]);
+  const [latestTxsLoading, setLatestTxsLoading] = useState(false);
+  const [latestTxsError, setLatestTxsError] = useState<string | null>(null);
   const [nativePriceUsd, setNativePriceUsd] = useState<number | null>(null);
 
   interface GasTier { gwei: number; maxFeePerGas?: string; maxPriorityFeePerGas?: string }
@@ -2402,7 +2549,9 @@ export const Explorer: React.FC = () => {
     () => networks.find(n => n.id === networkId) ?? networks[0] ?? DEFAULT_NETWORKS[0],
     [networks, networkId]
   );
-  const rpcUrl = network.rpcUrls[0];
+  // Daftar RPC = RPC yang dikonfigurasi + fallback publik bawaan (per chainId).
+  const rpcUrls = useMemo(() => buildEvmRpcList(network), [network]);
+  const rpcKey = rpcUrls.join('|');
 
   // Provider di-cache 1 instance per rpcUrl+chainId (bukan dibikin baru tiap panggilan)
   // dan chainId-nya dikasih tau di depan (network statis), supaya ethers gak perlu
@@ -2412,8 +2561,9 @@ export const Explorer: React.FC = () => {
   // banyak request paralel (balance, gas tracker, latest blocks, dll) tiap-tiap bikin
   // provider baru sendiri-sendiri.
   const provider = useMemo(
-    () => new ethers.providers.JsonRpcProvider(rpcUrl, { chainId: network.chainId, name: network.name || 'unknown' }),
-    [rpcUrl, network.chainId, network.name]
+    () => new MultiRpcProvider(rpcUrls, { chainId: Number(network.chainId), name: network.name || 'unknown' }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rpcKey, network.chainId, network.name]
   );
 
   const getProvider = useCallback(() => provider, [provider]);
@@ -2430,22 +2580,63 @@ export const Explorer: React.FC = () => {
           .filter(Boolean)
           .map(b => ({ number: b!.number, timestamp: b!.timestamp, txCount: b!.transactions.length, miner: b!.miner }))
       );
-    } catch {
-      setLatestBlocks([]);
+      setLatestError(null);
+    } catch (e: any) {
+      setLatestError(friendlyRpcError(e, 'Gagal mengambil block terbaru dari RPC.'));
     } finally {
       setLatestLoading(false);
     }
   }, [getProvider]);
 
+  // Transaksi terbaru: ambil block terakhir lengkap dengan isi transaksinya.
+  // Pakai eth_getBlockByNumber mentah (bukan provider.getBlockWithTransactions)
+  // karena ethers v5 bisa gagal mem-parse tx khusus L2 — mis. deposit tx (0x7e)
+  // di Base yang tidak punya signature. Tx sistem itu juga dilewati di feed.
+  const loadLatestTxs = useCallback(async () => {
+    setLatestTxsLoading(true);
+    try {
+      const provider = getProvider();
+      const head = await provider.getBlockNumber();
+      const out: LatestTx[] = [];
+      for (let n = head; n >= 0 && n > head - 5 && out.length < 10; n--) {
+        const blk: any = await provider.send('eth_getBlockByNumber', [ethers.utils.hexValue(n), true]);
+        if (!blk || !Array.isArray(blk.transactions)) continue;
+        const ts = parseInt(blk.timestamp, 16) || 0;
+        for (const t of [...blk.transactions].reverse()) {
+          if (typeof t !== 'object' || !t?.hash) continue;
+          if (String(t.type).toLowerCase() === '0x7e') continue;
+          const input: string = typeof t.input === 'string' ? t.input : '0x';
+          const selector = input.length >= 10 ? input.slice(2, 10).toLowerCase() : null;
+          const method = !t.to ? 'Deploy' : !selector ? 'Transfer' : (KNOWN_4BYTE[selector] ?? `0x${selector}`);
+          let value = '0';
+          try { value = ethers.utils.formatEther(ethers.BigNumber.from(t.value ?? '0x0')); } catch { /* biarkan 0 */ }
+          out.push({ hash: t.hash, from: t.from, to: t.to ?? null, value, method: String(method), blockNumber: n, timestamp: ts });
+          if (out.length >= 10) break;
+        }
+      }
+      setLatestTxs(out);
+      setLatestTxsError(null);
+    } catch (e: any) {
+      setLatestTxsError(friendlyRpcError(e, 'Gagal mengambil transaksi terbaru dari RPC.'));
+    } finally {
+      setLatestTxsLoading(false);
+    }
+  }, [getProvider]);
+
   useEffect(() => {
+    setLatestBlocks([]);
+    setLatestError(null);
+    setLatestTxs([]);
+    setLatestTxsError(null);
     loadLatestBlocks();
+    loadLatestTxs();
   }, [networkId]);
 
   useEffect(() => {
     if (!refreshSettings.enabled) return;
-    const id = setInterval(() => { loadLatestBlocks(); }, refreshSettings.intervalSec * 1000);
+    const id = setInterval(() => { loadLatestBlocks(); loadLatestTxs(); }, refreshSettings.intervalSec * 1000);
     return () => clearInterval(id);
-  }, [refreshSettings.enabled, refreshSettings.intervalSec, loadLatestBlocks]);
+  }, [refreshSettings.enabled, refreshSettings.intervalSec, loadLatestBlocks, loadLatestTxs]);
 
   const FEE_HISTORY_BLOCK_COUNT = 20;
   const TIER_PERCENTILES = [25, 50, 90] as const;
@@ -2951,8 +3142,18 @@ export const Explorer: React.FC = () => {
       setChain('ase');
       handleAseSearch(val);
     } else if (val.startsWith('0x')) {
-      setChain('evm');
-      handleSearch(val);
+      // Sama seperti angka block di bawah: "0x..." (tx hash / block hash /
+      // address) itu AMBIGU antara EVM dan ASE — handleAseSearch() sendiri
+      // navigate ke `/explorer/tx/0x<64hex>` dan `/explorer/block/0x<64hex>`,
+      // jadi effect ini ke-trigger ulang dan dulu langsung MAKSA chain ke
+      // 'evm' → hasil search tx hash Asentum malah dicari di RPC EVM.
+      // Fix: kalau lagi di tab ASE, tetap di ASE.
+      if (chainRef.current === 'ase') {
+        handleAseSearch(val);
+      } else {
+        setChain('evm');
+        handleSearch(val);
+      }
     } else if (urlType === 'block' && isBlockNumber(val)) {
       // Angka block polos itu AMBIGU: baik EVM (`openBlock`/`handleSearch`)
       // maupun ASE (`openAseBlock`) sama-sama navigate ke
@@ -2999,6 +3200,17 @@ export const Explorer: React.FC = () => {
     </div>
   );
 
+  // Address yang bisa diklik → langsung jalankan pencarian address itu.
+  // stopPropagation supaya klik address di dalam baris tx tidak ikut membuka
+  // detail tx (onClick baris).
+  const AddrLink = ({ addr, front = 6, back = 4 }: { addr: string; front?: number; back?: number }) => (
+    <span
+      title={`Cari ${addr}`}
+      onClick={e => { e.stopPropagation(); handleSearch(addr); }}
+      style={{ color: COLORS.accent, cursor: 'pointer', textDecoration: 'underline dotted' }}
+    >{shortHash(addr, front, back)}</span>
+  );
+
   const SourceTag = ({ source }: { source: DataSource }) => {
     if (!source) return null;
     const isBlockscout = source === 'blockscout';
@@ -3035,8 +3247,10 @@ export const Explorer: React.FC = () => {
         <h1>
           {chain === 'ase'
             ? <AsentumLogo size={26} style={{ marginRight: '10px', verticalAlign: 'middle' }} />
-            : <FaCompass style={{ marginRight: '8px' }} />}
-          {chain === 'ase' ? 'Asentum Explorer' : 'Explorer'}
+            : chain === 'gram'
+              ? <GramLogo size={26} style={{ marginRight: '10px', verticalAlign: 'middle' }} />
+              : <EvmLogo size={26} style={{ marginRight: '10px', verticalAlign: 'middle' }} />}
+          {chain === 'ase' ? 'Asentum Explorer' : chain === 'gram' ? 'Gram Explorer' : 'EVM Explorer'}
         </h1>
       </header>
       <Navbar />
@@ -3048,13 +3262,13 @@ export const Explorer: React.FC = () => {
           background: chain === 'evm' ? COLORS.accent : 'none',
           color: chain === 'evm' ? '#000' : '#888',
           border: `1px solid ${chain === 'evm' ? COLORS.accent : COLORS.border}`,
-        }}><FaGlobe style={{ marginRight: '6px' }} />EVM</button>
+        }}><EvmLogo size={14} mono style={{ marginRight: '6px', verticalAlign: 'text-bottom' }} />EVM</button>
         <button type="button" onClick={() => setChain('gram')} style={{
           flex: 1, padding: '9px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer',
           background: chain === 'gram' ? '#0098EA' : 'none',
           color: chain === 'gram' ? '#fff' : '#888',
           border: `1px solid ${chain === 'gram' ? '#0098EA' : COLORS.border}`,
-        }}><FaCompass style={{ marginRight: '6px' }} />GRAM</button>
+        }}><GramLogo size={14} mono style={{ marginRight: '6px', verticalAlign: 'text-bottom' }} />GRAM</button>
         <button type="button" onClick={() => setChain('ase')} style={{
           flex: 1, padding: '9px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer',
           background: chain === 'ase' ? '#836EFD' : 'none',
@@ -3471,7 +3685,7 @@ export const Explorer: React.FC = () => {
                         }}>
                           <span style={{ color: COLORS.accent, fontFamily: 'monospace', fontSize: '11px' }}>{shortHash(t.hash, 8, 6)}</span>
                           <span style={{ color: COLORS.muted, fontFamily: 'monospace', fontSize: '11px' }}>
-                            {shortHash(t.from, 6, 4)} <FaArrowRight size={9} style={{ margin: '0 4px' }} /> {shortHash(t.to, 6, 4)}
+                            <AddrLink addr={t.from} /> <FaArrowRight size={9} style={{ margin: '0 4px' }} /> <AddrLink addr={t.to} />
                           </span>
                           <span style={{ marginLeft: 'auto', fontSize: '11px', fontFamily: 'monospace', color: COLORS.text }}>
                             {t.isNft ? t.amount : `${parseFloat(t.amount || '0').toLocaleString('en-US', { maximumFractionDigits: 6 })} ${tokenInfo.symbol ?? ''}`}
@@ -3671,9 +3885,9 @@ export const Explorer: React.FC = () => {
           )}
           {txResult.transactionIndex != null && <Row label="Position in Block" value={txResult.transactionIndex} />}
           {txResult.timestamp && <Row label="Timestamp" value={`${timeAgo(txResult.timestamp)} (${new Date(txResult.timestamp * 1000).toLocaleString('id-ID')})`} mono={false} />}
-          <Row label="From" value={shortHash(txResult.from, 10, 8)} copy={txResult.from} link={`${network.explorerUrl}/address/${txResult.from}`} />
+          <Row label="From" value={<AddrLink addr={txResult.from} front={10} back={8} />} copy={txResult.from} link={`${network.explorerUrl}/address/${txResult.from}`} />
           <Row label="To" value={txResult.to
-            ? <><FaArrowRight size={10} style={{ marginRight: 4 }} />{shortHash(txResult.to, 10, 8)}</>
+            ? <><FaArrowRight size={10} style={{ marginRight: 4 }} /><AddrLink addr={txResult.to} front={10} back={8} /></>
             : <span style={{ color: COLORS.amber }}>Contract Creation</span>}
             copy={txResult.to || undefined} link={txResult.to ? `${network.explorerUrl}/address/${txResult.to}` : undefined} />
           <Row label="Value" value={`${parseFloat(txResult.value).toFixed(6)} ${network.symbol}`} />
@@ -3923,7 +4137,7 @@ export const Explorer: React.FC = () => {
                   }}>
                     <span style={{ color: COLORS.accent, fontFamily: 'monospace' }}>{shortHash(t.hash, 10, 6)}</span>
                     <span style={{ color: COLORS.muted, fontFamily: 'monospace' }}>
-                      {shortHash(t.from, 6, 4)} <FaArrowRight size={9} style={{ margin: '0 4px' }} /> {t.to ? shortHash(t.to, 6, 4) : 'Contract Creation'}
+                      <AddrLink addr={t.from} /> <FaArrowRight size={9} style={{ margin: '0 4px' }} /> {t.to ? <AddrLink addr={t.to} /> : 'Contract Creation'}
                     </span>
                     <span style={{ color: COLORS.text, fontFamily: 'monospace' }}>{parseFloat(t.value).toFixed(4)} {network.symbol}</span>
                   </div>
@@ -3973,7 +4187,7 @@ export const Explorer: React.FC = () => {
         </div>
         {latestBlocks.length === 0 ? (
           <p style={{ color: '#333', fontSize: '12px', textAlign: 'center', padding: '16px 0', margin: 0 }}>
-            {latestLoading ? 'Memuat block terbaru…' : 'Tidak ada data (cek RPC).'}
+            {latestLoading ? 'Memuat block terbaru…' : (latestError || 'Tidak ada data (cek RPC).')}
           </p>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
@@ -3993,6 +4207,45 @@ export const Explorer: React.FC = () => {
                 <span style={{ fontSize: '11px', color: COLORS.muted, fontFamily: 'monospace' }}>
                   <FaGasPump size={10} style={{ marginRight: 4 }} />{shortHash(b.miner, 6, 4)}
                 </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Latest transactions feed ── */}
+      <div className="fade-in-up" style={{ background: COLORS.bg, border: `1px solid ${COLORS.border}`, borderTop: `2px solid ${COLORS.green}`, padding: '18px', marginBottom: '24px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+          <h3 style={{ margin: 0, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1.5px', color: COLORS.green, display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <FaExchangeAlt /> Latest Transactions — {network.name}
+          </h3>
+          {latestTxsLoading && <FaSpinner className="spin-icon" color={COLORS.green} size={12} />}
+        </div>
+        {latestTxs.length === 0 ? (
+          <p style={{ color: '#333', fontSize: '12px', textAlign: 'center', padding: '16px 0', margin: 0 }}>
+            {latestTxsLoading ? 'Memuat transaksi terbaru…' : (latestTxsError || 'Belum ada transaksi di block terbaru.')}
+          </p>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {latestTxs.map(t => (
+              <div key={t.hash} className="explorer-row" onClick={() => handleSearch(t.hash)} style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px',
+                padding: '9px 12px', background: '#111', border: `1px solid ${COLORS.border}`,
+                cursor: 'pointer', flexWrap: 'wrap',
+              }}>
+                <span style={{ fontSize: '12px', color: COLORS.accent, fontFamily: 'monospace', fontWeight: 'bold' }}>
+                  {shortHash(t.hash, 8, 6)}
+                </span>
+                <span style={{ fontSize: '10px', color: COLORS.muted, border: `1px solid ${COLORS.border}`, padding: '1px 6px', textTransform: 'uppercase' }}>
+                  {t.method}
+                </span>
+                <span style={{ fontSize: '11px', color: COLORS.muted, fontFamily: 'monospace' }}>
+                  <AddrLink addr={t.from} /> <FaArrowRight size={9} style={{ margin: '0 3px' }} /> {t.to ? <AddrLink addr={t.to} /> : 'Contract Creation'}
+                </span>
+                <span style={{ fontSize: '11px', color: COLORS.text, fontFamily: 'monospace' }}>
+                  {parseFloat(t.value).toLocaleString('en-US', { maximumFractionDigits: 6 })} {network.symbol}
+                </span>
+                <span style={{ fontSize: '11px', color: COLORS.muted }}>{timeAgo(t.timestamp)}</span>
               </div>
             ))}
           </div>
