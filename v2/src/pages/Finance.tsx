@@ -16,7 +16,16 @@ import {
     FaFileExport,
     FaExchangeAlt,
     FaSync,
-    FaChevronDown
+    FaChevronDown,
+    FaEdit,
+    FaTimes,
+    FaCalendarAlt,
+    FaTrophy,
+    FaCopy,
+    FaFire,
+    FaCode,
+    FaDownload,
+    FaUpload
 } from 'react-icons/fa';
 
 import { 
@@ -27,9 +36,10 @@ import {
   CategoryScale,
   LinearScale,
   PointElement,
-  LineElement
+  LineElement,
+  BarElement
 } from 'chart.js';
-import { Doughnut, Line } from 'react-chartjs-2';
+import { Doughnut, Line, Bar } from 'react-chartjs-2';
 
 ChartJS.register(
   ArcElement, 
@@ -38,8 +48,95 @@ ChartJS.register(
   CategoryScale, 
   LinearScale, 
   PointElement, 
-  LineElement
+  LineElement,
+  BarElement
 );
+
+const CANDLE_UP = '#33ff33';
+const CANDLE_DOWN = '#ff3333';
+const CANDLE_FLAT = '#888888';
+
+const candleWickPlugin = {
+  id: 'candleWick',
+  beforeDatasetsDraw(chart: any) {
+    const ds = chart.data.datasets[0];
+    if (!ds || !ds.highs) return;
+    const meta = chart.getDatasetMeta(0);
+    const yScale = chart.scales.y;
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.lineWidth = 1.5;
+    meta.data.forEach((bar: any, i: number) => {
+      ctx.strokeStyle = ds.wickColors[i];
+      ctx.beginPath();
+      ctx.moveTo(bar.x, yScale.getPixelForValue(ds.highs[i]));
+      ctx.lineTo(bar.x, yScale.getPixelForValue(ds.lows[i]));
+      ctx.stroke();
+    });
+    ctx.restore();
+  }
+};
+
+const PAGE_SIZE = 10;
+type ValidateResult = { ok: true; data: Transaction[] } | { ok: false; error: string };
+
+// Validasi & normalisasi JSON hasil edit/import sebelum menimpa data transaksi.
+const validateTransactions = (input: unknown): ValidateResult => {
+  if (!Array.isArray(input)) return { ok: false, error: 'JSON harus berupa array transaksi, contoh: [ { ... }, { ... } ].' };
+
+  const ids = new Set<number>();
+  const data: Transaction[] = [];
+
+  for (let i = 0; i < input.length; i++) {
+    const item = input[i] as Record<string, unknown> | null;
+    const no = i + 1;
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return { ok: false, error: `Item #${no}: harus berupa object.` };
+
+    const { id, desc, amount, type, network, date } = item;
+    if (typeof id !== 'number' || !Number.isFinite(id)) return { ok: false, error: `Item #${no}: "id" harus berupa angka.` };
+    if (ids.has(id)) return { ok: false, error: `Item #${no}: "id" ${id} duplikat.` };
+    if (typeof desc !== 'string' || desc.trim() === '') return { ok: false, error: `Item #${no}: "desc" harus berupa teks dan tidak boleh kosong.` };
+    if (typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0) return { ok: false, error: `Item #${no}: "amount" harus angka lebih dari 0.` };
+    if (type !== 'income' && type !== 'expense') return { ok: false, error: `Item #${no}: "type" harus "income" atau "expense".` };
+    if (typeof network !== 'string' || network.trim() === '') return { ok: false, error: `Item #${no}: "network" harus berupa teks dan tidak boleh kosong.` };
+
+    let safeDate = typeof date === 'string' && /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(date) ? date : '';
+    if (!safeDate) {
+      const d = new Date(id);
+      safeDate = `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+    }
+
+    ids.add(id);
+    data.push({ ...(item as object), id, desc, amount, type, network, date: safeDate } as Transaction);
+  }
+  return { ok: true, data };
+};
+
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+
+// Tanggal transaksi disimpan sebagai "dd/mm/yyyy"; fallback ke id (timestamp) jika formatnya tidak cocok.
+const parseTxDate = (tx: Transaction): Date => {
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(tx.date || '');
+  return m ? new Date(Number(m[3]), Number(m[2]) - 1, Number(m[1])) : new Date(tx.id);
+};
+const toMonthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+const toInputDate = (d: Date) => `${toMonthKey(d)}-${String(d.getDate()).padStart(2, '0')}`;
+const formatMonthKey = (key: string) => `${MONTH_NAMES[Number(key.slice(5)) - 1]} ${key.slice(0, 4)}`;
+const prevMonthKey = (key: string) => {
+  const y = Number(key.slice(0, 4));
+  const m = Number(key.slice(5));
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
+};
+
+const NETWORK_COLORS: { n: string; c: string }[] = [
+  {n: 'BTC', c: '#F7931A'}, {n: 'SOL', c: '#9945FF'}, {n: 'ETH', c: '#627eea'},
+  {n: 'OP', c: '#FF0420'}, {n: 'BASE', c: '#0052ff'}, {n: 'BSC', c: '#F3BA2F'},
+  {n: 'MATIC', c: '#8247e5'}, {n: 'ARB', c: '#28a0f0'}, {n: 'APT', c: '#2ed3b9'},
+  {n: 'SUI', c: '#6fbcf0'}, {n: 'NEAR', c: '#2ED3B7'}, {n: 'LINEA', c: '#FFFFFF'},
+  {n: 'MON', c: '#7645D9'}, {n: 'INK', c: '#7037FF'}, {n: 'OCTRA', c: '#0000FF'},
+  {n: 'AVAX', c: '#E84142'}, {n: 'PHAROS', c: '#0000D7'}, {n: 'GRAM', c: '#4DB5FF'},
+  {n: 'CANTON', c: '#F5FF9E'},
+];
 
 const AnimatedMoney = ({ value, currency, config }: { value: number, currency: 'USD' | 'IDR' | 'BTC' | 'ETH', config: CurrencyConfigType }) => {
     const [displayValue, setDisplayValue] = useState(0);
@@ -91,6 +188,17 @@ export const Finance: React.FC = () => {
 
   const [form, setForm] = useState({ desc: '', amount: '', type: 'income', network: '' });
   const [networkFilter, setNetworkFilter] = useState('');
+  const [colorSearch, setColorSearch] = useState('');
+  const [typeFilter, setTypeFilter] = useState<'all' | 'income' | 'expense'>('all');
+  const [sortBy, setSortBy] = useState<'oldest' | 'newest' | 'highest' | 'lowest'>('oldest');
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [growthMode, setGrowthMode] = useState<'line' | 'candle'>('line');
+  const [monthFilter, setMonthFilter] = useState('');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const [rawDraft, setRawDraft] = useState('');
+  const [rawError, setRawError] = useState('');
   const [allocationMode, setAllocationMode] = useState<'net' | 'volume'>('net');
   
   const [currencyConfig, setCurrencyConfig] = useState<CurrencyConfigType>(DEFAULT_CURRENCY_CONFIG);
@@ -149,23 +257,25 @@ useEffect(() => {
 
   const getNetworkColor = (network: string) => {
     const net = network.toLowerCase();
-    if (net.includes('btc')) return '#F7931A';
-    if (net.includes('sol')) return '#9945FF';
-    if (net.includes('eth')) return '#627eea';
-    if (net.includes('op')) return '#FF0420';
+    if (net.includes('bitcoin') || net.includes('btc')) return '#F7931A';
+    if (net.includes('solana') || net.includes('sol')) return '#9945FF';
+    if (net.includes('ethereum') || net.includes('eth')) return '#627eea';
+    if (net.includes('optimism') || net.includes('op')) return '#FF0420';
     if (net.includes('base')) return '#0052ff';
     if (net.includes('bsc') || net.includes('bnb')) return '#F3BA2F';
-    if (net.includes('polygon') || net.includes('matic')) return '#8247e5';
-    if (net.includes('arb')) return '#28a0f0';
-    if (net.includes('apt')) return '#2ed3b9';
+    if (net.includes('polygon') || net.includes('pol') || net.includes('matic')) return '#8247e5';
+    if (net.includes('arbitrum') || net.includes('arb')) return '#28a0f0';
+    if (net.includes('aptos') || net.includes('apt')) return '#2ed3b9';
     if (net.includes('sui')) return '#6fbcf0';
     if (net.includes('near')) return '#2ED3B7';
     if (net.includes('linea')) return '#ffffff';
-    if (net.includes('mon')) return '#7645D9';
+    if (net.includes('monad') || net.includes('mon')) return '#7645D9';
     if (net.includes('ink')) return '#7037FF';
     if (net.includes('octra')) return '#0000FF';
     if (net.includes('avax')) return '#E84142';
-    if (net.includes('pharos')) return '#0000D7';
+    if (net.includes('pharos') || net.includes('pros')) return '#0000D7';
+    if (net.includes('canton') || net === 'cc') return '#F5FF9E';
+    if (net === 'ton' || net.includes('gram')) return '#4DB5FF';
     return '#ffffff';
   };
 
@@ -196,11 +306,137 @@ useEffect(() => {
     localStorage.setItem('transactions', JSON.stringify(transactions));
   }, [transactions]);
 
-  const filteredTransactions = useMemo(() => {
-    return transactions.filter(t => 
-      networkFilter === '' || t.network.toLowerCase().includes(networkFilter.toLowerCase())
+  // Filter network + tipe (tanpa filter periode) -> dipakai juga untuk perbandingan antar bulan.
+  const baseFiltered = useMemo(() => {
+    return transactions.filter(t =>
+      (networkFilter === '' || t.network.toLowerCase().includes(networkFilter.toLowerCase())) &&
+      (typeFilter === 'all' || t.type === typeFilter)
     );
-  }, [transactions, networkFilter]);
+  }, [transactions, networkFilter, typeFilter]);
+
+  const monthOptions = useMemo(() => {
+    const keys = new Set(transactions.map(t => toMonthKey(parseTxDate(t))));
+    return Array.from(keys).sort().reverse();
+  }, [transactions]);
+
+  const monthlyNet = useMemo(() => {
+    const map: Record<string, number> = {};
+    baseFiltered.forEach(t => {
+      const key = toMonthKey(parseTxDate(t));
+      map[key] = (map[key] || 0) + (t.type === 'income' ? t.amount : -t.amount);
+    });
+    return map;
+  }, [baseFiltered]);
+
+  const filteredTransactions = useMemo(() => {
+    const result = baseFiltered.filter(t => {
+      if (!monthFilter && !dateFrom && !dateTo) return true;
+      const d = parseTxDate(t);
+      if (monthFilter && toMonthKey(d) !== monthFilter) return false;
+      const day = toInputDate(d);
+      if (dateFrom && day < dateFrom) return false;
+      if (dateTo && day > dateTo) return false;
+      return true;
+    });
+    switch (sortBy) {
+      case 'newest': return result.sort((a, b) => b.id - a.id);
+      case 'highest': return result.sort((a, b) => b.amount - a.amount);
+      case 'lowest': return result.sort((a, b) => a.amount - b.amount);
+      default: return result.sort((a, b) => a.id - b.id);
+    }
+  }, [baseFiltered, monthFilter, dateFrom, dateTo, sortBy]);
+
+  const visibleTransactions = filteredTransactions.slice(0, visibleCount);
+
+  useEffect(() => {
+    setVisibleCount(PAGE_SIZE);
+  }, [networkFilter, typeFilter, sortBy, monthFilter, dateFrom, dateTo]);
+
+  const rawJson = useMemo(() => JSON.stringify(transactions, null, 2), [transactions]);
+
+  useEffect(() => {
+    setRawDraft(rawJson);
+    setRawError('');
+  }, [rawJson]);
+
+  const filteredSummary = useMemo(() => {
+    const income = filteredTransactions.filter(t => t.type === 'income').reduce((acc, t) => acc + t.amount, 0);
+    const expense = filteredTransactions.filter(t => t.type === 'expense').reduce((acc, t) => acc + t.amount, 0);
+    return { income, expense };
+  }, [filteredTransactions]);
+
+  const networkStats = useMemo(() => {
+    const map: Record<string, { income: number; expense: number; count: number }> = {};
+    transactions.forEach(t => {
+      const net = t.network.toUpperCase();
+      if (!map[net]) map[net] = { income: 0, expense: 0, count: 0 };
+      map[net].count += 1;
+      if (t.type === 'income') map[net].income += t.amount;
+      else map[net].expense += t.amount;
+    });
+    return Object.entries(map).map(([name, v]) => ({ name, ...v }));
+  }, [transactions]);
+
+  const roiRows = useMemo(() => {
+    const withCapital = networkStats
+      .filter(n => n.expense > 0)
+      .map(n => ({ ...n, profit: n.income - n.expense, roi: ((n.income - n.expense) / n.expense) * 100 }))
+      .sort((a, b) => b.roi - a.roi);
+    const noCapital = networkStats.filter(n => n.expense === 0 && n.income > 0).sort((a, b) => b.income - a.income);
+    const maxAbs = withCapital.reduce((acc, r) => Math.max(acc, Math.abs(r.roi)), 0);
+    return { withCapital, noCapital, maxAbs };
+  }, [networkStats]);
+
+  // Aktivitas harian: heatmap 16 minggu terakhir + streak hari berturut-turut.
+  const activity = useMemo(() => {
+    const WEEKS = 16;
+    const counts: Record<string, number> = {};
+    transactions.forEach(t => {
+      const key = toInputDate(parseTxDate(t));
+      counts[key] = (counts[key] || 0) + 1;
+    });
+
+    const dayNum = (key: string) => {
+      const [y, m, d] = key.split('-').map(Number);
+      return Math.round(Date.UTC(y, m - 1, d) / 86400000);
+    };
+    const nums = Object.keys(counts).map(dayNum).sort((a, b) => a - b);
+
+    let longest = 0;
+    let run = 0;
+    nums.forEach((n, i) => {
+      run = i > 0 && n === nums[i - 1] + 1 ? run + 1 : 1;
+      longest = Math.max(longest, run);
+    });
+
+    const today = new Date();
+    const todayNum = dayNum(toInputDate(today));
+    const daySet = new Set(nums);
+    let cursor = daySet.has(todayNum) ? todayNum : todayNum - 1;
+    let current = 0;
+    while (daySet.has(cursor)) {
+      current += 1;
+      cursor -= 1;
+    }
+
+    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate() - ((WEEKS - 1) * 7 + today.getDay()));
+    const cells: { key: string; label: string; count: number; future: boolean }[] = [];
+    let max = 0;
+    for (let i = 0; i < WEEKS * 7; i++) {
+      const d = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+      const key = toInputDate(d);
+      const count = counts[key] || 0;
+      max = Math.max(max, count);
+      cells.push({
+        key,
+        label: `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`,
+        count,
+        future: d > today
+      });
+    }
+
+    return { cells, max, current, longest, activeDays: nums.length };
+  }, [transactions]);
 
   const stats = useMemo(() => {
     const inc = transactions.filter(t => t.type === 'income').reduce((acc, curr) => acc + curr.amount, 0);
@@ -258,6 +494,35 @@ useEffect(() => {
     };
   }, [transactions, currentRate, currency, allocationMode]);
 
+  const allocationDetails = useMemo(() => {
+    const map: Record<string, { income: number; expense: number; count: number }> = {};
+    transactions.forEach(t => {
+      const net = t.network.toUpperCase();
+      if (!map[net]) map[net] = { income: 0, expense: 0, count: 0 };
+      map[net].count += 1;
+      if (t.type === 'income') map[net].income += t.amount;
+      else map[net].expense += t.amount;
+    });
+
+    const rows = Object.entries(map).map(([name, v]) => ({
+      name,
+      ...v,
+      net: v.income - v.expense,
+      volume: v.income + v.expense,
+    }));
+    const valueOf = (r: { net: number; volume: number }) => allocationMode === 'net' ? r.net : r.volume;
+
+    const positive = rows.filter(r => valueOf(r) > 0).sort((a, b) => valueOf(b) - valueOf(a));
+    const deficit = rows.filter(r => valueOf(r) <= 0).sort((a, b) => valueOf(a) - valueOf(b));
+    const total = positive.reduce((acc, r) => acc + valueOf(r), 0);
+
+    return {
+      total,
+      positive: positive.map(r => ({ ...r, value: valueOf(r), pct: total > 0 ? (valueOf(r) / total) * 100 : 0 })),
+      deficit: deficit.map(r => ({ ...r, value: valueOf(r) })),
+    };
+  }, [transactions, allocationMode]);
+
   const lineChartData = useMemo(() => {
     const sortedTx = [...transactions].sort((a, b) => a.id - b.id);
     
@@ -295,6 +560,75 @@ useEffect(() => {
                 pointBackgroundColor: '#fff'
             }
         ]
+    };
+  }, [transactions, currentRate, currency]);
+
+  const candleChart = useMemo(() => {
+    const sortedTx = [...transactions].sort((a, b) => a.id - b.id);
+    const labels: string[] = [];
+    const bodies: [number, number][] = [];
+    const opens: number[] = [];
+    const closes: number[] = [];
+    const highs: number[] = [];
+    const lows: number[] = [];
+    const colors: string[] = [];
+
+    let balance = 0;
+    let currentDay = '';
+    let open = 0, high = 0, low = 0;
+
+    const pushCandle = (close: number) => {
+      const o = open * currentRate;
+      const c = close * currentRate;
+      opens.push(o);
+      closes.push(c);
+      highs.push(high * currentRate);
+      lows.push(low * currentRate);
+      bodies.push([Math.min(o, c), Math.max(o, c)]);
+      colors.push(c > o ? CANDLE_UP : c < o ? CANDLE_DOWN : CANDLE_FLAT);
+    };
+
+    sortedTx.forEach(tx => {
+      const d = new Date(tx.id);
+      const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      if (dayKey !== currentDay) {
+        if (currentDay !== '') pushCandle(balance);
+        currentDay = dayKey;
+        labels.push(`${d.getDate()}/${d.getMonth() + 1}`);
+        open = balance;
+        high = balance;
+        low = balance;
+      }
+      balance += tx.type === 'income' ? tx.amount : -tx.amount;
+      high = Math.max(high, balance);
+      low = Math.min(low, balance);
+    });
+    if (currentDay !== '') pushCandle(balance);
+
+    const rawMin = lows.length ? Math.min(...lows) : 0;
+    const rawMax = highs.length ? Math.max(...highs) : 1;
+    const pad = (rawMax - rawMin) * 0.1 || Math.abs(rawMax) * 0.1 || 1;
+
+    return {
+      min: rawMin - pad,
+      max: rawMax + pad,
+      opens, closes, highs, lows,
+      data: {
+        labels,
+        datasets: [{
+          label: `Balance Candle (${currency})`,
+          data: bodies,
+          backgroundColor: colors,
+          borderColor: colors,
+          borderWidth: 1,
+          borderSkipped: false as const,
+          barPercentage: 0.6,
+          categoryPercentage: 0.9,
+          highs,
+          lows,
+          wickColors: colors
+        }]
+      }
     };
   }, [transactions, currentRate, currency]);
 
@@ -382,8 +716,53 @@ useEffect(() => {
     }
   };
 
+  const formatCandleValue = (val: number) => {
+    if (currency === 'IDR') return `Rp ${val.toLocaleString('id-ID')}`;
+    if (currency === 'BTC') return `₿ ${val.toFixed(8)}`;
+    if (currency === 'ETH') return `♦ ${val.toFixed(8)}`;
+    return `$${val.toLocaleString('en-US')}`;
+  };
+
+  const candleOptions = {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+        legend: { display: false },
+        tooltip: {
+            callbacks: {
+                label: (context: any) => {
+                    const i = context.dataIndex;
+                    return [
+                        ` Open:  ${formatCandleValue(candleChart.opens[i])}`,
+                        ` High:  ${formatCandleValue(candleChart.highs[i])}`,
+                        ` Low:   ${formatCandleValue(candleChart.lows[i])}`,
+                        ` Close: ${formatCandleValue(candleChart.closes[i])}`
+                    ];
+                }
+            }
+        }
+    },
+    scales: {
+        x: lineOptions.scales.x,
+        y: { ...lineOptions.scales.y, min: candleChart.min, max: candleChart.max, beginAtZero: false }
+    }
+  };
+
   const netBalance = stats.totalIncome - stats.totalExpense;
   const expenseRatio = stats.totalIncome > 0 ? (stats.totalExpense / stats.totalIncome) * 100 : (stats.totalExpense > 0 ? 100 : 0);
+
+  const filterSelectStyle: React.CSSProperties = {
+    backgroundColor: '#111',
+    color: '#fff',
+    border: '1px solid #444',
+    padding: '0 10px',
+    height: '42px',
+    borderRadius: '5px',
+    cursor: 'pointer',
+    fontSize: '0.85em',
+    fontWeight: 'bold',
+    outline: 'none'
+  };
 
   const addTransaction = (e: React.FormEvent) => {
     e.preventDefault();
@@ -395,6 +774,17 @@ useEffect(() => {
     const amountVal = parseFloat(form.amount);
     if (isNaN(amountVal) || amountVal <= 0) {
       showAlert('Jumlah transaksi harus lebih dari 0!', 'error');
+      return;
+    }
+
+    if (editingId !== null) {
+      setTransactions(prev => prev.map(t => t.id === editingId
+        ? { ...t, desc: form.desc, amount: amountVal, type: form.type as 'income' | 'expense', network: form.network }
+        : t
+      ));
+      setEditingId(null);
+      setForm({ desc: '', amount: '', type: 'income', network: '' });
+      showAlert('Transaksi berhasil diperbarui.', 'success');
       return;
     }
 
@@ -413,12 +803,89 @@ useEffect(() => {
     showAlert('Transaksi berhasil disimpan.', 'success');
   };
 
+  const startEdit = (tx: Transaction) => {
+    setEditingId(tx.id);
+    setForm({ desc: tx.desc, amount: String(tx.amount), type: tx.type, network: tx.network });
+    document.getElementById('form-transaksi')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
+  const copyRawJson = async () => {
+    try {
+      await navigator.clipboard.writeText(rawDraft);
+      showAlert('JSON berhasil disalin ke clipboard.', 'success');
+    } catch {
+      showAlert('Gagal menyalin. Blok teks lalu salin manual.', 'error');
+    }
+  };
+
+  const downloadRawJson = () => {
+    const blob = new Blob([rawJson], { type: 'application/json;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `erdropmanager_finance_backup_${new Date().toISOString().split('T')[0]}.json`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const handleRawFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      setRawDraft(await file.text());
+      setRawError('');
+    } catch {
+      setRawError('Gagal membaca file.');
+    }
+  };
+
+  const applyRawJson = () => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawDraft);
+    } catch (err) {
+      setRawError(`JSON tidak valid: ${(err as Error).message}`);
+      return;
+    }
+    const result = validateTransactions(parsed);
+    if (!result.ok) {
+      setRawError(result.error);
+      return;
+    }
+    const data = result.data;
+    setRawError('');
+    showConfirm(
+      'TERAPKAN JSON?',
+      `Ini akan mengganti ${transactions.length} transaksi saat ini dengan ${data.length} transaksi dari JSON.`,
+      () => {
+        setTransactions(data);
+        setEditingId(null);
+        showAlert('Data berhasil diimpor dari JSON.', 'success');
+      }
+    );
+  };
+
+  const duplicateTx = (tx: Transaction) => {
+    setEditingId(null);
+    setForm({ desc: tx.desc, amount: String(tx.amount), type: tx.type, network: tx.network });
+    document.getElementById('form-transaksi')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+
+  const cancelEdit = () => {
+    setEditingId(null);
+    setForm({ desc: '', amount: '', type: 'income', network: '' });
+  };
+
   const deleteTx = (id: number) => {
     showConfirm(
       'HAPUS TRANSAKSI?',
       'Apakah Anda yakin ingin menghapus catatan keuangan ini?',
       () => {
         setTransactions(prev => prev.filter(t => t.id !== id));
+        setEditingId(prev => (prev === id ? null : prev));
         showAlert('Data transaksi berhasil dihapus.', 'hapus');
       }
     );
@@ -451,7 +918,7 @@ useEffect(() => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `finance_${currency}_${new Date().toISOString().split('T')[0]}.csv`;
+    link.download = `erdropmanager_finance_${currency}_${new Date().toISOString().split('T')[0]}.csv`;
     
     document.body.appendChild(link);
     link.click();
@@ -661,7 +1128,7 @@ useEffect(() => {
                         </div>
                     </div>
                     
-                    <div style={{ flex: 1, width: '100%', position: 'relative' }}>
+                    <div style={{ flex: 1, width: '100%', position: 'relative', minHeight: '240px' }}>
                         {doughnutData.labels.length > 0 ? (
                             <Doughnut data={doughnutData} options={doughnutOptions} />
                         ) : (
@@ -670,6 +1137,86 @@ useEffect(() => {
                             </div>
                         )}
                     </div>
+
+                    {transactions.length > 0 && (
+                        <div style={{ width: '100%', marginTop: '15px', borderTop: '1px dashed #333', paddingTop: '15px' }}>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', marginBottom: '12px' }}>
+                                <div style={{ background: '#0d0d0d', border: '1px solid #222', padding: '8px', textAlign: 'center' }}>
+                                    <div style={{ fontSize: '0.6em', color: '#888', marginBottom: '3px' }}>
+                                        {allocationMode === 'net' ? 'TOTAL ASET' : 'TOTAL VOLUME'}
+                                    </div>
+                                    <div style={{ fontSize: '0.75em', fontWeight: 'bold', color: '#fff', wordBreak: 'break-all' }}>
+                                        {formatStaticMoney(allocationDetails.total)}
+                                    </div>
+                                </div>
+                                <div style={{ background: '#0d0d0d', border: '1px solid #222', padding: '8px', textAlign: 'center' }}>
+                                    <div style={{ fontSize: '0.6em', color: '#888', marginBottom: '3px' }}>JUMLAH NETWORK</div>
+                                    <div style={{ fontSize: '0.75em', fontWeight: 'bold', color: '#fff' }}>
+                                        {allocationDetails.positive.length + allocationDetails.deficit.length}
+                                        {allocationDetails.deficit.length > 0 && (
+                                            <span style={{ color: '#ff3333', fontWeight: 'normal' }}> ({allocationDetails.deficit.length} defisit)</span>
+                                        )}
+                                    </div>
+                                </div>
+                                <div style={{ background: '#0d0d0d', border: '1px solid #222', padding: '8px', textAlign: 'center' }}>
+                                    <div style={{ fontSize: '0.6em', color: '#888', marginBottom: '3px' }}>TERBESAR</div>
+                                    {allocationDetails.positive[0] ? (
+                                        <div style={{ fontSize: '0.75em', fontWeight: 'bold', color: getNetworkColor(allocationDetails.positive[0].name) }}>
+                                            {allocationDetails.positive[0].name} · {allocationDetails.positive[0].pct.toFixed(1)}%
+                                        </div>
+                                    ) : (
+                                        <div style={{ fontSize: '0.75em', color: '#666' }}>-</div>
+                                    )}
+                                </div>
+                            </div>
+
+                            <div style={{ maxHeight: '240px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '10px', paddingRight: '4px' }}>
+                                {allocationDetails.positive.map((r, i) => {
+                                    const color = getNetworkColor(r.name);
+                                    return (
+                                        <div key={r.name}>
+                                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.75em', gap: '8px', flexWrap: 'wrap' }}>
+                                                <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'bold', color }}>
+                                                    <span style={{ color: '#666', fontWeight: 'normal' }}>#{i + 1}</span>
+                                                    <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: color, boxShadow: `0 0 5px ${color}` }}></span>
+                                                    {r.name}
+                                                </span>
+                                                <span style={{ color: '#fff', fontWeight: 'bold' }}>
+                                                    {formatStaticMoney(r.value)} <span style={{ color: '#888', fontWeight: 'normal' }}>({r.pct.toFixed(1)}%)</span>
+                                                </span>
+                                            </div>
+                                            <div style={{ height: '4px', background: '#222', marginTop: '4px' }}>
+                                                <div style={{ width: `${r.pct}%`, height: '100%', background: color, boxShadow: `0 0 6px ${color}88` }}></div>
+                                            </div>
+                                            <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', fontSize: '0.65em', color: '#888', marginTop: '3px' }}>
+                                                <span>{r.count} transaksi</span>
+                                                {allocationMode === 'net' && (
+                                                    <>
+                                                        <span style={{ color: '#33ff33' }}>+ {formatStaticMoney(r.income)}</span>
+                                                        <span style={{ color: '#ff3333' }}>- {formatStaticMoney(r.expense)}</span>
+                                                    </>
+                                                )}
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+
+                                {allocationDetails.deficit.length > 0 && (
+                                    <div style={{ borderTop: '1px dashed #333', paddingTop: '8px' }}>
+                                        <div style={{ fontSize: '0.65em', color: '#888', marginBottom: '6px' }}>
+                                            (SALDO ≤ 0)
+                                        </div>
+                                        {allocationDetails.deficit.map(r => (
+                                            <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.7em', marginBottom: '3px' }}>
+                                                <span style={{ color: getNetworkColor(r.name), fontWeight: 'bold' }}>{r.name}</span>
+                                                <span style={{ color: r.value < 0 ? '#ff3333' : '#888' }}>{formatStaticMoney(r.value)}</span>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
                 </div>
                 <div style={{
                     padding: '20px',
@@ -680,17 +1227,184 @@ useEffect(() => {
                     alignItems: 'center',
                     minHeight: '350px'
                 }}>
-                    <h3 style={{color: '#fff', fontSize: '1em', marginBottom: '15px', alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '8px'}}>
-                         <FaChartLine style={{color: '#01a2ff'}}/> GROWTH HISTORY
-                    </h3>
-                    <div style={{ flex: 1, width: '100%', position: 'relative' }}>
-                        <Line data={lineChartData} options={lineOptions} />
+                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center', marginBottom: '15px' }}>
+                        <h3 style={{color: '#fff', fontSize: '1em', margin: 0, display: 'flex', alignItems: 'center', gap: '8px'}}>
+                             <FaChartLine style={{color: '#01a2ff'}}/> GROWTH HISTORY
+                        </h3>
+                        <div style={{ display: 'flex', background: '#222', borderRadius: '5px', padding: '2px' }}>
+                            {([['line', 'LINE'], ['candle', 'CANDLE']] as const).map(([mode, label]) => (
+                                <button
+                                    key={mode}
+                                    onClick={() => setGrowthMode(mode)}
+                                    style={{
+                                        padding: '4px 8px',
+                                        fontSize: '0.7em',
+                                        border: 'none',
+                                        background: growthMode === mode ? '#444' : 'transparent',
+                                        color: '#fff',
+                                        cursor: 'pointer',
+                                        borderRadius: '3px',
+                                        fontWeight: 'bold'
+                                    }}
+                                >{label}</button>
+                            ))}
+                        </div>
                     </div>
+                    <div style={{ flex: 1, width: '100%', position: 'relative', minHeight: '240px' }}>
+                        {growthMode === 'line' ? (
+                            <Line data={lineChartData} options={lineOptions} />
+                        ) : (
+                            <Bar data={candleChart.data} options={candleOptions} plugins={[candleWickPlugin]} />
+                        )}
+                    </div>
+                    {growthMode === 'candle' && (
+                        <div style={{ display: 'flex', gap: '14px', flexWrap: 'wrap', marginTop: '10px', fontSize: '0.65em', color: '#888' }}>
+                            <span><span style={{ color: CANDLE_UP }}>■</span> Pemasukan</span>
+                            <span><span style={{ color: CANDLE_DOWN }}>■</span> Pengeluaran</span>
+                        </div>
+                    )}
                 </div>
             </div>
         )}
-        <div className="form-container">
-          <h2 style={{fontSize: '1.2em', textAlign: 'center'}}><FaPlus /> Catat Transaksi</h2>
+        <div style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
+          gap: '20px',
+          marginBottom: '20px'
+        }}>
+          <div style={{ padding: '20px', background: '#111', border: '1px solid #444' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px', flexWrap: 'wrap', marginBottom: '6px' }}>
+              <h3 style={{ color: '#fff', fontSize: '1em', margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <FaTrophy style={{ color: '#F3BA2F' }} /> ROI PER NETWORK
+              </h3>
+              {stats.totalExpense > 0 && (() => {
+                const totalRoi = ((stats.totalIncome - stats.totalExpense) / stats.totalExpense) * 100;
+                const c = totalRoi >= 0 ? '#33ff33' : '#ff3333';
+                return (
+                  <span style={{ fontSize: '0.75em', fontWeight: 'bold', color: c, border: `1px solid ${c}55`, background: '#161616', padding: '3px 10px', borderRadius: '999px' }}>
+                    TOTAL {totalRoi >= 0 ? '+' : ''}{totalRoi.toFixed(1)}%
+                  </span>
+                );
+              })()}
+            </div>
+            <div style={{ fontSize: '0.65em', color: '#666', marginBottom: '15px' }}>
+              Modal = total pengeluaran, Hasil = total pemasukan pada network tersebut.
+            </div>
+
+            {roiRows.withCapital.length === 0 && roiRows.noCapital.length === 0 ? (
+              <div style={{ color: '#666', fontSize: '0.8em', textAlign: 'center', padding: '20px 0' }}>
+                Belum ada data. Catat pengeluaran (modal) dan pemasukan (hasil) per network.
+              </div>
+            ) : (
+              <div style={{ maxHeight: '300px', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '14px', paddingRight: '4px' }}>
+                {roiRows.withCapital.map((r, i) => {
+                  const netColor = getNetworkColor(r.name);
+                  const roiColor = r.roi > 0 ? '#33ff33' : r.roi < 0 ? '#ff3333' : '#888';
+                  const barPct = roiRows.maxAbs > 0 ? (Math.abs(r.roi) / roiRows.maxAbs) * 100 : 0;
+                  return (
+                    <div key={r.name}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '0.78em', gap: '8px', flexWrap: 'wrap' }}>
+                        <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'bold', color: netColor }}>
+                          <span style={{ color: '#666', fontWeight: 'normal' }}>#{i + 1}</span>
+                          <span style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: netColor, boxShadow: `0 0 5px ${netColor}` }}></span>
+                          {r.name}
+                        </span>
+                        <span style={{ color: roiColor, fontWeight: 'bold' }}>
+                          {r.roi > 0 ? '+' : ''}{r.roi.toFixed(1)}%
+                        </span>
+                      </div>
+                      <div style={{ height: '4px', background: '#222', marginTop: '5px' }}>
+                        <div style={{ width: `${barPct}%`, height: '100%', background: roiColor, boxShadow: `0 0 6px ${roiColor}88` }}></div>
+                      </div>
+                      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', fontSize: '0.65em', color: '#888', marginTop: '4px' }}>
+                        <span>Modal {formatStaticMoney(r.expense)}</span>
+                        <span>Hasil {formatStaticMoney(r.income)}</span>
+                        <span style={{ color: roiColor }}>{r.profit >= 0 ? 'Profit +' : 'Rugi -'}{formatStaticMoney(Math.abs(r.profit))}</span>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {roiRows.noCapital.length > 0 && (
+                  <div style={{ borderTop: '1px dashed #333', paddingTop: '8px' }}>
+                    <div style={{ fontSize: '0.65em', color: '#888', marginBottom: '6px' }}>TANPA MODAL (BELUM ADA PENGELUARAN)</div>
+                    {roiRows.noCapital.map(r => (
+                      <div key={r.name} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.72em', marginBottom: '3px' }}>
+                        <span style={{ color: getNetworkColor(r.name), fontWeight: 'bold' }}>{r.name}</span>
+                        <span style={{ color: '#33ff33' }}>+ {formatStaticMoney(r.income)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+          <div style={{ padding: '20px', background: '#111', border: '1px solid #444' }}>
+            <h3 style={{ color: '#fff', fontSize: '1em', margin: '0 0 15px 0', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <FaFire style={{ color: '#ff8a00' }} /> AKTIVITAS HARIAN
+            </h3>
+
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px', marginBottom: '15px' }}>
+              {[
+                { label: 'STREAK SAAT INI', value: `${activity.current} hari`, color: activity.current > 0 ? '#ff8a00' : '#888' },
+                { label: 'STREAK TERPANJANG', value: `${activity.longest} hari`, color: '#fff' },
+                { label: 'HARI AKTIF', value: `${activity.activeDays} hari`, color: '#fff' }
+              ].map(box => (
+                <div key={box.label} style={{ background: '#0d0d0d', border: '1px solid #222', padding: '8px', textAlign: 'center' }}>
+                  <div style={{ fontSize: '0.55em', color: '#888', marginBottom: '3px' }}>{box.label}</div>
+                  <div style={{ fontSize: '0.8em', fontWeight: 'bold', color: box.color }}>{box.value}</div>
+                </div>
+              ))}
+            </div>
+
+            <div style={{ overflowX: 'auto', paddingBottom: '6px' }}>
+              <div style={{
+                display: 'grid',
+                gridAutoFlow: 'column',
+                gridTemplateRows: 'repeat(7, 12px)',
+                gridAutoColumns: '12px',
+                gap: '3px',
+                width: 'max-content',
+                margin: '0 auto'
+              }}>
+                {activity.cells.map(c => {
+                  const ratio = activity.max > 0 ? c.count / activity.max : 0;
+                  const level = c.count === 0 ? 0 : ratio > 0.75 ? 4 : ratio > 0.5 ? 3 : ratio > 0.25 ? 2 : 1;
+                  const bg = ['#1a1a1a', 'rgba(51,255,51,0.25)', 'rgba(51,255,51,0.5)', 'rgba(51,255,51,0.75)', '#33ff33'][level];
+                  return (
+                    <div
+                      key={c.key}
+                      title={`${c.label}: ${c.count} transaksi`}
+                      style={{
+                        width: '12px',
+                        height: '12px',
+                        borderRadius: '2px',
+                        background: c.future ? 'transparent' : bg,
+                        boxShadow: level === 4 ? '0 0 5px rgba(51,255,51,0.6)' : 'none'
+                      }}
+                    ></div>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '8px', marginTop: '10px', fontSize: '0.65em', color: '#888' }}>
+              <span>16 minggu terakhir</span>
+              <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                Sedikit
+                {['#1a1a1a', 'rgba(51,255,51,0.25)', 'rgba(51,255,51,0.5)', 'rgba(51,255,51,0.75)', '#33ff33'].map(c => (
+                  <span key={c} style={{ width: '10px', height: '10px', borderRadius: '2px', background: c, display: 'inline-block' }}></span>
+                ))}
+                Banyak
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div className="form-container" id="form-transaksi" style={editingId !== null ? { borderColor: '#01a2ff' } : undefined}>
+          <h2 style={{fontSize: '1.2em', textAlign: 'center'}}>
+            {editingId !== null ? <><FaEdit /> Edit Transaksi</> : <><FaPlus /> Catat Transaksi</>}
+          </h2>
           <form onSubmit={addTransaction}>
             <input value={form.desc} onChange={e => setForm({...form, desc: e.target.value})} placeholder="Deskripsi Transaksi" required />
             <input value={form.network} onChange={e => setForm({...form, network: e.target.value})} placeholder="Network (Base, Sol, dll)" required />
@@ -707,7 +1421,14 @@ useEffect(() => {
               <option value="income">Pemasukan (+)</option>
               <option value="expense">Pengeluaran (-)</option>
             </select>
-            <button type="submit" style={{gridColumn: '1 / -1'}}><FaPlus /> Simpan</button>
+            <button type="submit" style={{gridColumn: '1 / -1'}}>
+              {editingId !== null ? <><FaEdit /> Perbarui</> : <><FaPlus /> Simpan</>}
+            </button>
+            {editingId !== null && (
+              <button type="button" onClick={cancelEdit} style={{gridColumn: '1 / -1', background: 'transparent', border: '1px solid #444', color: '#aaa'}}>
+                <FaTimes /> Batal Edit
+              </button>
+            )}
           </form>
         </div>
         <div style={{ 
@@ -720,20 +1441,38 @@ useEffect(() => {
              <summary style={{cursor: 'pointer', fontSize: '0.85em', color: '#aaa', display:'flex', alignItems:'center', gap:'5px'}}>
               <FaInfoCircle /> KLIK UNTUK LIHAT KODE WARNA NETWORK
               </summary>
+              <div style={{ position: 'relative', marginTop: '10px' }}>
+                <FaSearch style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#888', fontSize: '0.8em', pointerEvents: 'none' }} />
+                <input
+                  type="search"
+                  placeholder="Cari network (BTC, SOL, BASE...)"
+                  value={colorSearch}
+                  onChange={e => setColorSearch(e.target.value)}
+                  style={{ width: '100%', boxSizing: 'border-box', padding: '8px 10px 8px 30px', fontSize: '0.8em', backgroundColor: '#111', color: '#fff', border: '1px solid #333', borderRadius: '5px', outline: 'none' }}
+                />
+              </div>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: '12px', marginTop: '10px', padding: '10px' }}>
-              {[
-                {n: 'BTC', c: '#F7931A'}, {n: 'SOL', c: '#9945FF'}, {n: 'ETH', c: '#627eea'},
-                {n: 'OP', c: '#FF0420'}, {n: 'BASE', c: '#0052ff'}, {n: 'BSC', c: '#F3BA2F'}, 
-                {n: 'MATIC', c: '#8247e5'}, {n: 'ARB', c: '#28a0f0'}, {n: 'APT', c: '#2ed3b9'}, 
-                {n: 'SUI', c: '#6fbcf0'}, {n: 'NEAR', c: '#2ED3B7'}, {n: 'LINEA', c: '#FFFFFF'},
-                {n: 'MON', c: '#7645D9'}, {n: 'INK', c: '#7037FF'}, {n: 'OCTRA', c: '#0000FF'},
-                {n: 'AVAX', c: '#E84142'}, {n: 'PHAROS', c: '#0000D7'},
-              ].map(item => (
-              <div key={item.n} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.7em', fontWeight: 'bold' }}>
-                <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: item.c, boxShadow: `0 0 5px ${item.c}` }}></div>
-                <span style={{ color: item.c }}>{item.n}</span>
-                </div>
-              ))}
+              {(() => {
+                const keyword = colorSearch.trim().toLowerCase();
+                const filtered = NETWORK_COLORS.filter(item =>
+                  item.n.toLowerCase().includes(keyword) || item.c.toLowerCase().includes(keyword)
+                );
+                if (filtered.length === 0) {
+                  return <span style={{ fontSize: '0.75em', color: '#666' }}>Network "{colorSearch}" tidak ditemukan.</span>;
+                }
+                return filtered.map(item => (
+                  <div
+                    key={item.n}
+                    role="button"
+                    title="Klik untuk isi kolom Network di form"
+                    onClick={() => setForm(f => ({ ...f, network: item.n }))}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.7em', fontWeight: 'bold', cursor: 'pointer' }}
+                  >
+                    <div style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: item.c, boxShadow: `0 0 5px ${item.c}` }}></div>
+                    <span style={{ color: item.c }}>{item.n}</span>
+                  </div>
+                ));
+              })()}
               </div>
             </details>
           </div>
@@ -787,6 +1526,17 @@ useEffect(() => {
                }}/>
             </div>
             
+            <select value={typeFilter} onChange={e => setTypeFilter(e.target.value as 'all' | 'income' | 'expense')} style={filterSelectStyle}>
+              <option value="all">Semua Tipe</option>
+              <option value="income">Pemasukan</option>
+              <option value="expense">Pengeluaran</option>
+            </select>
+            <select value={sortBy} onChange={e => setSortBy(e.target.value as 'oldest' | 'newest' | 'highest' | 'lowest')} style={filterSelectStyle}>
+              <option value="oldest">Terlama</option>
+              <option value="newest">Terbaru</option>
+              <option value="highest">Jumlah Terbesar</option>
+              <option value="lowest">Jumlah Terkecil</option>
+            </select>
             <button 
               onClick={handleExportCSV} 
               className="btn-manage btn-export" 
@@ -805,6 +1555,89 @@ useEffect(() => {
             </button>
           </div>
 
+        {transactions.length > 0 && (
+          <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', marginBottom: '15px' }}>
+            <span style={{ fontSize: '0.75em', color: '#888', display: 'flex', alignItems: 'center', gap: '6px', fontWeight: 'bold' }}>
+              <FaCalendarAlt /> PERIODE
+            </span>
+            <select value={monthFilter} onChange={e => setMonthFilter(e.target.value)} style={filterSelectStyle}>
+              <option value="">Semua Bulan</option>
+              {monthOptions.map(k => <option key={k} value={k}>{formatMonthKey(k)}</option>)}
+            </select>
+            <input type="date" value={dateFrom} max={dateTo || undefined} onChange={e => setDateFrom(e.target.value)} title="Dari tanggal" style={{ ...filterSelectStyle, colorScheme: 'dark' }} />
+            <span style={{ color: '#666', fontSize: '0.8em' }}>s/d</span>
+            <input type="date" value={dateTo} min={dateFrom || undefined} onChange={e => setDateTo(e.target.value)} title="Sampai tanggal" style={{ ...filterSelectStyle, colorScheme: 'dark' }} />
+            {(monthFilter || dateFrom || dateTo) && (
+              <button
+                type="button"
+                onClick={() => { setMonthFilter(''); setDateFrom(''); setDateTo(''); }}
+                style={{ ...filterSelectStyle, display: 'flex', alignItems: 'center', gap: '6px', color: '#aaa' }}
+              >
+                <FaTimes /> Reset
+              </button>
+            )}
+          </div>
+        )}
+
+        {transactions.length > 0 && (() => {
+          const filteredNet = filteredSummary.income - filteredSummary.expense;
+          const netColor = filteredNet > 0 ? '#33ff33' : filteredNet < 0 ? '#ff3333' : '#888';
+          const pillBase: React.CSSProperties = {
+            display: 'flex',
+            alignItems: 'center',
+            gap: '6px',
+            padding: '6px 12px',
+            fontSize: '0.78em',
+            fontWeight: 'bold',
+            borderRadius: '999px',
+            whiteSpace: 'nowrap'
+          };
+          return (
+            <div style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              flexWrap: 'wrap',
+              gap: '10px',
+              marginBottom: '12px',
+              padding: '10px 14px',
+              background: '#0d0d0d',
+              border: '1px solid #222',
+              borderLeft: '3px solid #ffffff'
+            }}>
+              <span style={{ fontSize: '0.78em', color: '#888', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                Menampilkan
+                <span style={{ color: '#ffffff', fontWeight: 'bold', fontSize: '1em', textShadow: '0 0 8px #F3BA2F66' }}>
+                  {filteredTransactions.length}
+                </span>
+                dari {transactions.length} transaksi
+              </span>
+
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <span style={{ ...pillBase, color: '#33ff33', background: 'rgba(51,255,51,0.08)', border: '1px solid rgba(51,255,51,0.35)', boxShadow: '0 0 8px rgba(51,255,51,0.12)' }}>
+                  <FaArrowUp style={{ fontSize: '0.85em' }} /> {formatStaticMoney(filteredSummary.income)}
+                </span>
+                <span style={{ ...pillBase, color: '#ff3333', background: 'rgba(255,51,51,0.08)', border: '1px solid rgba(255,51,51,0.35)', boxShadow: '0 0 8px rgba(255,51,51,0.12)' }}>
+                  <FaArrowDown style={{ fontSize: '0.85em' }} /> {formatStaticMoney(filteredSummary.expense)}
+                </span>
+                <span style={{ ...pillBase, color: netColor, background: '#161616', border: `1px solid ${netColor}55` }}>
+                  <FaWallet style={{ fontSize: '0.85em' }} /> {filteredNet > 0 ? '+' : filteredNet < 0 ? '-' : ''}{formatStaticMoney(Math.abs(filteredNet))}
+                </span>
+                {monthFilter && monthlyNet[prevMonthKey(monthFilter)] !== undefined && (() => {
+                  const diff = (monthlyNet[monthFilter] ?? 0) - monthlyNet[prevMonthKey(monthFilter)];
+                  const c = diff > 0 ? '#33ff33' : diff < 0 ? '#ff3333' : '#888';
+                  return (
+                    <span style={{ ...pillBase, color: c, background: '#161616', border: `1px solid ${c}55` }} title={`Selisih saldo bersih dibanding ${formatMonthKey(prevMonthKey(monthFilter))}`}>
+                      {diff > 0 ? <FaArrowUp style={{ fontSize: '0.85em' }} /> : diff < 0 ? <FaArrowDown style={{ fontSize: '0.85em' }} /> : null}
+                      vs {formatMonthKey(prevMonthKey(monthFilter))}: {diff > 0 ? '+' : diff < 0 ? '-' : ''}{formatStaticMoney(Math.abs(diff))}
+                    </span>
+                  );
+                })()}
+              </div>
+            </div>
+          );
+        })()}
+
         <div className="table-container">
           <table>
             <thead>
@@ -819,8 +1652,8 @@ useEffect(() => {
             </thead>
             <tbody>
               {filteredTransactions.length > 0 ? (
-                filteredTransactions.map(tx => (
-                  <tr key={tx.id} style={{borderLeft: `4px solid ${tx.type === 'income' ? '#33ff33' : '#ff3333'}`}}>
+                visibleTransactions.map(tx => (
+                  <tr key={tx.id} style={{borderLeft: `4px solid ${tx.type === 'income' ? '#33ff33' : '#ff3333'}`, background: editingId === tx.id ? '#161616' : undefined}}>
                     <td data-label="Tanggal">{tx.date}</td>
                     <td data-label="Deskripsi">{tx.desc}</td>
                     <td data-label="Network">
@@ -842,9 +1675,17 @@ useEffect(() => {
                         {formatStaticMoney(tx.amount)}
                     </td>
                     <td data-label="Aksi">
-                        <button className="action-btn delete-btn" onClick={() => deleteTx(tx.id)} title="Hapus">
-                            <FaTrash />
-                        </button>
+                        <div style={{ display: 'flex', gap: '6px', justifyContent: 'center' }}>
+                            <button className="action-btn" onClick={() => startEdit(tx)} title="Edit" style={{ color: '#01a2ff' }}>
+                                <FaEdit />
+                            </button>
+                            <button className="action-btn" onClick={() => duplicateTx(tx)} title="Duplikat ke form" style={{ color: '#F3BA2F' }}>
+                                <FaCopy />
+                            </button>
+                            <button className="action-btn delete-btn" onClick={() => deleteTx(tx.id)} title="Hapus">
+                                <FaTrash />
+                            </button>
+                        </div>
                     </td>
                   </tr>
                 ))
@@ -857,6 +1698,105 @@ useEffect(() => {
               )}
             </tbody>
           </table>
+        </div>
+
+        {filteredTransactions.length > visibleCount && (
+          <div style={{ display: 'flex', justifyContent: 'center', gap: '10px', flexWrap: 'wrap', marginTop: '15px' }}>
+            <button
+              type="button"
+              onClick={() => setVisibleCount(c => c + PAGE_SIZE)}
+              style={{ ...filterSelectStyle, padding: '0 20px' }}
+            >
+              <FaChevronDown style={{ marginRight: '6px', fontSize: '0.8em' }} />
+              Tampilkan {Math.min(PAGE_SIZE, filteredTransactions.length - visibleCount)} lagi ({filteredTransactions.length - visibleCount} tersisa)
+            </button>
+            <button
+              type="button"
+              onClick={() => setVisibleCount(filteredTransactions.length)}
+              style={{ ...filterSelectStyle, padding: '0 20px', color: '#aaa' }}
+            >
+              Tampilkan semua
+            </button>
+          </div>
+        )}
+
+        <div style={{ marginTop: '30px', padding: '10px', background: '#0d0d0d', border: '1px dashed #333' }}>
+          <details>
+            <summary style={{ cursor: 'pointer', fontSize: '0.85em', color: '#aaa', display: 'flex', alignItems: 'center', gap: '5px' }}>
+              <FaCode /> RAW JSON
+            </summary>
+
+            <div style={{ marginTop: '12px', padding: '0 4px 6px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px', marginBottom: '10px', fontSize: '0.7em', color: '#888' }}>
+                <span>
+                  {transactions.length} transaksi · {(new Blob([rawJson]).size / 1024).toFixed(1)} KB
+                </span>
+                {rawDraft !== rawJson && (
+                  <span style={{ color: '#f3ba2f', fontWeight: 'bold' }}>Ada perubahan yang belum diterapkan</span>
+                )}
+              </div>
+
+              <textarea
+                value={rawDraft}
+                onChange={e => { setRawDraft(e.target.value); setRawError(''); }}
+                spellCheck={false}
+                style={{
+                  width: '100%',
+                  boxSizing: 'border-box',
+                  height: '280px',
+                  resize: 'vertical',
+                  padding: '12px',
+                  background: '#050505',
+                  color: '#33ff33',
+                  border: `1px solid ${rawError ? '#ff3333' : '#333'}`,
+                  borderRadius: '5px',
+                  fontFamily: 'monospace',
+                  fontSize: '0.75em',
+                  lineHeight: 1.5,
+                  whiteSpace: 'pre',
+                  overflow: 'auto',
+                  outline: 'none'
+                }}
+              />
+
+              {rawError && (
+                <div style={{ marginTop: '8px', fontSize: '0.75em', color: '#ff3333' }}>{rawError}</div>
+              )}
+
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '12px' }}>
+                <button type="button" onClick={copyRawJson} style={{ ...filterSelectStyle, height: '38px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <FaCopy /> Salin
+                </button>
+                <button type="button" onClick={downloadRawJson} style={{ ...filterSelectStyle, height: '38px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <FaDownload /> Download
+                </button>
+                <label style={{ ...filterSelectStyle, height: '38px', display: 'flex', alignItems: 'center', gap: '6px', boxSizing: 'border-box' }}>
+                  <FaUpload /> Upload .json
+                  <input type="file" accept="application/json,.json" onChange={handleRawFile} style={{ display: 'none' }} />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => { setRawDraft(rawJson); setRawError(''); }}
+                  disabled={rawDraft === rawJson}
+                  style={{ ...filterSelectStyle, height: '38px', color: '#aaa', opacity: rawDraft === rawJson ? 0.4 : 1, cursor: rawDraft === rawJson ? 'not-allowed' : 'pointer' }}
+                >
+                  Reset
+                </button>
+                <button
+                  type="button"
+                  onClick={applyRawJson}
+                  disabled={rawDraft === rawJson}
+                  style={{ ...filterSelectStyle, height: '38px', color: '#33ff33', borderColor: '#33ff33', opacity: rawDraft === rawJson ? 0.4 : 1, cursor: rawDraft === rawJson ? 'not-allowed' : 'pointer' }}
+                >
+                  Terapkan
+                </button>
+              </div>
+
+              <div style={{ marginTop: '10px', fontSize: '0.65em', color: '#666' }}>
+                Setiap item wajib punya: id (angka unik), desc, amount (&gt; 0, dalam USD), type ("income" / "expense"), dan network. Menerapkan JSON akan menimpa seluruh data transaksi.
+              </div>
+            </div>
+          </details>
         </div>
       </div>
       <footer className="app-footer">Powered by IAC Community</footer>
