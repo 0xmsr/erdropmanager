@@ -21,6 +21,20 @@ interface Version {
 
 const CHANGELOG: Version[] = [
   {
+    version: '2.4.5',
+    date: '7 Okt 2026',
+    title: 'Update v2.4.5',
+    changes: [
+      { type: 'feature', text: 'Menambahkan fitur Impor dari Wallet Generator di Wallet Profile (halaman Home) — pilih address dari wallet yang sudah dibuat di WalletGen (EVM, SOL, TRON, AXM, ATOM, SUI, APT, ASE, GRAM) tanpa perlu salin satu per satu, lengkap dengan pencarian, filter per chain, dan tombol tambah semua. Hanya address yang diambil, private key dan mnemonic tidak ikut ~Home' },
+      { type: 'feature', text: 'Menambahkan pilihan wallet tersimpan pada kolom Wallet Address di halaman Waitlist, mengambil dari Wallet Profile dan Wallet Generator, dengan kolom pencarian berdasarkan nama atau address ~Waitlist' },
+      { type: 'feature', text: 'Menambahkan pilihan akun sosmed tersimpan (Email, Discord, X/Twitter) pada form Waitlist — otomatis diambil dari data yang pernah disimpan, diurutkan dari yang paling sering dipakai, jadi tidak perlu mengetik ulang ~Waitlist' },
+      { type: 'improvement', text: 'Memperbarui tampilan halaman Waitlist: ringkasan statistik, daftar project dalam bentuk kartu dengan tombol salin cepat per akun, serta pencarian project, email, atau wallet ~Waitlist' },
+      { type: 'improvement', text: 'Memperbarui UI dan menambahkan candle chart lalu 3 tambahan network baru (GRAM, CANTON, 0G) ~Finance' },
+      { type: 'improvement', text: 'Memperbarui UI form input Waitlist: label di atas kolom, ikon, efek fokus sesuai warna platform, tombol hapus isi, tombol pilih sosmed berbentuk toggle, serta petunjuk otomatis untuk link (https) dan format email ~Waitlist' },
+      { type: 'fix', text: 'Memperbaiki glitch UI pada modal QR Code Address saat tombol Salin diklik (canvas berkedip karena modal ter-render ulang), dan lebar tombol Salin dibuat tetap supaya tombol lain tidak bergeser ~WalletGen' },
+    ],
+  },
+  {
     version: '2.4.4',
     date: '23 Sep 2026',
     title: 'Update v2.4.4',
