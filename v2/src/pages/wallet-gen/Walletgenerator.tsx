@@ -438,6 +438,83 @@ const GramSwapPickerModal: React.FC<{
   );
 };
 
+// Didefinisikan di module scope (BUKAN di dalam WalletGenerator) supaya identitas
+// komponennya stabil. Kalau di dalam, tiap setCopiedKey memicu re-render parent →
+// QRModal jadi tipe komponen baru → unmount/remount → canvas kedip (glitch).
+const QRModal: React.FC<{ address: string; copied: boolean; onCopy: () => void; onClose: () => void }> = ({ address, copied, onCopy, onClose }) => {
+  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  React.useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const size = 200;
+    const cellSize = 6;
+    const cells = Math.floor(size / cellSize);
+    canvas.width  = size + 40;
+    canvas.height = size + 40;
+    const ctx = canvas.getContext('2d')!;
+    ctx.fillStyle = '#fff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#000';
+    const hash = address.toLowerCase().replace('0x', '');
+    for (let row = 0; row < cells; row++) {
+      for (let col = 0; col < cells; col++) {
+        const charIdx = (row * cells + col) % hash.length;
+        const val = parseInt(hash[charIdx], 16);
+        if ((val + row + col) % 3 !== 0) {
+          ctx.fillRect(20 + col * cellSize, 20 + row * cellSize, cellSize - 1, cellSize - 1);
+        }
+      }
+    }
+    [[0,0],[0,cells-7],[cells-7,0]].forEach(([r, c]) => {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(20 + c * cellSize, 20 + r * cellSize, 7 * cellSize, 7 * cellSize);
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(20 + (c+1) * cellSize, 20 + (r+1) * cellSize, 5 * cellSize, 5 * cellSize);
+      ctx.fillStyle = '#000';
+      ctx.fillRect(20 + (c+2) * cellSize, 20 + (r+2) * cellSize, 3 * cellSize, 3 * cellSize);
+    });
+  }, [address]);
+
+  const downloadQR = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png');
+    a.download = `qr_${address.slice(0, 10)}.png`;
+    a.click();
+  };
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999 }}
+      onClick={onClose}>
+      <div style={{ background:'#111', border:'1px solid #333', padding:'24px', textAlign:'center', maxWidth:'340px', width:'90%' }}
+        onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'12px' }}>
+          <FaQrcode style={{ marginRight:'5px' }}/>QR Code Address
+        </div>
+        <canvas ref={canvasRef} style={{ display:'block', margin:'0 auto 12px', border:'4px solid #fff', imageRendering:'pixelated' }}/>
+        <code style={{ fontSize:'10px', color:'#888', wordBreak:'break-all', display:'block', marginBottom:'14px', fontFamily:'monospace' }}>
+          {address}
+        </code>
+        <div style={{ display:'flex', gap:'8px', justifyContent:'center' }}>
+          <button onClick={downloadQR}
+            style={{ background:'#01a2ff', color:'#000', border:'none', padding:'8px 18px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px' }}>
+            <FaFileExport/> Download PNG
+          </button>
+          <button onClick={onCopy}
+            style={{ background:'#111', color:'#888', border:'1px solid #333', padding:'8px 18px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', justifyContent:'center', gap:'6px', minWidth:'104px', whiteSpace:'nowrap' }}>
+            {copied ? <><FaCheckCircle color="#4caf50"/> Tersalin!</> : <><FaCopy/> Salin</>}
+          </button>
+          <button onClick={onClose}
+            style={{ background:'none', color:'#555', border:'1px solid #333', padding:'8px 14px', cursor:'pointer', fontSize:'12px' }}>
+            ✕
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 export const WalletGenerator: React.FC = () => {
 
   const [wallets,  setWallets]  = useState<BIP39Wallet[]>(() => {
@@ -2524,80 +2601,6 @@ export const WalletGenerator: React.FC = () => {
       </div>
     </div>
   );
-
-  const QRModal: React.FC<{ address: string; onClose: () => void }> = ({ address, onClose }) => {
-    const canvasRef = React.useRef<HTMLCanvasElement>(null);
-    React.useEffect(() => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const size = 200;
-      const cellSize = 6;
-      const cells = Math.floor(size / cellSize);
-      canvas.width  = size + 40;
-      canvas.height = size + 40;
-      const ctx = canvas.getContext('2d')!;
-      ctx.fillStyle = '#fff';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = '#000';
-      const hash = address.toLowerCase().replace('0x', '');
-      for (let row = 0; row < cells; row++) {
-        for (let col = 0; col < cells; col++) {
-          const charIdx = (row * cells + col) % hash.length;
-          const val = parseInt(hash[charIdx], 16);
-          if ((val + row + col) % 3 !== 0) {
-            ctx.fillRect(20 + col * cellSize, 20 + row * cellSize, cellSize - 1, cellSize - 1);
-          }
-        }
-      }
-      [[0,0],[0,cells-7],[cells-7,0]].forEach(([r, c]) => {
-        ctx.fillStyle = '#000';
-        ctx.fillRect(20 + c * cellSize, 20 + r * cellSize, 7 * cellSize, 7 * cellSize);
-        ctx.fillStyle = '#fff';
-        ctx.fillRect(20 + (c+1) * cellSize, 20 + (r+1) * cellSize, 5 * cellSize, 5 * cellSize);
-        ctx.fillStyle = '#000';
-        ctx.fillRect(20 + (c+2) * cellSize, 20 + (r+2) * cellSize, 3 * cellSize, 3 * cellSize);
-      });
-    }, [address]);
-
-    const downloadQR = () => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const a = document.createElement('a');
-      a.href = canvas.toDataURL('image/png');
-      a.download = `qr_${address.slice(0, 10)}.png`;
-      a.click();
-    };
-
-    return (
-      <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', display:'flex', alignItems:'center', justifyContent:'center', zIndex:9999 }}
-        onClick={onClose}>
-        <div style={{ background:'#111', border:'1px solid #333', padding:'24px', textAlign:'center', maxWidth:'340px', width:'90%' }}
-          onClick={e => e.stopPropagation()}>
-          <div style={{ fontSize:'11px', color:'#555', textTransform:'uppercase', letterSpacing:'1px', marginBottom:'12px' }}>
-            <FaQrcode style={{ marginRight:'5px' }}/>QR Code Address
-          </div>
-          <canvas ref={canvasRef} style={{ display:'block', margin:'0 auto 12px', border:'4px solid #fff', imageRendering:'pixelated' }}/>
-          <code style={{ fontSize:'10px', color:'#888', wordBreak:'break-all', display:'block', marginBottom:'14px', fontFamily:'monospace' }}>
-            {address}
-          </code>
-          <div style={{ display:'flex', gap:'8px', justifyContent:'center' }}>
-            <button onClick={downloadQR}
-              style={{ background:'#01a2ff', color:'#000', border:'none', padding:'8px 18px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px' }}>
-              <FaFileExport/> Download PNG
-            </button>
-            <button onClick={() => copyText(address, 'qr_addr')}
-              style={{ background:'#111', color:'#888', border:'1px solid #333', padding:'8px 18px', cursor:'pointer', fontSize:'12px', display:'flex', alignItems:'center', gap:'6px' }}>
-              {copiedKey === 'qr_addr' ? <><FaCheckCircle color="#4caf50"/> Tersalin!</> : <><FaCopy/> Salin</>}
-            </button>
-            <button onClick={onClose}
-              style={{ background:'none', color:'#555', border:'1px solid #333', padding:'8px 14px', cursor:'pointer', fontSize:'12px' }}>
-              ✕
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  };
 
   const exportAllCSV = () => {
     if (wallets.length === 0) { showAlert('Tidak ada wallet untuk diekspor.', 'error'); return; }
@@ -8254,7 +8257,7 @@ export const WalletGenerator: React.FC = () => {
         onCancel={() => handleTxConfirmDecision(false)}
         onConfirm={() => handleTxConfirmDecision(true)} />
 
-      {qrAddress && <QRModal address={qrAddress} onClose={() => setQrAddress(null)} />}
+      {qrAddress && <QRModal address={qrAddress} copied={copiedKey === 'qr_addr'} onCopy={() => copyText(qrAddress, 'qr_addr')} onClose={() => setQrAddress(null)} />}
       {portfolioTarget && <PortfolioModal target={portfolioTarget} onClose={() => setPortfolioTarget(null)} />}
       {gramJettonPickerOpen && (
         <GramJettonPickerModal
@@ -8692,7 +8695,7 @@ export const WalletGenerator: React.FC = () => {
                   Terms of Service
                 </div>
                 <div style={{ fontSize: '11px', color: '#555', marginTop: '2px' }}>
-                  Wallet Generator · Baca dulu sebelum lanjut
+                  Wallet-Gen · Baca dulu sebelum lanjut
                 </div>
               </div>
               <Link to="/wallet-gen/tos" style={{ marginLeft: 'auto', fontSize: '11px', color: '#444', textDecoration: 'none', border: '1px solid #333', padding: '4px 10px', whiteSpace: 'nowrap' }}>
