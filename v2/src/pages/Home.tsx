@@ -140,6 +140,73 @@ export const Home: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
+  type WgAddrItem = { key: string; walletName: string; chain: string; label: string; address: string };
+  const [wgOpen, setWgOpen] = useState(false);
+  const [wgItems, setWgItems] = useState<WgAddrItem[]>([]);
+  const [wgSearch, setWgSearch] = useState('');
+  const [wgChain, setWgChain] = useState('ALL');
+
+  const loadWalletGenAddresses = () => {
+    const items: WgAddrItem[] = [];
+    try {
+      const raw = JSON.parse(localStorage.getItem('bip39Wallets') || '[]');
+      const fields: [string, string][] = [
+        ['addresses', 'EVM'], ['solAddresses', 'SOL'], ['tronAddresses', 'TRON'],
+        ['axmAddresses', 'AXM'], ['atomAddresses', 'ATOM'], ['suiAddresses', 'SUI'],
+        ['aptAddresses', 'APT'], ['aseAddresses', 'ASE'],
+      ];
+      (Array.isArray(raw) ? raw : []).forEach((w: any) => {
+        const wName = String(w?.name || 'Wallet');
+        fields.forEach(([field, chain]) => {
+          (Array.isArray(w?.[field]) ? w[field] : []).forEach((a: any) => {
+            if (!a?.address) return;
+            items.push({ key: `${w.id}:${chain}:${a.index}`, walletName: wName, chain,
+              label: `${wName} · ${chain} #${(a.index ?? 0) + 1}`, address: String(a.address) });
+          });
+        });
+        if (w?.gramAddress?.address) {
+          items.push({ key: `${w.id}:GRAM`, walletName: wName, chain: 'GRAM',
+            label: `${wName} · GRAM`, address: String(w.gramAddress.address) });
+        }
+      });
+    } catch { /* data walletgen rusak → anggap kosong */ }
+    setWgItems(items);
+  };
+
+  const openWalletGenImport = () => {
+    loadWalletGenAddresses();
+    setWgSearch('');
+    setWgChain('ALL');
+    setWgOpen(true);
+  };
+
+  const isAddrInProfile = (addr: string, list = masterWallets) =>
+    list.some(m => m.address.trim().toLowerCase() === addr.trim().toLowerCase());
+
+  const importWgAddresses = (items: WgAddrItem[]) => {
+    const seen = new Set(masterWallets.map(m => m.address.trim().toLowerCase()));
+    const toAdd = items.filter(i => {
+      const k = i.address.trim().toLowerCase();
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    if (toAdd.length === 0) { showAlert('Semua address sudah ada di Wallet Profile.', 'info'); return; }
+    setMasterWallets(prev => [
+      ...prev,
+      ...toAdd.map((i, n) => ({ id: `${Date.now()}_${n}`, name: i.label, address: i.address })),
+    ]);
+    showAlert(`${toAdd.length} address ditambahkan ke Wallet Profile.`, 'success');
+  };
+
+  const wgFiltered = wgItems.filter(i =>
+    (wgChain === 'ALL' || i.chain === wgChain) &&
+    (!wgSearch.trim() ||
+      i.label.toLowerCase().includes(wgSearch.toLowerCase()) ||
+      i.address.toLowerCase().includes(wgSearch.toLowerCase()))
+  );
+  const wgChains = ['ALL', ...Array.from(new Set(wgItems.map(i => i.chain)))];
+
   const addMasterWallet = () => {
     showPrompt(
       "NAMA WALLET",
@@ -448,6 +515,58 @@ export const Home: React.FC = () => {
             <button onClick={addMasterWallet} style={{ width: '100%', padding: '10px', background: '#646cff', color: 'white', border: 'none', borderRadius: '6px', marginBottom: '15px', cursor: 'pointer' }}>
               + Tambah Profile Baru
             </button>
+            <button onClick={() => (wgOpen ? setWgOpen(false) : openWalletGenImport())}
+              style={{ width: '100%', padding: '10px', background: wgOpen ? '#333' : 'transparent', color: '#01a2ff', border: '1px solid #01a2ff', borderRadius: '6px', marginBottom: '15px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+              <FaFileImport /> {wgOpen ? 'Kembali ke Daftar Profile' : 'Impor dari WalletGen'}
+            </button>
+            {wgOpen ? (
+              <div>
+                {wgItems.length === 0 ? (
+                  <p style={{ textAlign: 'center', color: '#666', fontSize: '12px' }}>
+                    Belum ada wallet di WalletGen. Buat wallet dulu di halaman WalletGen.
+                  </p>
+                ) : (
+                  <>
+                    <input type="search" placeholder="Cari nama / address..." value={wgSearch}
+                      onChange={e => setWgSearch(e.target.value)}
+                      style={{ width: '100%', boxSizing: 'border-box', marginBottom: '8px' }} />
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '10px' }}>
+                      {wgChains.map(c => (
+                        <button key={c} onClick={() => setWgChain(c)}
+                          style={{ padding: '4px 10px', fontSize: '11px', cursor: 'pointer', borderRadius: '4px',
+                            background: wgChain === c ? '#01a2ff' : '#252525', color: wgChain === c ? '#000' : '#aaa',
+                            border: '1px solid #333', fontWeight: wgChain === c ? 'bold' : 'normal' }}>
+                          {c}
+                        </button>
+                      ))}
+                    </div>
+                    <button onClick={() => importWgAddresses(wgFiltered)} disabled={wgFiltered.length === 0}
+                      style={{ width: '100%', padding: '8px', marginBottom: '10px', background: '#252525', color: '#fff', border: '1px solid #444', borderRadius: '6px', cursor: wgFiltered.length ? 'pointer' : 'not-allowed', fontSize: '12px' }}>
+                      + Tambah semua yang tampil ({wgFiltered.length})
+                    </button>
+                    <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                      {wgFiltered.length === 0 ? <p style={{ textAlign: 'center', color: '#666', fontSize: '12px' }}>Tidak ditemukan.</p> :
+                        wgFiltered.map(i => {
+                          const exists = isAddrInProfile(i.address);
+                          return (
+                            <div key={i.key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', background: '#252525', padding: '10px', borderRadius: '6px', marginBottom: '8px' }}>
+                              <div style={{ overflow: 'hidden', minWidth: 0 }}>
+                                <div style={{ fontWeight: 'bold', fontSize: '13px' }}>{i.label}</div>
+                                <div style={{ fontSize: '11px', color: '#888', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>{i.address}</div>
+                              </div>
+                              <button disabled={exists} onClick={() => importWgAddresses([i])}
+                                style={{ flexShrink: 0, padding: '5px 10px', fontSize: '11px', borderRadius: '4px', cursor: exists ? 'default' : 'pointer',
+                                  background: 'none', border: `1px solid ${exists ? '#333' : '#01a2ff'}`, color: exists ? '#4caf50' : '#01a2ff' }}>
+                                {exists ? <><FaCheck size={10} /> Ada</> : 'Tambah'}
+                              </button>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  </>
+                )}
+              </div>
+            ) : (
             <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
               {masterWallets.length === 0 ? <p style={{ textAlign: 'center', color: '#666' }}>Belum ada wallet terdaftar.</p> : 
                 masterWallets.map(mw => (
@@ -463,7 +582,8 @@ export const Home: React.FC = () => {
                 ))
               }
             </div>
-            <button onClick={() => setIsMasterModalOpen(false)} style={{ width: '100%', marginTop: '15px', padding: '10px', background: '#333', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>Tutup</button>
+            )}
+            <button onClick={() => { setIsMasterModalOpen(false); setWgOpen(false); }} style={{ width: '100%', marginTop: '15px', padding: '10px', background: '#333', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>Tutup</button>
           </div>
         </div>
       )}
