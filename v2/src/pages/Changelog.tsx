@@ -21,6 +21,16 @@ interface Version {
 
 const CHANGELOG: Version[] = [
   {
+    version: '2.4.7',
+    date: '10 Okt 2026',
+    title: 'Update v2.4.7',
+    changes: [
+      { type: 'feature', text: 'Menambahkan Solana Explorer ~Explorer' },
+      { type: 'feature', text: 'Menambahkan enkripsi (AES-256-GCM) ~WalleGen' },
+      { type: 'improvement', text: 'Memperbarui UI dan memperbaiki kesalahan tata letak ~WalletGen' },
+    ],
+  },
+  {
     version: '2.4.5',
     date: '7 Okt 2026',
     title: 'Update v2.4.5',
