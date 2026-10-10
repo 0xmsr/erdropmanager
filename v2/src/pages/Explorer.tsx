@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { ethers } from 'ethers';
 import { Navbar } from '../components/Navbar';
 import { KNOWN_4BYTE, KNOWN_TOPICS } from './wallet-gen/know';
@@ -26,6 +26,14 @@ import {
   type AsentumActivityRange, type AsentumTxActivity,
   type AsentumChainStatus, type AsentumBlockSummary, type AsentumTxSummary, type AsentumValidator, type AsentumAddressHistory, type AsentumAccountInfo,
 } from './wallet-gen/network/Asentumnet';
+import {
+  SOLANA_NETWORKS, isValidSolanaAddress, getSolBalanceWithFallback, fetchSolTokenPortfolio, fetchSolTxHistory,
+  getSolNetworkStatus, fetchSolLatestBlocks, fetchSolBlock, fetchSolTxDetail, fetchSolAccountInfo,
+  type SolNetworkStatus, type SolBlockSummary, type SolTxDetail, type SolAccountInfo, type SolTxHistoryItem,
+  getCustomSolRpc, setCustomSolRpc,
+  fetchStakeAccounts, fetchSolSupply, fetchSolPriorityFees, fetchSolValidatorsOverview, fetchSolTopHolders, fetchSolTokenMeta, fetchSolBlockStats,
+  type SolStakeAccount, type SolSupplyInfo, type SolPriorityFees, type SolValidatorsOverview, type SolTokenMeta, type SolHolder, type SolBlockStats,
+} from './wallet-gen/network/Solnet';
 import {
   FaSearch, FaCube, FaExchangeAlt, FaWallet, FaFileCode, FaCopy,
   FaCheckCircle, FaTimesCircle, FaClock, FaSpinner, FaExternalLinkAlt,
@@ -1217,7 +1225,7 @@ const NATIVE_SYMBOL_TO_COINGECKO_ID: Record<string, string> = {
   AVAX: 'avalanche-2', RON: 'ronin', FTM: 'fantom', ONE: 'harmony-2',
   CRO: 'crypto-com-chain', GLMR: 'moonbeam', CELO: 'celo', KAVA: 'kava',
   METIS: 'metis-token', MNT: 'mantle', xDAI: 'xdai', GNO: 'gnosis',
-  GRAM: 'the-open-network', TON: 'the-open-network',
+  GRAM: 'the-open-network', TON: 'the-open-network', SOL: 'solana',
 };
 
 async function fetchNativeTokenPrice(symbol: string): Promise<number | null> {
@@ -1676,6 +1684,893 @@ function ContractInteractionPanel({
   );
 }
 
+// ── Solana Explorer ─────────────────────────────────────────────────────
+// Panel SOL: status jaringan (slot/epoch/TPS), block terbaru, pencarian
+// address / signature TX / nomor slot. Data langsung dari RPC Solana
+// (lihat bagian "SOLANA EXPLORER" di Solnet.ts) — tanpa indexer pihak ketiga,
+// kecuali daftar token (Jupiter) & harga SOL (CoinGecko) yang opsional.
+const SOL_ADDR_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const SOL_SIG_RE = /^[1-9A-HJ-NP-Za-km-z]{80,90}$/;
+const SOL_COLOR = '#9945FF';
+const SOL_GREEN = '#14F195';
+
+const SolanaLogo: React.FC<{ size?: number; mono?: boolean; style?: React.CSSProperties }> = ({ size = 16, mono = false, style }) => {
+  const c = mono ? 'currentColor' : SOL_GREEN;
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" style={{ flexShrink: 0, ...style }} role="img" aria-label="Solana">
+      <path d="M9 6.5h17.5L23 10.5H5.5L9 6.5Z" stroke={c} strokeWidth="2.2" strokeLinejoin="round" />
+      <path d="M5.5 13.5H23l3.5 4H9l-3.5-4Z" stroke={c} strokeWidth="2.2" strokeLinejoin="round" />
+      <path d="M9 21.5h17.5L23 25.5H5.5l3.5-4Z" stroke={c} strokeWidth="2.2" strokeLinejoin="round" />
+    </svg>
+  );
+};
+
+function solFmt(n: number | null | undefined, max = 9) {
+  return n == null ? '—' : n.toLocaleString('en-US', { maximumFractionDigits: max });
+}
+
+function solFriendlyError(e: any): string {
+  const raw = String(e?.message ?? e ?? '');
+  if (raw === 'SLOT_SKIPPED') return 'Slot ini tidak punya block (di-skip leader) atau datanya sudah tidak tersedia di RPC.';
+  if (/429|rate.?limit|too many request/i.test(raw)) return 'RPC Solana lagi dibatasi (rate limit). Tunggu sebentar lalu coba lagi.';
+  if (/timeout/i.test(raw)) return 'RPC Solana tidak merespons (timeout). Coba lagi sebentar lagi.';
+  if (/failed to fetch|networkerror|load failed/i.test(raw)) return 'Gagal konek ke RPC Solana. Cek koneksi internet kamu.';
+  if (/Invalid public key|non-base58/i.test(raw)) return 'Address Solana tidak valid.';
+  return raw.slice(0, 220) || 'Terjadi kesalahan tidak dikenal.';
+}
+
+const SolRow: React.FC<{ label: string; value: React.ReactNode; mono?: boolean; copy?: string; link?: string }> = ({ label, value, mono = true, copy, link }) => (
+  <div style={{
+    display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start',
+    gap: '14px', padding: '10px 0', borderBottom: `1px solid ${COLORS.border}`, flexWrap: 'wrap',
+  }}>
+    <span style={{ fontSize: '11px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '1px', flexShrink: 0, minWidth: '120px' }}>{label}</span>
+    <span style={{
+      fontSize: '13px', color: COLORS.text, fontFamily: mono ? 'monospace' : 'inherit', wordBreak: 'break-all',
+      textAlign: 'right', flex: 1, display: 'flex', gap: '8px', justifyContent: 'flex-end', alignItems: 'center', flexWrap: 'wrap',
+    }}>
+      {value}
+      {copy && <FaCopy size={11} style={{ cursor: 'pointer', color: COLORS.muted, flexShrink: 0 }} onClick={() => copyToClipboard(copy)} title="Copy" />}
+      {link && <a href={link} target="_blank" rel="noreferrer" style={{ color: COLORS.accent, flexShrink: 0 }} title="Buka di Solscan"><FaExternalLinkAlt size={10} /></a>}
+    </span>
+  </div>
+);
+
+interface SolExplorerProps {
+  active: boolean;
+  refreshEnabled: boolean;
+  refreshSec: number;
+  pending: { q: string; n: number } | null;
+  lastRef: React.MutableRefObject<string | null>;
+  onRefreshChange: (p: { enabled?: boolean; intervalSec?: 3 | 4 | 5 }) => void;
+}
+
+const SolExplorer: React.FC<SolExplorerProps> = ({ active, refreshEnabled, refreshSec, pending, lastRef, onRefreshChange }) => {
+  const navigate = useNavigate();
+  const [netId, setNetId] = useState(() => SOLANA_NETWORKS[0].id);
+  const net = useMemo(() => SOLANA_NETWORKS.find(n => n.id === netId) ?? SOLANA_NETWORKS[0], [netId]);
+  const [query, setQuery] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [price, setPrice] = useState<number | null>(null);
+
+  const [status, setStatus] = useState<SolNetworkStatus | null>(null);
+  const [statusLoading, setStatusLoading] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [blocks, setBlocks] = useState<SolBlockSummary[]>([]);
+  const [blocksLoading, setBlocksLoading] = useState(false);
+  const [blocksError, setBlocksError] = useState<string | null>(null);
+
+  const [acct, setAcct] = useState<{ address: string; lamports: number; info: SolAccountInfo | null } | null>(null);
+  const [tokens, setTokens] = useState<DetectedToken[]>([]);
+  const [tokensLoading, setTokensLoading] = useState(false);
+  const [tokensError, setTokensError] = useState<string | null>(null);
+  const [txs, setTxs] = useState<SolTxHistoryItem[]>([]);
+  const [txsLoading, setTxsLoading] = useState(false);
+  const [txsError, setTxsError] = useState<string | null>(null);
+  const [txsHasMore, setTxsHasMore] = useState(false);
+  const [txsMoreLoading, setTxsMoreLoading] = useState(false);
+  const [txDetail, setTxDetail] = useState<SolTxDetail | null>(null);
+  const [txNotFound, setTxNotFound] = useState<string | null>(null);
+  const [block, setBlock] = useState<SolBlockSummary | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
+  const [showRaw, setShowRaw] = useState(false);
+  const runRef = useRef(0);
+  const [showSettings, setShowSettings] = useState(false);
+  const [rpcInput, setRpcInput] = useState(() => getCustomSolRpc(SOLANA_NETWORKS[0].id));
+  const [rpcMsg, setRpcMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [rpcVer, setRpcVer] = useState(0);
+  const [supply, setSupply] = useState<SolSupplyInfo | null>(null);
+  const [fees, setFees] = useState<SolPriorityFees | null>(null);
+  const [vals, setVals] = useState<SolValidatorsOverview | null>(null);
+  const [valsLoading, setValsLoading] = useState(false);
+  const [valsError, setValsError] = useState<string | null>(null);
+  const [feedTab, setFeedTab] = useState<'blocks' | 'validators'>('blocks');
+  const [meta, setMeta] = useState<SolTokenMeta | null>(null);
+  const [holders, setHolders] = useState<SolHolder[]>([]);
+  const [holdersLoading, setHoldersLoading] = useState(false);
+  const [holdersError, setHoldersError] = useState<string | null>(null);
+  const [stakes, setStakes] = useState<SolStakeAccount[]>([]);
+  const [blockStats, setBlockStats] = useState<SolBlockStats | null | undefined>(undefined);
+
+  const hasResult = !!(acct || txDetail || block || txNotFound);
+  const usd = (sol: number) => (net.id === 'mainnet' && price != null ? sol * price : null);
+
+  const resetResults = () => {
+    runRef.current++;
+    setError(null); setAcct(null); setTokens([]); setTokensError(null); setTokensLoading(false);
+    setTxs([]); setTxsError(null); setTxsLoading(false); setTxsHasMore(false);
+    setTxDetail(null); setTxNotFound(null); setBlock(null); setShowLogs(false); setShowRaw(false);
+    setMeta(null); setHolders([]); setHoldersError(null); setHoldersLoading(false); setStakes([]); setBlockStats(undefined);
+  };
+
+  const goHome = () => { resetResults(); setQuery(''); lastRef.current = null; navigate('/explorer', { replace: true }); };
+
+  useEffect(() => { setRpcInput(getCustomSolRpc(netId)); setRpcMsg(null); }, [netId]);
+
+  const saveRpc = (clear = false) => {
+    try {
+      setCustomSolRpc(netId, clear ? '' : rpcInput);
+      if (clear) setRpcInput('');
+      setRpcVer(v => v + 1);
+      setRpcMsg({ ok: true, text: clear || !rpcInput.trim() ? 'RPC kustom dihapus — kembali ke RPC publik.' : 'RPC kustom disimpan & dipakai sebagai prioritas pertama.' });
+    } catch (e: any) { setRpcMsg({ ok: false, text: e?.message || 'Gagal menyimpan RPC.' }); }
+  };
+
+  // Harga SOL (cuma bermakna di mainnet).
+  useEffect(() => {
+    if (!active || net.id !== 'mainnet') return;
+    let off = false;
+    fetchNativeTokenPrice('SOL').then(p => { if (!off) setPrice(p); });
+    return () => { off = true; };
+  }, [active, netId]);
+
+  // Status jaringan (auto-refresh).
+  useEffect(() => {
+    if (!active) return;
+    let off = false;
+    setStatus(null);
+    const load = async () => {
+      setStatusLoading(true);
+      try { const s = await getSolNetworkStatus(net); if (!off) { setStatus(s); setStatusError(null); } }
+      catch (e: any) { if (!off) setStatusError(solFriendlyError(e)); }
+      finally { if (!off) setStatusLoading(false); }
+    };
+    load();
+    if (!refreshEnabled) return () => { off = true; };
+    const id = setInterval(load, refreshSec * 1000);
+    return () => { off = true; clearInterval(id); };
+  }, [active, netId, refreshEnabled, refreshSec, rpcVer]);
+
+  // Block terbaru (auto-refresh lebih jarang — tiap block = 1 request).
+  // inFlight mencegah refresh bertumpuk kalau RPC lambat; block muncul bertahap.
+  useEffect(() => {
+    if (!active) return;
+    let off = false;
+    let inFlight = false;
+    setBlocks([]); setBlocksError(null);
+    const load = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      setBlocksLoading(true);
+      try {
+        const b = await fetchSolLatestBlocks(net, 5, { onPartial: p => { if (!off) { setBlocks(p); setBlocksError(null); } }, shouldCancel: () => off });
+        if (!off) { setBlocks(b); setBlocksError(null); }
+      } catch (e: any) { if (!off) setBlocksError(solFriendlyError(e)); }
+      finally { inFlight = false; if (!off) setBlocksLoading(false); }
+    };
+    load();
+    if (!refreshEnabled) return () => { off = true; };
+    const id = setInterval(load, 12000);
+    return () => { off = true; clearInterval(id); };
+  }, [active, netId, refreshEnabled, rpcVer]);
+
+  // Supply & priority fee (lebih jarang berubah → refresh 30 dtk).
+  useEffect(() => {
+    if (!active) return;
+    let off = false;
+    setSupply(null); setFees(null);
+    const load = () => {
+      fetchSolSupply(net).then(v => { if (!off) setSupply(v); }).catch(() => {});
+      fetchSolPriorityFees(net).then(v => { if (!off) setFees(v); }).catch(() => {});
+    };
+    load();
+    if (!refreshEnabled) return () => { off = true; };
+    const id = setInterval(load, 30000);
+    return () => { off = true; clearInterval(id); };
+  }, [active, netId, refreshEnabled, rpcVer]);
+
+  // Daftar validator — dimuat hanya saat tab Validator dibuka.
+  useEffect(() => {
+    if (!active || feedTab !== 'validators') return;
+    let off = false;
+    setVals(null); setValsError(null); setValsLoading(true);
+    fetchSolValidatorsOverview(net, 15)
+      .then(v => { if (!off) setVals(v); })
+      .catch((e: any) => { if (!off) setValsError(solFriendlyError(e)); })
+      .finally(() => { if (!off) setValsLoading(false); });
+    return () => { off = true; };
+  }, [active, netId, feedTab, rpcVer]);
+
+  const openBlock = async (slot: number) => {
+    resetResults();
+    const run = runRef.current;
+    lastRef.current = String(slot);
+    setLoading(true);
+    try {
+      const b = await fetchSolBlock(net, slot);
+      if (runRef.current !== run) return;
+      setBlock(b);
+      navigate(`/explorer/block/${slot}`, { replace: true });
+      fetchSolBlockStats(net, slot).then(st => { if (runRef.current === run) setBlockStats(st); }).catch(() => { if (runRef.current === run) setBlockStats(null); });
+    } catch (e: any) {
+      if (runRef.current === run) setError(solFriendlyError(e));
+    } finally { if (runRef.current === run) setLoading(false); }
+  };
+
+  const loadTxs = async (address: string, run: number, before?: string) => {
+    try {
+      const items = await fetchSolTxHistory(net, address, { limit: 15, before });
+      if (runRef.current !== run) return;
+      setTxs(prev => (before ? [...prev, ...items] : items));
+      setTxsHasMore(items.length >= 15);
+      setTxsError(null);
+    } catch (e: any) { if (runRef.current === run) setTxsError(solFriendlyError(e)); }
+  };
+
+  const handleSearch = async (eOrValue?: React.FormEvent | string) => {
+    const direct = typeof eOrValue === 'string' ? eOrValue : undefined;
+    if (typeof eOrValue !== 'string') eOrValue?.preventDefault();
+    const q = (direct ?? query).trim();
+    if (!q) return;
+    if (direct !== undefined) setQuery(direct);
+    if (/^\d+$/.test(q) && q.length < 20) { await openBlock(parseInt(q, 10)); return; }
+
+    resetResults();
+    const run = runRef.current;
+    lastRef.current = q;
+    setLoading(true);
+    try {
+      if (SOL_SIG_RE.test(q)) {
+        const d = await fetchSolTxDetail(net, q);
+        if (runRef.current !== run) return;
+        if (d) { setTxDetail(d); navigate(`/explorer/tx/${q}`, { replace: true }); }
+        else setTxNotFound(q);
+      } else if (SOL_ADDR_RE.test(q) && isValidSolanaAddress(q)) {
+        let info: SolAccountInfo | null = null;
+        let lamports = 0;
+        try { info = await fetchSolAccountInfo(net, q); lamports = info.lamports; }
+        catch { lamports = await getSolBalanceWithFallback(net, q); }
+        if (runRef.current !== run) return;
+        setAcct({ address: q, lamports, info });
+        navigate(`/explorer/address/${q}`, { replace: true });
+
+        if (info?.mint) {
+          fetchSolTokenMeta(q).then(m => { if (runRef.current === run) setMeta(m); }).catch(() => {});
+          setHoldersLoading(true);
+          fetchSolTopHolders(net, q, info.mint.supplyUi)
+            .then(h => { if (runRef.current === run) setHolders(h); })
+            .catch((e: any) => { if (runRef.current === run) setHoldersError(solFriendlyError(e)); })
+            .finally(() => { if (runRef.current === run) setHoldersLoading(false); });
+        } else if (!info || info.kind === 'wallet') {
+          // Best-effort: banyak RPC publik menolak getProgramAccounts → diabaikan diam-diam.
+          fetchStakeAccounts(net, q).then(st => { if (runRef.current === run) setStakes(st); }).catch(() => {});
+        }
+
+        setTokensLoading(true);
+        fetchSolTokenPortfolio(q, net)
+          .then(t => { if (runRef.current === run) { setTokens(t.sort((a, b) => (b.usdValue ?? -1) - (a.usdValue ?? -1))); setTokensError(null); } })
+          .catch((e: any) => { if (runRef.current === run) setTokensError(solFriendlyError(e)); })
+          .finally(() => { if (runRef.current === run) setTokensLoading(false); });
+
+        setTxsLoading(true);
+        loadTxs(q, run).finally(() => { if (runRef.current === run) setTxsLoading(false); });
+      } else {
+        setError('Format tidak dikenali. Masukkan address Solana (base58), signature TX (~88 karakter), atau nomor slot.');
+      }
+    } catch (e: any) {
+      if (runRef.current === run) setError(solFriendlyError(e));
+    } finally { if (runRef.current === run) setLoading(false); }
+  };
+
+  // Query yang datang dari URL (/explorer/address/<addr>, dst).
+  useEffect(() => { if (pending) handleSearch(pending.q); }, [pending?.n]);
+
+  const loadMoreTxs = async () => {
+    if (!acct || txs.length === 0) return;
+    setTxsMoreLoading(true);
+    await loadTxs(acct.address, runRef.current, txs[txs.length - 1].signature);
+    setTxsMoreLoading(false);
+  };
+
+  const scan = (path: string) => `${net.explorerUrl}/${path}${net.clusterParam}`;
+  const card: React.CSSProperties = { background: COLORS.bg, border: `1px solid ${COLORS.border}`, padding: '18px', marginBottom: '24px' };
+  const h3: React.CSSProperties = { margin: 0, fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1.5px', display: 'flex', alignItems: 'center', gap: '6px' };
+  const closeBtn = (
+    <button type="button" onClick={goHome} style={{
+      fontSize: '10px', color: COLORS.muted, background: 'none', border: `1px solid ${COLORS.border}`,
+      padding: '5px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px',
+    }}><FaTimesCircle size={10} /> Tutup &amp; Kembali</button>
+  );
+  const addrLink = (a: string, f = 6, b = 4) => (
+    <span title={a} onClick={e => { e.stopPropagation(); handleSearch(a); }}
+      style={{ color: COLORS.accent, cursor: 'pointer', textDecoration: 'underline dotted' }}>{shortHash(a, f, b)}</span>
+  );
+
+  const cells: { label: string; value: React.ReactNode; color?: string; hint?: string }[] = [
+    { label: 'Slot Terkini', value: status ? `#${status.slot.toLocaleString('en-US')}` : null, color: SOL_COLOR },
+    { label: 'Block Height', value: status?.blockHeight != null ? status.blockHeight.toLocaleString('en-US') : '—' },
+    { label: 'Epoch', value: status?.epoch != null ? `${status.epoch}${status.epochProgressPct != null ? ` · ${status.epochProgressPct.toFixed(1)}%` : ''}` : '—' },
+    { label: 'TPS (sampel)', value: status?.tps != null ? solFmt(status.tps, 0) : '—' },
+    { label: 'Waktu / Slot', value: status?.avgSlotTimeSec != null ? `${status.avgSlotTimeSec.toFixed(2)}s` : '—' },
+    { label: 'Total TX', value: status?.totalTxCount != null ? `${(status.totalTxCount / 1e9).toFixed(2)}B` : '—' },
+    { label: 'Versi Node', value: status?.version ?? '—' },
+    { label: 'Harga SOL', value: net.id === 'mainnet' ? (price != null ? `$${price.toLocaleString('en-US', { maximumFractionDigits: 2 })}` : '—') : 'n/a (non-mainnet)' },
+    { label: 'Supply Beredar', value: supply ? `${(supply.circulatingSol / 1e6).toFixed(1)}M / ${(supply.totalSol / 1e6).toFixed(1)}M` : null },
+    { label: 'Priority Fee Minimum', value: fees ? `${solFmt(fees.medianMicroLamports, 0)} µ◎/CU` : null,
+      hint: fees ? (fees.medianMicroLamports === 0 ? `block longgar · ${fees.nonZeroSlotPct.toFixed(0)}% slot ada fee` : `P75 ${solFmt(fees.p75MicroLamports, 0)} · maks ${solFmt(fees.maxMicroLamports, 0)}`) : undefined },
+    ...(net.id === 'mainnet' ? [{ label: 'Fee Akun Populer', value: fees ? (fees.hotMedianMicroLamports != null ? `${solFmt(fees.hotMedianMicroLamports, 0)} µ◎/CU` : '—') : null,
+      hint: fees && fees.hotMedianMicroLamports != null ? `P75 ${solFmt(fees.hotP75MicroLamports, 0)} · P90 ${solFmt(fees.hotP90MicroLamports, 0)} · ${(fees.hotNonZeroSlotPct ?? 0).toFixed(0)}% slot ada fee` : undefined }] : []),
+    { label: 'Fee Dibayar (blok terakhir)', value: fees ? (fees.block ? `${fees.block.exact ? '' : '≈'}P50 ${solFmt(fees.block.p50, 0)} · P90 ${solFmt(fees.block.p90, 0)} µ◎/CU` : '—') : null,
+      hint: fees ? (fees.block ? `${fees.block.paidPct.toFixed(0)}% dari ${fees.block.txCount.toLocaleString('en-US')} TX bayar priority · per TX: P50 ${solFmt(fees.block.lamP50, 0)} · P90 ${solFmt(fees.block.lamP90, 0)} · maks ${solFmt(fees.block.lamMax, 0)} lamport` : 'RPC menolak getBlock — tambah RPC kustom yang mengizinkan baca blok') : undefined },
+    { label: 'Est. Fee Transfer', value: fees ? `${solFmt(fees.typicalFeeSol, 9)} SOL` : null, hint: fees ? 'transfer biasa · base 5.000 lamport + priority' : undefined },
+    { label: 'Est. Fee Swap', value: fees ? `${solFmt(fees.competitiveFeeSol, 9)} SOL` : null, hint: fees ? 'kompetitif · ±300k CU di harga P75' : undefined },
+      ];
+
+  return (
+    <div style={{ display: active ? 'block' : 'none' }}>
+      {/* ── Network selector + pengaturan ── */}
+      <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', marginBottom: showSettings ? '0' : '14px', padding: '12px', background: COLORS.bg, border: `1px solid ${COLORS.border}` }}>
+        <FaGlobe color={net.color} size={14} />
+        <select value={netId} onChange={e => { setNetId(e.target.value); resetResults(); setQuery(''); }} style={{ flex: '1 1 200px', minWidth: '180px' }}>
+          {SOLANA_NETWORKS.map(n => <option key={n.id} value={n.id}>{n.name} · {n.symbol}</option>)}
+        </select>
+        <button type="button" onClick={() => setShowSettings(s => !s)} title="Pengaturan auto-refresh & RPC" style={{
+          display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px',
+          background: showSettings ? COLORS.accent : '#111', color: showSettings ? '#000' : '#ccc',
+          border: `1px solid ${showSettings ? COLORS.accent : COLORS.border}`, padding: '8px 12px', cursor: 'pointer',
+        }}><FaCog size={12} /> Pengaturan</button>
+      </div>
+
+      {showSettings && (
+        <div style={{ marginBottom: '14px', padding: '14px', background: '#111', border: `1px solid ${COLORS.border}`, borderTop: 'none', display: 'flex', flexDirection: 'column', gap: '14px' }}>
+          <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer', userSelect: 'none' }}>
+              <input type="checkbox" checked={refreshEnabled} onChange={e => onRefreshChange({ enabled: e.target.checked })} style={{ width: 'auto', margin: 0 }} />
+              <FaSyncAlt size={11} color={refreshEnabled ? COLORS.green : COLORS.muted} />
+              Auto-refresh Status &amp; Block Terbaru
+            </label>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: COLORS.muted }}>
+              Interval:
+              <select value={refreshSec} disabled={!refreshEnabled} onChange={e => onRefreshChange({ intervalSec: Number(e.target.value) as 3 | 4 | 5 })} style={{ fontSize: '12px', padding: '4px 8px' }}>
+                <option value={3}>3 detik</option>
+                <option value={4}>4 detik</option>
+                <option value={5}>5 detik</option>
+              </select>
+            </label>
+          </div>
+          <div>
+            <label style={{ fontSize: '11px', color: COLORS.muted, display: 'block', marginBottom: '6px' }}>
+              RPC kustom untuk {net.name} (opsional — jadi prioritas pertama, sangat membantu kalau RPC publik kena rate limit):
+            </label>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+              <input placeholder="https://..." value={rpcInput} onChange={e => setRpcInput(e.target.value)} style={{ flex: '1 1 240px', fontSize: '12px', fontFamily: 'monospace' }} />
+              <button type="button" onClick={() => saveRpc(false)} style={{ padding: '8px 14px', fontSize: '11px', fontWeight: 'bold', background: COLORS.accent, color: '#000', border: 'none', cursor: 'pointer' }}>Simpan</button>
+              <button type="button" onClick={() => saveRpc(true)} disabled={!getCustomSolRpc(netId)} style={{ padding: '8px 14px', fontSize: '11px', background: '#111', color: '#888', border: `1px solid ${COLORS.border}`, cursor: 'pointer', opacity: getCustomSolRpc(netId) ? 1 : 0.5 }}>Hapus</button>
+            </div>
+            {rpcMsg && <p style={{ fontSize: '11px', margin: '8px 0 0', color: rpcMsg.ok ? COLORS.green : COLORS.red }}>{rpcMsg.text}</p>}
+            <p style={{ fontSize: '10px', color: '#444', margin: '8px 0 0' }}>
+              Aktif: {net.rpcUrls.length} endpoint{getCustomSolRpc(netId) ? ' (termasuk RPC kustom)' : ''} · RPC otomatis failover. Disimpan di browser ini dan juga dipakai tab Transfer/Wallet.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* ── Status jaringan ── */}
+      <div className="fade-in-up" style={{
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '1px',
+        background: COLORS.border, border: `1px solid ${COLORS.border}`, borderTop: `2px solid ${net.color}`, marginBottom: '14px', overflow: 'hidden',
+      }}>
+        {cells.map(c => (
+          <div key={c.label} style={{ background: COLORS.bg, padding: '10px 14px' }}>
+            <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '5px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              {c.label}{c.label === 'Slot Terkini' && refreshEnabled && !statusLoading && <FaSyncAlt size={7} color={COLORS.green} />}
+            </div>
+            <div style={{ fontSize: '13px', fontFamily: 'monospace', fontWeight: 'bold', color: c.color ?? COLORS.text, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {c.value === null ? (statusLoading ? <FaSpinner className="spin-icon" size={11} /> : '—') : c.value}
+            </div>
+            {c.hint && <div title={c.hint} style={{ fontSize: '9px', color: '#555', marginTop: '4px', lineHeight: 1.3 }}>{c.hint}</div>}
+          </div>
+        ))}
+      </div>
+      {statusError && !status && <p style={{ color: '#ff6666', fontSize: '11px', margin: '0 0 14px' }}>{statusError}</p>}
+
+      {/* ── Search ── */}
+      <form onSubmit={handleSearch} style={{ marginBottom: '24px' }}>
+        <div className="search-input-wrapper" style={{ display: 'flex' }}>
+          <FaSearch className="search-icon" />
+          <input type="search" placeholder="Address Solana / Signature TX / Nomor Slot"
+            value={query} onChange={e => setQuery(e.target.value)} style={{ color: '#fff' }} />
+        </div>
+        <button type="submit" disabled={loading} style={{ width: '100%', marginTop: '10px' }}>
+          {loading ? <><FaSpinner className="spin-icon" /> Mencari…</> : <><FaSearch /> Cari</>}
+        </button>
+      </form>
+
+      {error && (
+        <div style={{ background: 'rgba(255,51,51,0.07)', border: '1px solid #ff333344', borderLeft: '3px solid #ff3333', padding: '12px 14px', marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <FaExclamationTriangle color="#ff3333" size={13} />
+          <span style={{ color: '#ff6666', fontSize: '12px' }}>{error}</span>
+        </div>
+      )}
+
+      {/* ── ADDRESS ── */}
+      {acct && (() => {
+        const sol = acct.lamports / 1e9;
+        const u = usd(sol);
+        const info = acct.info;
+        const mintI = info?.mint;
+        const topN = (n: number) => holders.slice(0, n).reduce((a, h) => a + (h.pct ?? 0), 0);
+        const hasHolders = holders.length > 0 && holders.some(h => h.pct != null);
+        const top1 = hasHolders ? topN(1) : null, top5 = hasHolders ? topN(5) : null, top10 = hasHolders ? topN(10) : null;
+        const fdv = meta?.usdPrice != null && mintI ? meta.usdPrice * mintI.supplyUi : null;
+        const usdFmt = (v: number) => `$${v.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+        type MintFlag = { level: 'ok' | 'warn' | 'bad'; text: string };
+        const flags: MintFlag[] = mintI ? [
+          mintI.mintAuthority ? { level: 'warn', text: 'Mint authority masih aktif — supply bisa ditambah kapan saja oleh pemegang authority.' } : { level: 'ok', text: 'Mint authority sudah dicabut — supply tidak bisa ditambah.' },
+          mintI.freezeAuthority ? { level: 'warn', text: 'Freeze authority aktif — akun token holder bisa dibekukan.' } : { level: 'ok', text: 'Tidak ada freeze authority.' },
+          ...(mintI.program === 'Token-2022' ? [{ level: 'warn', text: 'Memakai Token-2022 — bisa punya extension (transfer fee, hook, dll.). Periksa sebelum swap/transfer.' } as MintFlag] : []),
+          ...(meta ? [meta.verified ? { level: 'ok', text: 'Terverifikasi di daftar Jupiter.' } as MintFlag : { level: 'warn', text: 'Belum terverifikasi di Jupiter — pastikan mint address benar (banyak token tiruan).' } as MintFlag] : []),
+          ...(top10 != null ? [top10 > 80 ? { level: 'bad', text: `10 holder teratas menguasai ${top10.toFixed(1)}% supply — sangat terkonsentrasi.` } as MintFlag : top10 > 50 ? { level: 'warn', text: `10 holder teratas menguasai ${top10.toFixed(1)}% supply.` } as MintFlag : { level: 'ok', text: `10 holder teratas menguasai ${top10.toFixed(1)}% supply.` } as MintFlag] : []),
+          ...(meta?.liquidity != null ? [meta.liquidity < 10000 ? { level: 'bad', text: `Likuiditas sangat rendah (${usdFmt(meta.liquidity)}) — slippage besar & rawan rug pull.` } as MintFlag : meta.liquidity < 50000 ? { level: 'warn', text: `Likuiditas rendah (${usdFmt(meta.liquidity)}).` } as MintFlag : { level: 'ok', text: `Likuiditas ${usdFmt(meta.liquidity)}.` } as MintFlag] : []),
+        ] : [];
+        const flagColor = (l: MintFlag['level']) => l === 'ok' ? COLORS.green : l === 'warn' ? COLORS.amber : COLORS.red;
+        const flagIcon = (l: MintFlag['level']) => l === 'ok' ? '✓' : l === 'warn' ? '!' : '✕';
+        const badCount = flags.filter(f => f.level === 'bad').length, warnCount = flags.filter(f => f.level === 'warn').length;
+        const verdict = badCount > 0 ? { label: 'RISIKO TINGGI', c: COLORS.red } : warnCount > 0 ? { label: 'PERIKSA DULU', c: COLORS.amber } : { label: 'RELATIF AMAN', c: COLORS.green };
+        const extLink: React.CSSProperties = { fontSize: '11px', color: COLORS.accent, border: `1px solid ${COLORS.border}`, padding: '6px 10px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '5px', background: '#111' };
+        return (
+          <div className="fade-in-up" style={{ ...card, borderTop: `2px solid ${net.color}` }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
+              <h3 style={{ ...h3, color: net.color }}><FaWallet /> {info?.kindLabel ?? 'Address Solana'}</h3>
+              {closeBtn}
+            </div>
+            <SolRow label="Address" value={shortHash(acct.address, 12, 10)} copy={acct.address} link={scan(`account/${acct.address}`)} />
+            <SolRow label="Balance" value={
+              <span>{solFmt(sol)} SOL{u != null && <span style={{ color: COLORS.muted, marginLeft: '6px' }}>(${u.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</span>}</span>
+            } />
+            {info && !info.exists && (
+              <div style={{ background: '#1a1608', border: '1px solid #4a3f10', padding: '10px 12px', margin: '12px 0 0', display: 'flex', gap: '8px', color: COLORS.amber, fontSize: '11px' }}>
+                <FaExclamationTriangle size={11} style={{ marginTop: '1px', flexShrink: 0 }} />
+                <span>Akun ini belum ada di chain (belum pernah menerima SOL). Akun baru dibuat saat pertama kali menerima dana.</span>
+              </div>
+            )}
+            {info?.exists && (
+              <>
+                <SolRow label="Owner Program" mono={!info.ownerLabel} value={info.owner ? <>{info.ownerLabel ?? shortHash(info.owner, 10, 8)}{info.ownerLabel && <span style={{ color: COLORS.muted, fontSize: '11px' }}>({shortHash(info.owner, 6, 4)})</span>}</> : '—'} copy={info.owner ?? undefined} />
+                <SolRow label="Executable" mono={false} value={info.executable ? <span style={{ color: COLORS.accent }}>Ya (program)</span> : 'Tidak'} />
+                <SolRow label="Data Size" value={`${info.dataSize.toLocaleString('en-US')} bytes`} />
+                {info.rentEpoch && info.rentEpoch.length < 12 && <SolRow label="Rent Epoch" value={info.rentEpoch} />}
+              </>
+            )}
+
+            {info?.mint && (
+              <div style={{ marginTop: '16px', paddingTop: '14px', borderTop: `1px dashed ${COLORS.border}` }}>
+                <h4 style={{ ...h3, margin: '0 0 8px', color: '#e8a119' }}><FaTag /> Token Mint ({info.mint.program})</h4>
+                {meta && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', margin: '4px 0 12px', flexWrap: 'wrap' }}>
+                    {meta.icon ? <img src={meta.icon} alt="" width={36} height={36} style={{ borderRadius: '50%', flexShrink: 0 }} onError={e => { (e.target as HTMLImageElement).style.visibility = 'hidden'; }} />
+                      : <div style={{ width: 36, height: 36, borderRadius: '50%', background: '#1a1a1a', flexShrink: 0 }} />}
+                    <div style={{ flex: 1, minWidth: '140px' }}>
+                      <div style={{ fontSize: '15px', fontWeight: 'bold', color: '#fff' }}>{meta.name ?? 'Unknown'} {meta.symbol && <span style={{ color: COLORS.muted, fontWeight: 'normal', fontSize: '12px' }}>({meta.symbol})</span>}</div>
+                      {meta.verified && <span style={{ fontSize: '9px', fontWeight: 'bold', color: COLORS.green, border: `1px solid ${COLORS.green}`, padding: '2px 6px', display: 'inline-block', marginTop: '4px' }}>VERIFIED (Jupiter)</span>}
+                    </div>
+                    {meta.usdPrice != null && <span style={{ fontSize: '15px', fontFamily: 'monospace', color: COLORS.green, fontWeight: 'bold' }}>${meta.usdPrice < 0.01 ? meta.usdPrice.toPrecision(4) : meta.usdPrice.toLocaleString('en-US', { maximumFractionDigits: 4 })}</span>}
+                  </div>
+                )}
+                {mintI && (
+                  <div style={{ margin: '4px 0 14px', padding: '12px 14px', background: '#0a0a0a', border: `1px solid ${COLORS.border}`, borderLeft: `3px solid ${verdict.c}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '8px', flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, display: 'flex', alignItems: 'center', gap: '6px' }}><FaShieldAlt size={11} /> Ringkasan Risiko</span>
+                      <span style={{ fontSize: '10px', fontWeight: 'bold', color: verdict.c, border: `1px solid ${verdict.c}`, padding: '2px 8px' }}>{verdict.label}</span>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                      {flags.map((f, i) => (
+                        <div key={i} style={{ display: 'flex', gap: '8px', alignItems: 'flex-start', fontSize: '11px', lineHeight: 1.4, color: '#bbb' }}>
+                          <span style={{ width: '14px', height: '14px', flexShrink: 0, marginTop: '1px', borderRadius: '50%', border: `1px solid ${flagColor(f.level)}`, color: flagColor(f.level), fontSize: '9px', fontWeight: 'bold', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{flagIcon(f.level)}</span>
+                          <span>{f.text}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ fontSize: '9px', color: '#444', marginTop: '8px' }}>Indikator otomatis dari data on-chain & Jupiter — bukan jaminan keamanan. Selalu riset sendiri (DYOR).</div>
+                  </div>
+                )}
+                {mintI && (
+                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', margin: '0 0 12px' }}>
+                    {net.id === 'mainnet' && <Link to={`/wallet-gen#swapsol=${acct.address}`} title="Buka WalletGen → Solana → Tools → Swap dengan token ini terpilih" style={{ ...extLink, color: '#000', background: SOL_COLOR, border: `1px solid ${SOL_COLOR}`, fontWeight: 'bold' }}><FaExchangeAlt size={9} /> Swap di WalletGen</Link>}
+                    {net.id === 'mainnet' && <a href={`https://dexscreener.com/solana/${acct.address}`} target="_blank" rel="noreferrer" style={extLink}><FaChartLine size={9} /> DexScreener</a>}
+                    <button type="button" onClick={() => copyToClipboard(acct.address)} style={{ ...extLink, cursor: 'pointer' }}><FaCopy size={9} /> Salin Mint</button>
+                  </div>
+                )}
+                {meta?.mcap != null && <SolRow label="Market Cap" value={`$${meta.mcap.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} />}
+                {meta?.liquidity != null && <SolRow label="Likuiditas" value={`$${meta.liquidity.toLocaleString('en-US', { maximumFractionDigits: 0 })}`} />}
+                {meta?.holderCount != null && <SolRow label="Holders" mono={false} value={meta.holderCount.toLocaleString('en-US')} />}
+                <SolRow label="Decimals" value={info.mint.decimals} />
+                <SolRow label="Total Supply" value={solFmt(info.mint.supplyUi, 6)} />
+                <SolRow label="Supply Mentah" value={info.mint.supply.replace(/\B(?=(\d{3})+(?!\d))/g, ',')} />
+                {fdv != null && <SolRow label="FDV (harga × supply)" value={usdFmt(fdv)} />}
+                {fdv != null && fdv > 0 && meta?.mcap != null && <SolRow label="Mcap / FDV" value={`${((meta.mcap / fdv) * 100).toFixed(1)}%`} />}
+                {meta?.mcap != null && meta.mcap > 0 && meta?.liquidity != null && <SolRow label="Likuiditas / Mcap" value={`${((meta.liquidity / meta.mcap) * 100).toFixed(2)}%`} />}
+                <SolRow label="Status Mint" mono={false} value={info.mint.isInitialized ? <span style={{ color: COLORS.green }}>Initialized</span> : <span style={{ color: COLORS.red }}>Belum diinisialisasi</span>} />
+                <SolRow label="Mint Authority" mono={!!info.mint.mintAuthority} value={info.mint.mintAuthority ? <span style={{ display: 'flex', gap: '6px', alignItems: 'center' }}><span style={{ color: COLORS.amber }}>Aktif</span>{addrLink(info.mint.mintAuthority, 8, 6)}</span> : <span style={{ color: COLORS.green }}>Dicabut (supply tetap)</span>} />
+                <SolRow label="Freeze Authority" mono={!!info.mint.freezeAuthority} value={info.mint.freezeAuthority ? <span style={{ display: 'flex', gap: '6px', alignItems: 'center' }}><span style={{ color: COLORS.amber }}>Aktif</span>{addrLink(info.mint.freezeAuthority, 8, 6)}</span> : <span style={{ color: COLORS.green }}>Tidak ada</span>} />
+                <h4 style={{ ...h3, margin: '16px 0 8px', color: COLORS.muted }}><FaUsers /> Top Holders{holders.length > 0 ? ` (${holders.length})` : ''}{holdersLoading && <FaSpinner className="spin-icon" size={11} />}</h4>
+                {hasHolders && (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '1px', background: COLORS.border, border: `1px solid ${COLORS.border}`, marginBottom: '10px' }}>
+                    {([['Top 1', top1], ['Top 5', top5], ['Top 10', top10]] as [string, number | null][]).map(([l, v]) => {
+                      const c = v == null ? COLORS.muted : v > 80 ? COLORS.red : v > 50 ? COLORS.amber : COLORS.green;
+                      return (
+                        <div key={l} style={{ background: COLORS.bg, padding: '10px 12px' }}>
+                          <div style={{ fontSize: '9px', textTransform: 'uppercase', letterSpacing: '1px', color: COLORS.muted, marginBottom: '4px' }}>{l} holder</div>
+                          <div style={{ fontSize: '14px', fontFamily: 'monospace', fontWeight: 'bold', color: c }}>{v != null ? `${v.toFixed(2)}%` : '—'}</div>
+                          <div style={{ height: '3px', background: '#161616', marginTop: '6px' }}><div style={{ height: '100%', width: `${Math.min(100, v ?? 0)}%`, background: c }} /></div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {hasHolders && <p style={{ fontSize: '10px', color: '#444', margin: '0 0 8px' }}>Persentase terhadap total supply. Akun pool likuiditas, burn address, atau program bisa ikut masuk daftar teratas.</p>}
+                {holdersError ? <p style={{ color: COLORS.red, fontSize: '11px', margin: 0 }}>{holdersError}</p>
+                  : !holdersLoading && holders.length === 0 ? <p style={{ color: '#333', fontSize: '12px', textAlign: 'center', padding: '8px 0', margin: 0 }}>Belum ada data holder.</p>
+                  : (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '340px', overflowY: 'auto' }}>
+                      {holders.map((h, idx) => (
+                        <div key={h.tokenAccount} className="explorer-row" onClick={() => handleSearch(h.owner ?? h.tokenAccount)} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 12px', background: h.pct != null ? `linear-gradient(90deg, #e8a11922 ${Math.min(100, h.pct)}%, #111 ${Math.min(100, h.pct)}%)` : '#111', border: `1px solid ${COLORS.border}`, cursor: 'pointer', flexWrap: 'wrap' }}>
+                          <span style={{ width: '20px', height: '20px', flexShrink: 0, background: ['#f3ba2f', '#aaaaaa', '#cd7f32'][idx] ?? '#2a2a2a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 'bold', color: idx < 3 ? '#000' : '#888' }}>{idx + 1}</span>
+                          <span style={{ color: COLORS.text, fontFamily: 'monospace', fontSize: '11px' }} title={h.owner ?? h.tokenAccount}>{shortHash(h.owner ?? h.tokenAccount, 8, 6)}</span>
+                          <span style={{ marginLeft: 'auto', fontSize: '11px', fontFamily: 'monospace' }}>{solFmt(h.amount, 4)}{meta?.symbol ? ` ${meta.symbol}` : ''}</span>
+                          {h.pct != null && <span style={{ fontSize: '10px', color: '#e8a119', fontFamily: 'monospace' }}>{h.pct.toFixed(2)}%</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+              </div>
+            )}
+
+            {stakes.length > 0 && (
+              <>
+                <h4 style={{ ...h3, margin: '18px 0 10px', color: COLORS.muted }}><FaShieldAlt /> Stake Account ({stakes.length}) · total {solFmt(stakes.reduce((a, x) => a + x.balanceSol, 0), 4)} SOL</h4>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {stakes.map(st => {
+                    const c = st.state === 'active' ? COLORS.green : st.state === 'inactive' ? COLORS.muted : COLORS.amber;
+                    return (
+                      <div key={st.pubkey} className="explorer-row" onClick={() => handleSearch(st.pubkey)} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 12px', background: '#111', border: `1px solid ${COLORS.border}`, cursor: 'pointer', flexWrap: 'wrap' }}>
+                        <span style={{ fontSize: '9px', fontWeight: 'bold', color: c, border: `1px solid ${c}`, padding: '2px 6px', textTransform: 'uppercase' }}>{st.state}</span>
+                        <span style={{ color: COLORS.accent, fontFamily: 'monospace', fontSize: '11px' }}>{shortHash(st.pubkey, 8, 6)}</span>
+                        {st.voter && <span style={{ fontSize: '10px', color: COLORS.muted, fontFamily: 'monospace' }}>→ validator {shortHash(st.voter, 6, 4)}</span>}
+                        <span style={{ marginLeft: 'auto', fontSize: '11px', fontFamily: 'monospace' }}>{solFmt(st.balanceSol, 4)} SOL</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+
+            <h4 style={{ ...h3, margin: '18px 0 10px', color: COLORS.muted }}><FaCoins /> Token Holdings (SPL){tokensLoading && <FaSpinner className="spin-icon" size={11} />}</h4>
+            {tokensError ? <p style={{ color: COLORS.red, fontSize: '11px', margin: 0 }}>{tokensError}</p>
+              : tokens.length === 0 && !tokensLoading ? <p style={{ color: '#333', fontSize: '12px', textAlign: 'center', padding: '10px 0', margin: 0 }}>Tidak ada token SPL terdeteksi.</p>
+              : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '320px', overflowY: 'auto' }}>
+                  {tokens.map(t => (
+                    <div key={t.address} className="explorer-row" onClick={() => handleSearch(t.address)} style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px',
+                      padding: '9px 12px', background: '#111', border: `1px solid ${COLORS.border}`, cursor: 'pointer', flexWrap: 'wrap',
+                    }}>
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '8px', minWidth: 0 }}>
+                        {t.logo ? <img src={t.logo} alt="" width={18} height={18} style={{ borderRadius: '50%', flexShrink: 0 }} onError={e => { (e.target as HTMLImageElement).style.visibility = 'hidden'; }} />
+                          : <div style={{ width: 18, height: 18, borderRadius: '50%', background: '#1a1a1a', flexShrink: 0 }} />}
+                        <span style={{ fontSize: '12px', color: COLORS.text, fontWeight: 'bold', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.symbol}</span>
+                        <span style={{ fontSize: '11px', color: COLORS.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.name}</span>
+                      </span>
+                      <span style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '2px' }}>
+                        <span style={{ fontSize: '12px', fontFamily: 'monospace' }}>{t.balanceFormatted}</span>
+                        <span style={{ fontSize: '10px', fontFamily: 'monospace', color: t.usdValue != null ? COLORS.green : '#444' }}>
+                          {t.usdValue != null ? '$' + t.usdValue.toLocaleString('en-US', { maximumFractionDigits: 2 }) : 'harga n/a'}
+                        </span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+            <h4 style={{ ...h3, margin: '18px 0 10px', color: COLORS.muted }}><FaHistory /> Transaksi Terakhir{txsLoading && <FaSpinner className="spin-icon" size={11} />}</h4>
+            {txsError && <p style={{ color: COLORS.red, fontSize: '11px', margin: '0 0 10px' }}>{txsError}</p>}
+            {txs.length === 0 && !txsLoading && !txsError ? <p style={{ color: '#333', fontSize: '12px', textAlign: 'center', padding: '16px 0', margin: 0 }}>Belum ada riwayat transaksi.</p> : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                {txs.map(t => (
+                  <div key={t.signature} className="explorer-row" onClick={() => handleSearch(t.signature)} style={{
+                    display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 12px',
+                    background: '#111', border: `1px solid ${COLORS.border}`, cursor: 'pointer', flexWrap: 'wrap',
+                  }}>
+                    {t.ok ? <FaCheckCircle size={11} color={COLORS.green} /> : <FaTimesCircle size={11} color={COLORS.red} />}
+                    <span style={{ color: COLORS.accent, fontFamily: 'monospace', fontSize: '11px' }}>{shortHash(t.signature, 8, 6)}</span>
+                    <span style={{ fontSize: '10px', color: COLORS.muted, fontFamily: 'monospace' }}>slot {t.slot.toLocaleString('en-US')}</span>
+                    {t.memo && <span style={{ fontSize: '10px', color: COLORS.muted, fontStyle: 'italic', maxWidth: '160px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.memo}</span>}
+                    {t.deltaSol != null && (
+                      <span style={{ marginLeft: 'auto', fontSize: '11px', fontFamily: 'monospace', color: t.deltaSol > 0 ? COLORS.green : t.deltaSol < 0 ? COLORS.amber : COLORS.muted }}>
+                        {t.deltaSol > 0 ? '+' : ''}{solFmt(t.deltaSol, 6)} SOL
+                      </span>
+                    )}
+                    {t.blockTime && <span style={{ fontSize: '10px', color: COLORS.muted, whiteSpace: 'nowrap', marginLeft: t.deltaSol == null ? 'auto' : 0 }}>{timeAgo(t.blockTime)}</span>}
+                  </div>
+                ))}
+                {txsHasMore && (
+                  <button type="button" onClick={loadMoreTxs} disabled={txsMoreLoading} style={{ marginTop: '4px', padding: '9px', background: 'none', border: `1px solid ${COLORS.border}`, color: COLORS.muted, cursor: 'pointer', fontSize: '11px' }}>
+                    {txsMoreLoading ? <><FaSpinner className="spin-icon" /> Memuat…</> : 'Muat Lebih Banyak'}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ── TX DETAIL ── */}
+      {txDetail && (
+        <div className="fade-in-up" style={{ ...card, borderTop: `2px solid ${net.color}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px', marginBottom: '4px' }}>
+            <h3 style={{ ...h3, color: net.color }}><FaExchangeAlt /> Transaksi Solana</h3>
+            <span style={{
+              display: 'inline-flex', alignItems: 'center', gap: '5px', fontSize: '11px', fontWeight: 'bold',
+              color: txDetail.ok ? COLORS.green : COLORS.red, border: `1px solid ${txDetail.ok ? COLORS.green : COLORS.red}`, padding: '3px 8px',
+            }}>{txDetail.ok ? <FaCheckCircle size={11} /> : <FaTimesCircle size={11} />} {txDetail.ok ? 'Success' : 'Failed'}</span>
+            {closeBtn}
+          </div>
+          {!txDetail.ok && txDetail.err && (
+            <div style={{ background: 'rgba(244,67,54,0.06)', border: '1px solid #f4433644', borderLeft: '3px solid #f44336', padding: '10px 14px', margin: '8px 0', fontSize: '12px', color: '#ff8a80', wordBreak: 'break-all' }}>
+              <strong>Error: </strong>{txDetail.err}
+            </div>
+          )}
+          <SolRow label="Signature" value={shortHash(txDetail.signature, 14, 12)} copy={txDetail.signature} link={scan(`tx/${txDetail.signature}`)} />
+          <SolRow label="Slot" value={<span onClick={() => openBlock(txDetail.slot)} style={{ color: COLORS.accent, cursor: 'pointer' }}>#{txDetail.slot.toLocaleString('en-US')}</span>} />
+          {txDetail.blockTime && <SolRow label="Timestamp" mono={false} value={`${timeAgo(txDetail.blockTime)} (${new Date(txDetail.blockTime * 1000).toLocaleString('id-ID')})`} />}
+          <SolRow label="Fee" value={`${solFmt(txDetail.feeSol)} SOL${usd(txDetail.feeSol) != null ? ` ($${usd(txDetail.feeSol)!.toFixed(4)})` : ''}`} />
+          {txDetail.computeUnits != null && <SolRow label="Compute Units" value={txDetail.computeUnits.toLocaleString('en-US')} />}
+          <SolRow label="Versi TX" value={txDetail.version} />
+          <SolRow label="Recent Blockhash" value={shortHash(txDetail.recentBlockhash, 10, 8)} copy={txDetail.recentBlockhash} />
+          <SolRow label="Signer / Fee Payer" value={<span style={{ display: 'flex', flexDirection: 'column', gap: '3px', alignItems: 'flex-end' }}>{txDetail.signers.map(s => <span key={s}>{addrLink(s, 10, 8)}</span>)}</span>} />
+
+          <h4 style={{ ...h3, margin: '18px 0 8px', color: COLORS.muted }}><FaListUl size={10} /> Instruksi ({txDetail.instructions.length})</h4>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+            {txDetail.instructions.map((ix, i) => (
+              <div key={i} style={{ padding: '8px 10px', background: '#111', border: `1px solid ${COLORS.border}`, fontSize: '11px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '9px', color: COLORS.muted, border: `1px solid ${COLORS.border}`, padding: '2px 5px', fontFamily: 'monospace' }}>#{i + 1}</span>
+                  <span style={{ color: COLORS.accent, fontWeight: 'bold' }} title={ix.programId}>{ix.program}</span>
+                  {ix.type && <span style={{ fontSize: '9px', fontWeight: 'bold', color: '#e8a119', border: '1px solid #e8a11960', padding: '2px 6px' }}>{ix.type}</span>}
+                  {ix.innerCount > 0 && <span style={{ fontSize: '10px', color: COLORS.muted }}>+{ix.innerCount} inner</span>}
+                </div>
+                {ix.summary && <span style={{ color: COLORS.muted, fontFamily: 'monospace', fontSize: '10px', wordBreak: 'break-all' }}>{ix.summary}</span>}
+              </div>
+            ))}
+          </div>
+
+          {txDetail.accounts.some(a => a.deltaSol !== 0) && (
+            <>
+              <h4 style={{ ...h3, margin: '18px 0 8px', color: COLORS.muted }}><FaCoins size={10} /> Perubahan Saldo SOL</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                {txDetail.accounts.filter(a => a.deltaSol !== 0).map(a => (
+                  <div key={a.address} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '7px 10px', background: '#111', border: `1px solid ${COLORS.border}`, fontSize: '11px', flexWrap: 'wrap' }}>
+                    <span style={{ fontFamily: 'monospace' }}>{addrLink(a.address, 8, 6)}</span>
+                    {a.signer && <span style={{ fontSize: '9px', color: COLORS.amber, border: `1px solid ${COLORS.amber}60`, padding: '1px 5px' }}>signer</span>}
+                    <span style={{ marginLeft: 'auto', fontFamily: 'monospace', color: a.deltaSol > 0 ? COLORS.green : COLORS.amber }}>
+                      {a.deltaSol > 0 ? '+' : ''}{solFmt(a.deltaSol)} SOL
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          {txDetail.tokenChanges.length > 0 && (
+            <>
+              <h4 style={{ ...h3, margin: '18px 0 8px', color: COLORS.muted }}><FaTag size={10} /> Perubahan Saldo Token</h4>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '5px' }}>
+                {txDetail.tokenChanges.map((c, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '7px 10px', background: '#111', border: `1px solid ${COLORS.border}`, fontSize: '11px', flexWrap: 'wrap' }}>
+                    <span style={{ fontFamily: 'monospace' }}>{c.owner ? addrLink(c.owner, 8, 6) : '—'}</span>
+                    <span style={{ color: COLORS.muted, fontFamily: 'monospace' }}>mint {addrLink(c.mint, 6, 4)}</span>
+                    <span style={{ marginLeft: 'auto', fontFamily: 'monospace', color: c.delta > 0 ? COLORS.green : COLORS.amber }}>
+                      {c.delta > 0 ? '+' : ''}{solFmt(c.delta, c.decimals || 6)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
+
+          <div style={{ marginTop: '14px', display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button type="button" onClick={() => setShowLogs(s => !s)} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', background: 'none', border: `1px solid ${COLORS.border}`, color: COLORS.muted, padding: '8px 12px', cursor: 'pointer' }}>
+              <FaListUl size={11} /> {showLogs ? 'Sembunyikan' : 'Lihat'} Log Program ({txDetail.logs.length})
+            </button>
+            <button type="button" onClick={() => setShowRaw(s => !s)} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', background: 'none', border: `1px solid ${COLORS.border}`, color: COLORS.muted, padding: '8px 12px', cursor: 'pointer' }}>
+              <FaFileCode size={11} /> {showRaw ? 'Sembunyikan Raw JSON' : 'Lihat Raw JSON'}
+            </button>
+          </div>
+          {showLogs && (
+            <pre style={{ marginTop: '10px', background: '#000', border: `1px solid ${COLORS.border}`, padding: '10px', fontSize: '10px', color: '#888', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '300px', overflowY: 'auto' }}>
+              {txDetail.logs.join('\n') || '(tidak ada log)'}
+            </pre>
+          )}
+          {showRaw && (
+            <pre style={{ marginTop: '10px', background: '#000', border: `1px solid ${COLORS.border}`, padding: '10px', fontSize: '10px', color: '#888', fontFamily: 'monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-all', maxHeight: '300px', overflowY: 'auto', position: 'relative' }}>
+              <FaCopy size={11} style={{ position: 'absolute', top: 8, right: 8, cursor: 'pointer', color: COLORS.muted }} onClick={() => copyToClipboard(txDetail.rawJson)} title="Copy" />
+              {txDetail.rawJson}
+            </pre>
+          )}
+        </div>
+      )}
+
+      {txNotFound && (
+        <div className="fade-in-up" style={{ ...card, borderTop: `2px solid ${COLORS.amber}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+            <h3 style={{ ...h3, color: COLORS.amber }}><FaExclamationTriangle /> Transaksi Tidak Ditemukan</h3>
+            {closeBtn}
+          </div>
+          <SolRow label="Signature" value={shortHash(txNotFound, 12, 10)} copy={txNotFound} />
+          <p style={{ fontSize: '11px', color: COLORS.muted, margin: '10px 0 0' }}>
+            Signature ini tidak ditemukan di {net.name}. Cek apakah cluster-nya sudah benar (mainnet / devnet / testnet),
+            atau TX terlalu lama sehingga RPC publik tidak menyimpannya lagi.
+          </p>
+        </div>
+      )}
+
+      {/* ── BLOCK (SLOT) DETAIL ── */}
+      {block && (
+        <div className="fade-in-up" style={{ ...card, borderTop: `2px solid ${net.color}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+            <h3 style={{ ...h3, color: net.color }}><FaCube /> Slot #{block.slot.toLocaleString('en-US')}</h3>
+            {closeBtn}
+          </div>
+          <SolRow label="Blockhash" value={shortHash(block.blockhash, 14, 12)} copy={block.blockhash} />
+          <SolRow label="Previous Blockhash" value={shortHash(block.previousBlockhash, 14, 12)} copy={block.previousBlockhash} />
+          <SolRow label="Parent Slot" value={<span onClick={() => openBlock(block.parentSlot)} style={{ color: COLORS.accent, cursor: 'pointer' }}>#{block.parentSlot.toLocaleString('en-US')}</span>} />
+          {block.blockHeight != null && <SolRow label="Block Height" value={block.blockHeight.toLocaleString('en-US')} />}
+          {block.blockTime && <SolRow label="Timestamp" mono={false} value={`${timeAgo(block.blockTime)} (${new Date(block.blockTime * 1000).toLocaleString('id-ID')})`} />}
+          <SolRow label="Transactions" value={block.txCount.toLocaleString('en-US')} />
+          {blockStats === undefined && <SolRow label="Statistik" mono={false} value={<span style={{ color: COLORS.muted, display: 'flex', alignItems: 'center', gap: '6px' }}><FaSpinner className="spin-icon" size={10} /> Menghitung fee & compute…</span>} />}
+          {blockStats && (
+            <>
+              <SolRow label="Total Fee" value={`${solFmt(blockStats.totalFeesSol)} SOL${usd(blockStats.totalFeesSol) != null ? ` ($${usd(blockStats.totalFeesSol)!.toFixed(2)})` : ''}`} />
+              {blockStats.failedTx != null && <SolRow label="TX Gagal" value={<span style={{ color: blockStats.failedTx > 0 ? COLORS.amber : COLORS.green }}>{blockStats.failedTx.toLocaleString('en-US')} ({block.txCount > 0 ? ((blockStats.failedTx / block.txCount) * 100).toFixed(1) : '0'}%)</span>} />}
+              {blockStats.computeUnits != null && <SolRow label="Compute Units" value={`${blockStats.computeUnits.toLocaleString('en-US')} / 48.000.000 (${((blockStats.computeUnits / 48_000_000) * 100).toFixed(1)}%)`} />}
+              {blockStats.leader && <SolRow label="Leader (Validator)" value={addrLink(blockStats.leader, 10, 8)} copy={blockStats.leader} />}
+            </>
+          )}
+          <div style={{ display: 'flex', gap: '8px', margin: '12px 0 0' }}>
+            <button type="button" onClick={() => openBlock(block.slot - 1)} style={{ flex: 1, padding: '8px', fontSize: '11px', background: 'none', border: `1px solid ${COLORS.border}`, color: COLORS.muted, cursor: 'pointer' }}>← Slot Sebelumnya</button>
+            <button type="button" onClick={() => openBlock(block.slot + 1)} style={{ flex: 1, padding: '8px', fontSize: '11px', background: 'none', border: `1px solid ${COLORS.border}`, color: COLORS.muted, cursor: 'pointer' }}>Slot Berikutnya →</button>
+          </div>
+          {block.signatures.length > 0 && (
+            <div style={{ marginTop: '14px' }}>
+              <p style={{ fontSize: '10px', color: COLORS.muted, textTransform: 'uppercase', letterSpacing: '1px', marginBottom: '8px' }}>
+                {Math.min(25, block.signatures.length)} TX pertama di block ini
+              </p>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', maxHeight: '320px', overflowY: 'auto' }}>
+                {block.signatures.slice(0, 25).map(s => (
+                  <div key={s} className="explorer-row" onClick={() => handleSearch(s)} style={{ padding: '8px 10px', background: '#111', border: `1px solid ${COLORS.border}`, fontSize: '11px', cursor: 'pointer' }}>
+                    <span style={{ color: COLORS.accent, fontFamily: 'monospace' }}>{shortHash(s, 14, 10)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!hasResult && (
+        <div style={{ display: 'flex', gap: '6px', marginBottom: '14px' }}>
+          {([['blocks', 'Block Terbaru'], ['validators', 'Validator']] as const).map(([k, l]) => (
+            <button key={k} type="button" onClick={() => setFeedTab(k)} style={{
+              flex: 1, padding: '8px', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer',
+              background: feedTab === k ? SOL_COLOR : 'none', color: feedTab === k ? '#fff' : '#888',
+              border: `1px solid ${feedTab === k ? SOL_COLOR : COLORS.border}`,
+            }}>{l}</button>
+          ))}
+        </div>
+      )}
+
+      {!hasResult && feedTab === 'validators' && (
+        <div className="fade-in-up" style={{ ...card, borderTop: `2px solid ${SOL_COLOR}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+            <h3 style={{ ...h3, color: SOL_COLOR }}><FaShieldAlt /> Validator Teratas — {net.name}</h3>
+            {valsLoading && <FaSpinner className="spin-icon" color={SOL_COLOR} size={12} />}
+          </div>
+          {valsError ? <p style={{ color: '#ff6666', fontSize: '12px', textAlign: 'center', padding: '16px 0', margin: 0 }}>{valsError}</p>
+            : !vals ? <p style={{ color: '#333', fontSize: '12px', textAlign: 'center', padding: '16px 0', margin: 0 }}>{valsLoading ? 'Memuat validator…' : 'Tidak ada data.'}</p>
+            : (
+              <>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '1px', background: COLORS.border, border: `1px solid ${COLORS.border}`, marginBottom: '12px' }}>
+                  {[
+                    ['Aktif', vals.activeCount.toLocaleString('en-US'), COLORS.green],
+                    ['Delinquent', vals.delinquentCount.toLocaleString('en-US'), vals.delinquentCount > 0 ? COLORS.amber : COLORS.text],
+                    ['Total Stake', `${(vals.totalActiveStakeSol / 1e6).toFixed(1)}M SOL`, COLORS.text],
+                    ['Nakamoto Coeff.', String(vals.nakamoto), SOL_COLOR],
+                  ].map(([l, v, c]) => (
+                    <div key={l} style={{ background: COLORS.bg, padding: '8px 10px' }}>
+                      <div style={{ fontSize: '8px', textTransform: 'uppercase', letterSpacing: '0.5px', color: COLORS.muted, marginBottom: '3px' }}>{l}</div>
+                      <div style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: c }}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  {vals.top.map((v, i) => (
+                    <div key={v.votePubkey} className="explorer-row" onClick={() => handleSearch(v.votePubkey)} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '9px 12px', background: '#111', border: `1px solid ${COLORS.border}`, cursor: 'pointer', flexWrap: 'wrap' }}>
+                      <span style={{ width: '20px', height: '20px', flexShrink: 0, background: ['#f3ba2f', '#aaaaaa', '#cd7f32'][i] ?? '#2a2a2a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '10px', fontWeight: 'bold', color: i < 3 ? '#000' : '#888' }}>{i + 1}</span>
+                      <span style={{ display: 'flex', flexDirection: 'column' }}>
+                        <span style={{ fontSize: '11px', color: COLORS.text, fontFamily: 'monospace' }} title={v.nodePubkey}>{shortHash(v.nodePubkey, 8, 6)}</span>
+                        <span style={{ fontSize: '9px', color: '#555', fontFamily: 'monospace' }}>vote {shortHash(v.votePubkey, 6, 4)}</span>
+                      </span>
+                      <span style={{ fontSize: '10px', color: COLORS.muted }}>komisi {v.commission}%</span>
+                      <span style={{ marginLeft: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: '2px' }}>
+                        <span style={{ fontSize: '11px', fontFamily: 'monospace' }}>{solFmt(v.stakeSol, 0)} SOL</span>
+                        <span style={{ fontSize: '10px', color: SOL_COLOR, fontFamily: 'monospace' }}>{v.stakePct.toFixed(2)}%</span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <p style={{ fontSize: '10px', color: '#333', margin: '10px 0 0' }}>
+                  Nakamoto coefficient = jumlah validator teratas yang bersama-sama menguasai &gt;33% stake (makin kecil makin tersentralisasi). Klik validator untuk melihat akun vote-nya.
+                </p>
+              </>
+            )}
+        </div>
+      )}
+
+      {/* ── Block terbaru ── */}
+      {!hasResult && feedTab === 'blocks' && (
+        <div className="fade-in-up" style={{ ...card, borderTop: `2px solid ${SOL_GREEN}` }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+            <h3 style={{ ...h3, color: SOL_GREEN }}>
+              <FaLayerGroup /> Block Terbaru — {net.name}
+              {refreshEnabled && !blocksLoading && (
+                <span style={{ fontSize: '9px', fontWeight: 'bold', color: COLORS.green, border: `1px solid ${COLORS.green}`, padding: '2px 6px', display: 'flex', alignItems: 'center', gap: '4px', textTransform: 'none', letterSpacing: '0.3px' }}>
+                  <FaSyncAlt size={8} /> live · 12s
+                </span>
+              )}
+            </h3>
+            {blocksLoading && <FaSpinner className="spin-icon" color={SOL_GREEN} size={12} />}
+          </div>
+          {blocks.length === 0 ? (
+            <p style={{ color: '#333', fontSize: '12px', textAlign: 'center', padding: '16px 0', margin: 0 }}>
+              {blocksError || (blocksLoading ? 'Memuat block terbaru…' : 'Tidak ada data (cek RPC).')}
+            </p>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+              {blocks.map(b => (
+                <div key={b.slot} className="explorer-row" onClick={() => openBlock(b.slot)} style={{
+                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '10px',
+                  padding: '9px 12px', background: '#111', border: `1px solid ${COLORS.border}`, cursor: 'pointer', flexWrap: 'wrap',
+                }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', color: COLORS.accent, fontFamily: 'monospace', fontWeight: 'bold' }}>
+                    <FaCube size={11} /> #{b.slot.toLocaleString('en-US')}
+                  </span>
+                  <span style={{ fontSize: '11px', color: COLORS.muted }}>{b.blockTime ? timeAgo(b.blockTime) : '—'}</span>
+                  <span style={{ fontSize: '11px', color: COLORS.text, fontFamily: 'monospace' }}>{b.txCount.toLocaleString('en-US')} txns</span>
+                  <span style={{ fontSize: '10px', color: '#555', fontFamily: 'monospace' }}>{shortHash(b.blockhash, 6, 4)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <p style={{ fontSize: '10px', color: '#333', margin: '10px 0 0' }}>
+            Slot yang di-skip leader tidak ditampilkan. Klik block untuk melihat daftar transaksinya, atau cari address / signature di atas.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const Explorer: React.FC = () => {
   const navigate = useNavigate();
   const { type: urlType, value: urlValue } = useParams<{ type?: string; value?: string }>();
@@ -1794,12 +2689,16 @@ export const Explorer: React.FC = () => {
   const [tokenTransfersSource, setTokenTransfersSource] = useState<DataSource>(null);
   const [tokenTab, setTokenTab] = useState<'transfers' | 'holders'>('transfers');
 
-  const [chain, setChain] = useState<'evm' | 'gram' | 'ase'>('evm');
+  const [chain, setChain] = useState<'evm' | 'gram' | 'ase' | 'sol'>('evm');
   // Dipakai di useEffect parsing-URL di bawah, supaya baca chain yang lagi
   // aktif TANPA harus masukin `chain` ke deps effect itu (yang bakal bikin
   // effect-nya nge-loop tiap kali chain berubah).
   const chainRef = useRef(chain);
   useEffect(() => { chainRef.current = chain; }, [chain]);
+  // Query Solana yang datang dari URL — diteruskan ke <SolExplorer>. `solLastRef`
+  // mencegah pencarian ganda (search → navigate → effect URL → search lagi).
+  const [solPending, setSolPending] = useState<{ q: string; n: number } | null>(null);
+  const solLastRef = useRef<string | null>(null);
   const [gramNetId, setGramNetId] = useState(() => GRAM_NETWORKS[0].id);
   const gramNetwork = useMemo(
     () => GRAM_NETWORKS.find(n => n.id === gramNetId) ?? GRAM_NETWORKS[0],
@@ -3154,6 +4053,15 @@ export const Explorer: React.FC = () => {
         setChain('evm');
         handleSearch(val);
       }
+    } else if (urlType === 'block' && isBlockNumber(val) && chainRef.current === 'sol') {
+      // Nomor slot Solana (ambigu dengan block EVM/ASE) — ikuti tab yang aktif.
+      setChain('sol');
+      if (solLastRef.current !== val) setSolPending({ q: val, n: Date.now() });
+    } else if (SOL_SIG_RE.test(val) || SOL_ADDR_RE.test(val)) {
+      // Address base58 (32-44 char) / signature (~88 char) = Solana.
+      // Address Gram (48 char) & tx hash Gram (64 hex) tidak match regex ini.
+      setChain('sol');
+      if (solLastRef.current !== val) setSolPending({ q: val, n: Date.now() });
     } else if (urlType === 'block' && isBlockNumber(val)) {
       // Angka block polos itu AMBIGU: baik EVM (`openBlock`/`handleSearch`)
       // maupun ASE (`openAseBlock`) sama-sama navigate ke
@@ -3245,17 +4153,19 @@ export const Explorer: React.FC = () => {
     <div className="app-container">
       <header>
         <h1>
-          {chain === 'ase'
+          {chain === 'sol'
+            ? <SolanaLogo size={26} style={{ marginRight: '10px', verticalAlign: 'middle' }} />
+            : chain === 'ase'
             ? <AsentumLogo size={26} style={{ marginRight: '10px', verticalAlign: 'middle' }} />
             : chain === 'gram'
               ? <GramLogo size={26} style={{ marginRight: '10px', verticalAlign: 'middle' }} />
               : <EvmLogo size={26} style={{ marginRight: '10px', verticalAlign: 'middle' }} />}
-          {chain === 'ase' ? 'Asentum Explorer' : chain === 'gram' ? 'Gram Explorer' : 'EVM Explorer'}
+          {chain === 'sol' ? 'Solana Explorer' : chain === 'ase' ? 'Asentum Explorer' : chain === 'gram' ? 'Gram Explorer' : 'EVM Explorer'}
         </h1>
       </header>
       <Navbar />
 
-      {/* ── Chain toggle: EVM vs GRAM (TON) ── */}
+      {/* ── Chain toggle: EVM / GRAM (TON) / ASE / SOL ── */}
       <div style={{ display: 'flex', gap: '6px', marginBottom: '14px' }}>
         <button type="button" onClick={() => setChain('evm')} style={{
           flex: 1, padding: '9px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer',
@@ -3275,6 +4185,12 @@ export const Explorer: React.FC = () => {
           color: chain === 'ase' ? '#fff' : '#888',
           border: `1px solid ${chain === 'ase' ? '#836EFD' : COLORS.border}`,
         }}><AsentumLogo size={14} mono style={{ marginRight: '6px', verticalAlign: 'text-bottom' }} />ASE</button>
+        <button type="button" onClick={() => setChain('sol')} style={{
+          flex: 1, padding: '9px', fontSize: '12px', fontWeight: 'bold', cursor: 'pointer',
+          background: chain === 'sol' ? SOL_COLOR : 'none',
+          color: chain === 'sol' ? '#fff' : '#888',
+          border: `1px solid ${chain === 'sol' ? SOL_COLOR : COLORS.border}`,
+        }}><SolanaLogo size={14} mono style={{ marginRight: '6px', verticalAlign: 'text-bottom' }} />SOL</button>
       </div>
 
       {chain === 'evm' && (
@@ -6138,6 +7054,15 @@ export const Explorer: React.FC = () => {
       </div>
       </>
       )}
+
+      <SolExplorer
+        active={chain === 'sol'}
+        refreshEnabled={refreshSettings.enabled}
+        refreshSec={refreshSettings.intervalSec}
+        pending={solPending}
+        lastRef={solLastRef}
+        onRefreshChange={p => setRefreshSettings(prev => ({ ...prev, ...p }))}
+      />
 
       <style>{`
         .spin-icon { animation: spin 1s linear infinite; }
