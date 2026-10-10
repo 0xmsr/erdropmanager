@@ -7,6 +7,15 @@ import { CHAIN_OPTIONS } from './constants';
 import { shortAddr } from './helpers';
 import { GRAM_WALLET_VERSIONS, formatGramSwapOutput } from './network/Gramnet';
 import {
+  fetchSolTxHistory, fetchTopValidators, fetchStakeAccounts, stakeSol, deactivateStake, withdrawStake,
+  getCustomSolRpc, setCustomSolRpc, SWAP_PRESET_TOKENS, searchSwapTokens, fetchHeldSwapTokens, fetchPopularSwapTokens, getJupiterQuote, executeJupiterSwap, toRawAmount, fromRawAmount,
+  previewJupiterSwapFee, fetchJupiterSwapReceipt, SOL_PRIORITY_OPTIONS, fetchSolFiatRate, diagnoseSolTokenAccount, isSolBatchClosable,
+} from './network/Solnet';
+import type {
+  SolFiatRate, SolNetworkCfg, SolTxHistoryItem, SolValidator, SolStakeAccount, SwapToken, JupQuote,
+  SolPriorityLevel, JupSwapFeePreview, JupSwapReceipt,
+} from './network/Solnet';
+import {
   asentumBech32ToHex, readAsentumToken, sendArc20Token, checkArc20SendGas, asentumUnitsFromDecimalString,
   asentumFormatUnits, isValidAsentumAddress as isValidAseAddress, getAsentumBalanceWithFallback, aseFriendlyError,
   AURA_SWAP_NATIVE, isAuraSwapNative, findAuraSwapPoolId, readAuraSwapPool, getAuraSwapQuote, getAuraSwapAllowance,
@@ -1729,6 +1738,1358 @@ function AseSendAssetSection({ ctx, net, privateKey, holderHex, holderBech32, sa
   );
 }
 
+// ── Bottom-sheet pilih token Solana (gaya AuraTokenPickerSheet): cari lokal + cari via Jupiter, token wallet di atas ──
+function SolTokenPickerSheet({ ctx, color, held, popular, activeMint, heldLoading, onRefresh, onClose, onSelect }: {
+  ctx: any; color: string; held: SwapToken[]; popular: SwapToken[]; activeMint: string; heldLoading: boolean;
+  onRefresh: () => void; onClose: () => void; onSelect: (t: SwapToken) => void;
+}) {
+  const { FaSearch, FaSpinner, FaCheckCircle, FaSync } = ctx;
+  const [search, setSearch] = React.useState('');
+  const [remote, setRemote] = React.useState<SwapToken[]>([]);
+  const [searching, setSearching] = React.useState(false);
+  const [err, setErr] = React.useState('');
+  const q = search.trim().toLowerCase();
+
+  React.useEffect(() => {
+    setErr('');
+    if (q.length < 2) { setRemote([]); setSearching(false); return; }
+    setSearching(true);
+    let cancelled = false;
+    const h = setTimeout(async () => {
+      try { const r = await searchSwapTokens(search.trim()); if (!cancelled) setRemote(r); }
+      catch (e: any) { if (!cancelled) setErr(e?.message || 'Pencarian gagal.'); }
+      if (!cancelled) setSearching(false);
+    }, 400);
+    return () => { cancelled = true; clearTimeout(h); };
+  }, [q]);
+
+  const match = (t: SwapToken) => !q || t.symbol.toLowerCase().includes(q) || t.name.toLowerCase().includes(q) || t.mint.toLowerCase().includes(q);
+  const heldF = held.filter(match);
+  const popF  = popular.filter(match);
+  const known = new Set([...held, ...popular].map(t => t.mint));
+  const remoteF = remote.filter(t => !known.has(t.mint));
+  const amt = (v?: number) => v === undefined ? '' : v.toLocaleString('en-US', { maximumFractionDigits: 6 });
+
+  const header = (text: string, right?: React.ReactNode) => (
+    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'10px 8px 4px' }}>
+      <span style={{ fontSize:'10px', color:'#555', textTransform:'uppercase', letterSpacing:'1px' }}>{text}</span>
+      {right}
+    </div>
+  );
+
+  const row = (t: SwapToken) => {
+    const active = t.mint === activeMint;
+    return (
+      <div key={t.mint} onClick={() => onSelect(t)}
+        style={{ display:'flex', alignItems:'center', gap:'12px', padding:'10px 8px', cursor:'pointer', borderRadius:'10px', background: active ? `${color}1a` : 'transparent' }}
+        onMouseEnter={e => { if (!active) e.currentTarget.style.background = '#1a1a1a'; }}
+        onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}>
+        <div style={{ position:'relative', width:34, height:34, borderRadius:'50%', background:'#222', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'11px', color:'#666', fontWeight:'bold' }}>
+          {t.symbol.slice(0, 2).toUpperCase()}
+          {t.icon && <img src={t.icon} alt="" style={{ position:'absolute', inset:0, width:'100%', height:'100%', borderRadius:'50%', background:'#222' }} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}/>}
+        </div>
+        <div style={{ flex:1, minWidth:0 }}>
+          <div style={{ fontSize:'13px', fontWeight:'bold', color:'#eee', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{t.symbol}</div>
+          <div style={{ fontSize:'11px', color:'#666', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+            {t.name} · <span style={{ fontFamily:'monospace' }}>{t.mint.slice(0, 4)}…{t.mint.slice(-4)}</span>
+          </div>
+        </div>
+        {t.balance !== undefined && (
+          <div style={{ textAlign:'right', flexShrink:0 }}>
+            <div style={{ fontSize:'13px', fontFamily:'monospace', color:'#eee' }}>{amt(t.balance)}</div>
+            {t.usdValue != null && <div style={{ fontSize:'10px', color:'#666' }}>${t.usdValue.toFixed(2)}</div>}
+          </div>
+        )}
+        {active && <FaCheckCircle size={13} color={color} style={{ flexShrink:0 }}/>}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ position:'fixed', inset:0, background:'rgba(0,0,0,0.85)', display:'flex', alignItems:'flex-end', justifyContent:'center', zIndex:9999 }} onClick={onClose}>
+      <div onClick={e => e.stopPropagation()}
+        style={{ background:'#111', border:'1px solid #262626', borderBottom:'none', width:'100%', maxWidth:'480px', maxHeight:'78vh', display:'flex', flexDirection:'column', borderRadius:'16px 16px 0 0', overflow:'hidden', animation:'slideUp 0.18s ease-out' }}>
+        <div style={{ display:'flex', justifyContent:'center', padding:'10px 0 4px' }}>
+          <div style={{ width:'36px', height:'4px', borderRadius:'2px', background:'#333' }}/>
+        </div>
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', padding:'6px 18px 14px' }}>
+          <span style={{ fontSize:'15px', fontWeight:'bold' }}>Pilih Token</span>
+          <button onClick={onClose} style={{ background:'none', border:'none', color:'#888', cursor:'pointer', fontSize:'18px', padding:'4px', lineHeight:1 }}>×</button>
+        </div>
+        <div style={{ padding:'0 18px 10px' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'8px', background:'#1a1a1a', border:'1px solid #2a2a2a', borderRadius:'10px', padding:'10px 12px' }}>
+            <FaSearch size={12} color="#555"/>
+            <input autoFocus placeholder="Cari nama, symbol, atau tempel mint address..." value={search} onChange={e => setSearch(e.target.value)}
+              style={{ flex:1, background:'none', border:'none', outline:'none', color:'#eee', fontSize:'13px' }}/>
+            {search && <button onClick={() => setSearch('')} style={{ background:'none', border:'none', color:'#555', cursor:'pointer', fontSize:'14px', padding:0 }}>×</button>}
+          </div>
+        </div>
+
+        <div style={{ overflowY:'auto', flex:1, padding:'0 10px 16px' }}>
+          {(heldF.length > 0 || heldLoading) && header(
+            `Token di wallet kamu${heldF.length ? ` (${heldF.length})` : ''}`,
+            <button onClick={onRefresh} disabled={heldLoading} style={{ background:'none', border:'none', color:'#555', cursor:'pointer', fontSize:'10px', display:'flex', alignItems:'center', gap:'4px' }}>
+              <FaSync size={9} style={{ animation: heldLoading ? 'spin 1s linear infinite' : undefined }}/> Refresh
+            </button>,
+          )}
+          {heldLoading && heldF.length === 0 && (
+            <div style={{ textAlign:'center', color:'#555', padding:'16px 0', fontSize:'12px' }}>
+              <FaSpinner style={{ animation:'spin 1s linear infinite', marginBottom:'6px' }} size={14}/>
+              <div>Mendeteksi token di wallet...</div>
+            </div>
+          )}
+          {heldF.map(row)}
+
+          {popF.length > 0 && header('Populer')}
+          {popF.map(row)}
+
+          {q.length >= 2 && header('Hasil pencarian Jupiter')}
+          {searching && (
+            <div style={{ textAlign:'center', color:'#555', padding:'14px 0', fontSize:'12px' }}>
+              <FaSpinner style={{ animation:'spin 1s linear infinite' }} size={14}/>
+            </div>
+          )}
+          {remoteF.map(row)}
+          {err && <div style={{ fontSize:'11px', color:'#ff8a80', padding:'8px' }}>{err}</div>}
+          {!searching && q.length >= 2 && heldF.length + popF.length + remoteF.length === 0 && !err && (
+            <div style={{ textAlign:'center', color:'#444', padding:'24px 8px', fontSize:'12px' }}>Token tidak ditemukan.</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Kurs fiat: tampilkan satu mata uang saja (USD atau IDR), pilihan disimpan di browser & sinkron antar-panel ──
+type FiatCur = 'usd' | 'idr';
+const FIAT_CUR_KEY = 'solFiatCurrency';
+function readFiatCur(): FiatCur {
+  try { return localStorage.getItem(FIAT_CUR_KEY) === 'usd' ? 'usd' : 'idr'; } catch { return 'idr'; }
+}
+function useFiatCur(): [FiatCur, () => void] {
+  const [cur, setCur] = React.useState<FiatCur>(readFiatCur);
+  React.useEffect(() => {
+    const h = () => setCur(readFiatCur());
+    window.addEventListener('solFiatCurChange', h);
+    return () => window.removeEventListener('solFiatCurChange', h);
+  }, []);
+  const toggle = () => {
+    const n: FiatCur = readFiatCur() === 'idr' ? 'usd' : 'idr';
+    try { localStorage.setItem(FIAT_CUR_KEY, n); } catch { /* abaikan */ }
+    window.dispatchEvent(new Event('solFiatCurChange'));
+  };
+  return [cur, toggle];
+}
+function fmtSolFiat(sol: number, fiat: SolFiatRate | null, cur: FiatCur): string {
+  if (!fiat || !sol) return '';
+  if (cur === 'idr' && fiat.idr) return `Rp${Math.round(sol * fiat.idr).toLocaleString('id-ID')}`;
+  const u = sol * fiat.usd;
+  return u < 0.01 ? `$${u.toFixed(4)}` : `$${u.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+// ── Padanan USD / IDR untuk saldo SOL (hanya Mainnet; token testnet/devnet tidak bernilai) ──
+function SolBalanceFiat({ balance, mainnet }: { balance: string; mainnet: boolean }) {
+  const [fiat, setFiat] = React.useState<SolFiatRate | null>(null);
+  const [cur, toggleCur] = useFiatCur();
+  React.useEffect(() => {
+    if (!mainnet) return;
+    let off = false;
+    const load = () => fetchSolFiatRate().then(r => { if (!off) setFiat(r); }).catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => { off = true; clearInterval(t); };
+  }, [mainnet]);
+  const sol = parseFloat(balance);
+  if (!mainnet || !fiat || !isFinite(sol)) return null;
+  const shown = cur === 'idr' && !fiat.idr ? 'usd' : cur;
+  return (
+    <div style={{ marginTop:'8px', display:'flex', alignItems:'center', gap:'8px' }}>
+      <span style={{ fontSize:'13px', fontFamily:'monospace', color:'#888' }}>≈ {fmtSolFiat(sol, fiat, cur) || (shown === 'idr' ? 'Rp0' : '$0.00')}</span>
+      <button onClick={toggleCur} title="Ganti mata uang (USD / IDR)"
+        style={{ background:'none', border:'1px solid #262626', color:'#666', fontSize:'9px', fontWeight:'bold', letterSpacing:'0.5px', padding:'2px 7px', borderRadius:'999px', cursor:'pointer' }}>
+        {shown === 'idr' ? 'IDR' : 'USD'} ⇄
+      </button>
+    </div>
+  );
+}
+
+// ── Checkbox kustom (menggantikan checkbox bawaan browser): kotak membulat, centang SVG, area klik 28px ──
+function SolCheck({ checked, onChange, color = '#00e676', size = 20, title, disabled }: {
+  checked: boolean; onChange: () => void; color?: string; size?: number; title?: string; disabled?: boolean;
+}) {
+  return (
+    <button type="button" role="checkbox" aria-checked={checked} title={title} disabled={disabled}
+      onClick={e => { e.stopPropagation(); onChange(); }}
+      style={{ width: size + 8, height: size + 8, padding: 0, flexShrink: 0, background: 'none', border: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', opacity: disabled ? 0.4 : 1 }}>
+      <span style={{ width: size, height: size, borderRadius: 6, boxSizing: 'border-box', display: 'flex', alignItems: 'center', justifyContent: 'center',
+        background: checked ? color : '#0a0a0a', border: `1.5px solid ${checked ? color : '#3a3a3a'}`,
+        boxShadow: checked ? `0 0 0 3px ${color}22` : 'none', transition: 'background .15s, border-color .15s, box-shadow .15s' }}>
+        <svg width={size * 0.6} height={size * 0.6} viewBox="0 0 12 12" fill="none" style={{ opacity: checked ? 1 : 0, transform: checked ? 'scale(1)' : 'scale(0.5)', transition: 'opacity .15s, transform .15s' }}>
+          <path d="M2.5 6.4 5 8.9 9.7 3.5" stroke="#000" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+      </span>
+    </button>
+  );
+}
+
+// ── Tab "Tutup Akun" Solana: reclaim rent dari token account (SPL klasik + Token-2022) ──
+function SolCloseAccountsView({ ctx }: { ctx: WalletGeneratorCtx }) {
+  const {
+    FaCheckCircle, FaCoins, FaCopy, FaInfoCircle, FaSearch, FaSync, FaTrash, FaExclamationTriangle,
+    LAMPORTS_PER_SOL, SOLANA_NETWORK, TOKEN_2022_PROGRAM_ID, copiedKey, copyText,
+    setSolCloseBurnFirst, setSolCloseFilter, setSolCloseSearch, solCloseAccounts, solCloseAllRunning,
+    solCloseBurnFirst, solCloseFilter, solCloseLoading, solCloseSearch, solCloseSelected,
+    solCloseSelectedAccounts, solCloseToggleSelect, solCloseToggleSelectAll, solCloseTokenAccount,
+    solClosingId, solFetchCloseAccounts, solCloseErrors, solAddress,
+  } = ctx;
+  const accent: string = SOLANA_NETWORK.color;
+  const [infoOpen, setInfoOpen] = React.useState(false);
+  const [fiat, setFiat] = React.useState<SolFiatRate | null>(null);
+  React.useEffect(() => {
+    if (SOLANA_NETWORK.id !== 'mainnet') return;
+    let off = false;
+    fetchSolFiatRate().then(r => { if (!off) setFiat(r); }).catch(() => {});
+    return () => { off = true; };
+  }, [SOLANA_NETWORK.id]);
+
+  const [fiatCur] = useFiatCur();
+  const fiatTxt = (sol: number): string => fmtSolFiat(sol, fiat, fiatCur);
+
+  const diagOf = (a: any) => diagnoseSolTokenAccount(a, solAddress || '');
+  const emptyAccs   = solCloseAccounts.filter((a: any) => isSolBatchClosable(a, solAddress || ''));
+  const balanceAccs = solCloseAccounts.filter((a: any) => diagOf(a).needsBurn);
+  const issueAccs   = solCloseAccounts.filter((a: any) => { const d = diagOf(a); return d.verdict === 'blocked' || d.verdict === 'fix' || !!(solCloseErrors || {})[a.pubkey]; });
+  const emptyReclaim = emptyAccs.reduce((s: number, a: any) => s + a.lamports, 0) / LAMPORTS_PER_SOL;
+  const allReclaim   = solCloseAccounts.reduce((s: number, a: any) => s + a.lamports, 0) / LAMPORTS_PER_SOL;
+  const selectedEmpty   = emptyAccs.filter((a: any) => solCloseSelected.has(a.pubkey));
+  const selectedReclaim = selectedEmpty.reduce((s: number, a: any) => s + a.lamports, 0) / LAMPORTS_PER_SOL;
+  const allEmptySelected = emptyAccs.length > 0 && emptyAccs.every((a: any) => solCloseSelected.has(a.pubkey));
+  const q = solCloseSearch.trim().toLowerCase();
+  const visibleAccs = solCloseAccounts
+    .filter((a: any) => solCloseFilter === 'all' ? true : solCloseFilter === 'empty' ? emptyAccs.includes(a) : solCloseFilter === 'balance' ? balanceAccs.includes(a) : issueAccs.includes(a))
+    .filter((a: any) => !q || a.mint.toLowerCase().includes(q) || a.pubkey.toLowerCase().includes(q) || (a.symbol || '').toLowerCase().includes(q) || (a.name || '').toLowerCase().includes(q));
+  const busyAny = solCloseAllRunning || !!solClosingId;
+  const acctUrl = (a: string) => `${SOLANA_NETWORK.explorerUrl}/account/${a}${SOLANA_NETWORK.clusterParam || ''}`;
+
+  const copyBtn = (text: string, key: string) => (
+    <button onClick={() => copyText(text, key)} title="Salin"
+      style={{ background:'none', border:'none', color: copiedKey === key ? '#4caf50' : '#444', cursor:'pointer', padding:'2px', display:'flex' }}>
+      {copiedKey === key ? <FaCheckCircle size={9}/> : <FaCopy size={9}/>}
+    </button>
+  );
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
+      {/* ── Hero: total rent yang bisa diambil kembali ── */}
+      <div style={{ background:`linear-gradient(135deg, ${accent}14, #0a0a0a 60%)`, border:'1px solid #1e1e1e', borderRadius:'12px', padding:'16px' }}>
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:'12px', flexWrap:'wrap' }}>
+          <div style={{ minWidth:0 }}>
+            <div style={{ fontSize:'10px', color:'#666', textTransform:'uppercase', letterSpacing:'1px' }}>Rent bisa diambil kembali</div>
+            <div style={{ fontSize:'24px', fontWeight:'bold', fontFamily:'monospace', color:'#4caf50', marginTop:'4px' }}>
+              ± {emptyReclaim.toFixed(6)} <span style={{ fontSize:'12px', color:'#777' }}>SOL</span>
+            </div>
+            <div style={{ fontSize:'11px', color:'#666', marginTop:'2px', minHeight:'14px' }}>{fiatTxt(emptyReclaim) && `≈ ${fiatTxt(emptyReclaim)}`}</div>
+          </div>
+          <div style={{ display:'flex', gap:'8px', flexWrap:'wrap' }}>
+            {[
+              { label:'Total', value: solCloseAccounts.length, color:'#ccc' },
+              { label:'Siap', value: emptyAccs.length, color:'#4caf50' },
+              { label:'Bersaldo', value: balanceAccs.length, color:'#f4a300' },
+              { label:'Bermasalah', value: issueAccs.length, color:'#ff5252' },
+            ].map(c => (
+              <div key={c.label} style={{ background:'#0a0a0a', border:'1px solid #1e1e1e', borderRadius:'8px', padding:'8px 12px', textAlign:'center', minWidth:'58px' }}>
+                <div style={{ fontSize:'16px', fontWeight:'bold', fontFamily:'monospace', color:c.color }}>{c.value}</div>
+                <div style={{ fontSize:'9px', color:'#555', textTransform:'uppercase', letterSpacing:'0.5px', marginTop:'2px' }}>{c.label}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+        {balanceAccs.length > 0 && (
+          <div style={{ fontSize:'10px', color:'#777', marginTop:'10px' }}>
+            + ± {(allReclaim - emptyReclaim).toFixed(6)} SOL tertahan di {balanceAccs.length} akun bersaldo (perlu dikosongkan atau dibakar dulu).
+          </div>
+        )}
+        <button onClick={() => setInfoOpen(o => !o)}
+          style={{ background:'none', border:'none', color:'#555', cursor:'pointer', fontSize:'10px', padding:0, marginTop:'10px', display:'flex', alignItems:'center', gap:'5px' }}>
+          <FaInfoCircle size={10}/> Apa itu rent token account? {infoOpen ? '▲' : '▼'}
+        </button>
+        {infoOpen && (
+          <div style={{ fontSize:'11px', color:'#777', lineHeight:1.6, marginTop:'8px' }}>
+            Setiap token account (<strong style={{ color:'#ccc' }}>SPL Token</strong> klasik maupun <strong style={{ color:'#ccc' }}>Token-2022</strong>) menahan
+            rent ± <strong style={{ color:'#ccc' }}>0.00203928 SOL</strong>. Menutup akun kosong mengembalikan rent itu ke wallet ini.
+            Akun yang masih bersaldo harus dikosongkan dulu — kirim ke wallet lain, atau bakar langsung dari sini.
+          </div>
+        )}
+      </div>
+
+      {/* ── Toolbar ── */}
+      <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
+        <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', borderRadius:'8px', padding:'2px', flexShrink:0 }}>
+          {([
+            ['all', `Semua ${solCloseAccounts.length}`],
+            ['empty', `Siap ${emptyAccs.length}`],
+            ['balance', `Bersaldo ${balanceAccs.length}`],
+            ['issue', `Bermasalah ${issueAccs.length}`],
+          ] as const).map(([f, label]) => (
+            <button key={f} onClick={() => setSolCloseFilter(f)}
+              style={{ padding:'6px 10px', borderRadius:'6px', border:'none', cursor:'pointer', fontSize:'10px', fontWeight:'bold', whiteSpace:'nowrap',
+                background: solCloseFilter === f ? accent : 'transparent', color: solCloseFilter === f ? '#000' : '#666' }}>{label}</button>
+          ))}
+        </div>
+        <div className="search-input-wrapper" style={{ flex:1, minWidth:'150px' }}>
+          <FaSearch className="search-icon"/>
+          <input type="search" placeholder="Cari nama / simbol / mint / ATA..." value={solCloseSearch} onChange={e => setSolCloseSearch(e.target.value)}
+            style={{ fontFamily:'monospace', fontSize:'11px' }}/>
+        </div>
+        <button onClick={() => solFetchCloseAccounts()} disabled={solCloseLoading} title="Muat ulang"
+          style={{ background:'none', border:'1px solid #333', color:'#888', borderRadius:'8px', padding:'8px 12px', cursor: solCloseLoading ? 'wait' : 'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', flexShrink:0 }}>
+          <FaSync size={9} style={{ animation: solCloseLoading ? 'spin 1s linear infinite' : undefined }}/> Refresh
+        </button>
+      </div>
+
+      {solCloseLoading && solCloseAccounts.length === 0 && (
+        <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
+          {[0, 1, 2].map(i => (
+            <div key={i} style={{ height:'64px', background:'#0a0a0a', border:'1px solid #1e1e1e', borderRadius:'10px', opacity:0.5 - i * 0.1, animation:'pulse 1.4s ease-in-out infinite' }}/>
+          ))}
+        </div>
+      )}
+
+      {!solCloseLoading && solCloseAccounts.length === 0 && (
+        <div style={{ textAlign:'center', padding:'32px 0', color:'#333' }}>
+          <FaCoins size={22} style={{ color:'#222', marginBottom:'8px' }}/>
+          <p style={{ fontSize:'12px', margin:0 }}>Tidak ada token account SPL di wallet ini pada cluster {SOLANA_NETWORK.name}.</p>
+        </div>
+      )}
+
+      {!solCloseLoading && solCloseAccounts.length > 0 && visibleAccs.length === 0 && (
+        <p style={{ color:'#444', fontSize:'12px', textAlign:'center', padding:'16px 0', margin:0 }}>Tidak ada akun yang cocok dengan filter/pencarian saat ini.</p>
+      )}
+
+      {/* ── Pilih semua ── */}
+      {emptyAccs.length > 1 && solCloseFilter !== 'balance' && (
+        <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'8px' }}>
+          <div onClick={() => solCloseToggleSelectAll(emptyAccs.map((a: any) => a.pubkey))}
+            style={{ display:'flex', alignItems:'center', gap:'4px', fontSize:'11px', color:'#888', cursor:'pointer', userSelect:'none' }}>
+            <SolCheck checked={allEmptySelected} onChange={() => solCloseToggleSelectAll(emptyAccs.map((a: any) => a.pubkey))}/>
+            Pilih semua akun siap tutup ({emptyAccs.length})
+          </div>
+        </div>
+      )}
+
+      {/* ── Daftar akun ── */}
+      {visibleAccs.length > 0 && (
+        <div style={{ display:'flex', flexDirection:'column', gap:'8px', maxHeight:'460px', overflowY:'auto', paddingRight:'2px' }}>
+          {visibleAccs.map((acc: any) => {
+            const isClosing  = solClosingId === acc.pubkey;
+            const diag = diagOf(acc);
+            const hasBalance = diag.hasBalance;
+            const selectable = isSolBatchClosable(acc, solAddress || '');
+            const lastErr: string | undefined = (solCloseErrors || {})[acc.pubkey];
+            const burnFirst  = !!solCloseBurnFirst[acc.pubkey];
+            const isSelected = solCloseSelected.has(acc.pubkey);
+            const reclaimSol = acc.lamports / LAMPORTS_PER_SOL;
+            const isToken22  = acc.programId === TOKEN_2022_PROGRAM_ID.toBase58();
+            const tone = diag.verdict === 'blocked' ? '#ff5252' : diag.verdict === 'fix' ? '#61dfff' : diag.needsBurn ? '#f4a300' : '#4caf50';
+            const displayName = acc.name || acc.symbol || (acc.metaLoaded ? 'Token Tidak Dikenal' : '');
+            const avatarLetter = (acc.name || acc.symbol || acc.mint).trim().charAt(0).toUpperCase() || '?';
+            const createdLabel = acc.createdAtLoaded
+              ? (acc.createdAt ? new Date(acc.createdAt).toLocaleDateString('id-ID', { day:'2-digit', month:'short', year:'numeric' }) : 'tidak diketahui')
+              : null;
+            const blocked = diag.verdict === 'blocked' || (diag.needsBurn && !burnFirst);
+            const statusLabel = diag.verdict === 'blocked' ? 'Terkunci' : diag.verdict === 'fix' ? 'Perlu perbaikan' : diag.native && hasBalance ? 'WSOL' : hasBalance ? 'Bersaldo' : 'Kosong';
+            const btnLabel = diag.verdict === 'blocked' ? 'Tidak bisa ditutup' : [diag.needsHarvest ? 'Perbaiki' : '', diag.needsBurn ? 'Bakar' : '', diag.native && hasBalance ? 'Unwrap' : ''].filter(Boolean).join(', ').replace(/, ([^,]*)$/, ' & $1') + (diag.needsHarvest || diag.needsBurn || (diag.native && hasBalance) ? ' & Tutup Akun' : 'Tutup Akun');
+            return (
+              <div key={acc.pubkey} onClick={selectable ? (e: React.MouseEvent) => { if ((e.target as HTMLElement).closest('button, a')) return; solCloseToggleSelect(acc.pubkey); } : undefined} style={{
+                cursor: selectable ? 'pointer' : 'default',
+                background: isSelected && selectable ? '#0c130d' : '#0a0a0a', border:`1px solid ${isSelected && selectable ? '#1d3a25' : lastErr || diag.verdict === 'blocked' ? '#3a1a1a' : '#1e1e1e'}`,
+                borderLeft:`3px solid ${tone}88`, borderRadius:'10px', padding:'12px', display:'flex', flexDirection:'column', gap:'10px',
+              }}>
+                <div style={{ display:'flex', alignItems:'flex-start', gap:'10px' }}>
+                  {selectable
+                    ? <div style={{ marginTop:'3px' }}><SolCheck checked={isSelected} onChange={() => solCloseToggleSelect(acc.pubkey)} title={isSelected ? 'Batal pilih' : 'Pilih untuk ditutup'}/></div>
+                    : <span style={{ width:'28px', flexShrink:0 }}/>}
+                  <div style={{ width:'34px', height:'34px', borderRadius:'50%', flexShrink:0, overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center',
+                    background: acc.image ? '#111' : `${tone}22`, border:`1px solid ${tone}55` }}>
+                    {acc.image
+                      ? <img src={acc.image} alt="" style={{ width:'100%', height:'100%', objectFit:'cover' }} onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}/>
+                      : <span style={{ fontSize:'13px', fontWeight:'bold', color:tone }}>{avatarLetter}</span>}
+                  </div>
+                  <div style={{ minWidth:0, flex:1 }}>
+                    <div style={{ display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap' }}>
+                      <span style={{ fontSize:'13px', color:'#eee', fontWeight:'bold' }}>
+                        {displayName || <span style={{ display:'inline-block', width:'70px', height:'10px', background:'#1a1a1a', borderRadius:'2px' }}/>}
+                      </span>
+                      {acc.symbol && acc.name && <span style={{ fontSize:'10px', color:'#777' }}>{acc.symbol}</span>}
+                      <span style={{ fontSize:'9px', fontWeight:'bold', padding:'1px 6px', borderRadius:'999px',
+                        color: isToken22 ? '#c792ea' : '#569cd6', background: isToken22 ? '#c792ea1a' : '#569cd61a', border:`1px solid ${isToken22 ? '#c792ea33' : '#569cd633'}` }}>
+                        {isToken22 ? 'Token-2022' : 'SPL Token'}
+                      </span>
+                      <span style={{ fontSize:'9px', fontWeight:'bold', padding:'1px 6px', borderRadius:'999px', color:tone, background:`${tone}18`, border:`1px solid ${tone}33` }}>
+                        {statusLabel}
+                      </span>
+                    </div>
+                    <div style={{ display:'flex', alignItems:'center', gap:'4px', flexWrap:'wrap', marginTop:'5px', fontSize:'10px', fontFamily:'monospace', color:'#666' }}>
+                      <span>Mint {shortAddr(acc.mint)}</span>{copyBtn(acc.mint, `close_mint_${acc.pubkey}`)}
+                      <span style={{ color:'#2a2a2a' }}>·</span>
+                      <span>ATA {shortAddr(acc.pubkey)}</span>{copyBtn(acc.pubkey, `close_ata_${acc.pubkey}`)}
+                      <a href={acctUrl(acc.pubkey)} target="_blank" rel="noreferrer" title="Buka di explorer" style={{ color:'#444', textDecoration:'none', fontSize:'10px' }}>↗</a>
+                    </div>
+                    <div style={{ fontSize:'10px', color:'#555', marginTop:'3px' }}>
+                      Dibuat: {createdLabel ?? <span style={{ display:'inline-block', width:'60px', height:'8px', background:'#1a1a1a', borderRadius:'2px', verticalAlign:'middle' }}/>}
+                    </div>
+                  </div>
+                  <div style={{ textAlign:'right', flexShrink:0 }}>
+                    <div style={{ fontSize:'12px', fontWeight:'bold', fontFamily:'monospace', color: hasBalance ? '#ffb300' : '#4caf50' }}>{hasBalance ? (acc.uiAmount || '>0') : '0'}</div>
+                    <div style={{ fontSize:'10px', color:'#666', marginTop:'3px' }}>+{reclaimSol.toFixed(6)} SOL</div>
+                    {fiatTxt(reclaimSol) && <div style={{ fontSize:'9px', color:'#444' }}>{fiatTxt(reclaimSol)}</div>}
+                  </div>
+                </div>
+
+                {(diag.notes.some((n: any) => n.level !== 'info') || lastErr || (diag.notes.length > 0 && (diag.native || acc.nonTransferable))) && (
+                  <div style={{ display:'flex', flexDirection:'column', gap:'6px' }}>
+                    {lastErr && (
+                      <div style={{ fontSize:'10px', color:'#ff8a80', background:'#1a0808', border:'1px solid #4a1a1a', borderRadius:'8px', padding:'8px 10px', lineHeight:1.5 }}>
+                        <strong>Gagal terakhir:</strong> {lastErr}
+                      </div>
+                    )}
+                    {diag.notes.filter((n: any) => n.level !== 'info' || diag.native || acc.nonTransferable).filter((n: any) => !(n.level === 'info' && n.text.startsWith('Masih ada saldo'))).map((n: any, i: number) => {
+                      const c = n.level === 'block' ? '#ff5252' : n.level === 'fix' ? '#61dfff' : n.level === 'warn' ? '#ffaa00' : '#777';
+                      return (
+                        <div key={i} style={{ fontSize:'10px', color:c, background:`${c}10`, border:`1px solid ${c}33`, borderRadius:'8px', padding:'8px 10px', lineHeight:1.5, display:'flex', gap:'6px' }}>
+                          <span style={{ flexShrink:0, fontWeight:'bold' }}>{n.level === 'block' ? '⛔' : n.level === 'fix' ? '🔧' : n.level === 'warn' ? '⚠' : 'ℹ'}</span>
+                          <span>{n.text}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {diag.needsBurn && diag.verdict !== 'blocked' && (
+                  <div onClick={() => setSolCloseBurnFirst((prev: any) => ({ ...prev, [acc.pubkey]: !burnFirst }))}
+                    style={{ display:'flex', alignItems:'center', gap:'6px', fontSize:'10px', color:'#f4a300', cursor:'pointer', userSelect:'none', background:'#1a1300', border:`1px solid ${burnFirst ? '#f4a300' : '#3a2c00'}`, borderRadius:'8px', padding:'6px 10px 6px 4px', lineHeight:1.5 }}>
+                    <SolCheck checked={burnFirst} color="#f4a300" size={18} onChange={() => setSolCloseBurnFirst((prev: any) => ({ ...prev, [acc.pubkey]: !burnFirst }))}/>
+                    <span><FaExclamationTriangle size={9} style={{ marginRight:'4px' }}/>Bakar sisa saldo dulu, lalu tutup akun (permanen — token akan hilang)</span>
+                  </div>
+                )}
+
+                <button onClick={() => solCloseTokenAccount(acc)} disabled={isClosing || solCloseAllRunning || blocked}
+                  style={{ padding:'9px', fontSize:'11px', fontWeight:'bold', borderRadius:'8px',
+                    background: isClosing ? '#1a0000' : blocked ? 'transparent' : diag.needsHarvest && !diag.needsBurn ? '#0097a7' : '#f44336', color: isClosing ? '#f44336' : '#fff',
+                    border:`1px solid ${blocked ? '#333' : diag.needsHarvest && !diag.needsBurn ? '#0097a7' : '#f44336'}`, cursor: isClosing ? 'wait' : blocked ? 'not-allowed' : 'pointer', opacity: blocked ? 0.4 : 1,
+                    display:'flex', alignItems:'center', justifyContent:'center', gap:'6px' }}>
+                  {isClosing
+                    ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Menutup...</>
+                    : <><FaTrash size={10}/> {btnLabel}</>}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* ── Bar aksi massal (menempel di bawah) ── */}
+      {emptyAccs.length > 0 && (
+        <div style={{ position:'sticky', bottom:0, zIndex:3, display:'flex', alignItems:'center', justifyContent:'space-between', gap:'12px', flexWrap:'wrap',
+          background:'#0d0d0d', border:`1px solid ${selectedEmpty.length ? '#1d3a25' : '#1e1e1e'}`, borderRadius:'12px', padding:'10px 12px', boxShadow:'0 -6px 16px #000a' }}>
+          <div style={{ fontSize:'11px', color:'#888', minWidth:0 }}>
+            {selectedEmpty.length > 0 ? (<>
+              <div>{selectedEmpty.length} akun dipilih</div>
+              <div style={{ marginTop:'2px' }}>
+                <strong style={{ color:'#4caf50', fontFamily:'monospace', fontSize:'13px' }}>+{selectedReclaim.toFixed(6)} SOL</strong>
+                {fiatTxt(selectedReclaim) && <span style={{ color:'#555', marginLeft:'6px', fontSize:'10px' }}>({fiatTxt(selectedReclaim)})</span>}
+              </div>
+            </>) : 'Belum ada akun siap-tutup yang dipilih.'}
+          </div>
+          <button onClick={solCloseSelectedAccounts} disabled={busyAny || selectedEmpty.length === 0}
+            style={{ padding:'10px 16px', fontWeight:'bold', fontSize:'12px', borderRadius:'8px', flexShrink:0,
+              cursor: solCloseAllRunning ? 'wait' : (busyAny || selectedEmpty.length === 0) ? 'not-allowed' : 'pointer',
+              background: solCloseAllRunning ? '#001a00' : selectedEmpty.length === 0 ? 'transparent' : '#00e676',
+              color: solCloseAllRunning ? '#00e676' : selectedEmpty.length === 0 ? '#555' : '#000',
+              border:`1px solid ${solCloseAllRunning ? '#00e67644' : selectedEmpty.length === 0 ? '#333' : '#00e676'}`,
+              display:'flex', alignItems:'center', justifyContent:'center', gap:'8px', opacity: solClosingId ? 0.5 : 1 }}>
+            {solCloseAllRunning
+              ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Menutup...</>
+              : <><FaTrash/> Tutup {selectedEmpty.length || ''} Akun Terpilih</>}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Panel "Tools" Solana: Riwayat · Stake · Swap (Jupiter) ──
+function SolToolsPanel({ ctx, closeView }: { ctx: WalletGeneratorCtx; closeView?: React.ReactNode }) {
+  const net = ctx.SOLANA_NETWORK as SolNetworkCfg;
+  const privateKey: string = ctx.solPrivKey || '';
+  const address: string = ctx.solAddress || '';
+  const color = net.color;
+  const card: React.CSSProperties = { background:'#0d0d0d', border:'1px solid #1e1e1e', padding:'12px' };
+  const lbl: React.CSSProperties  = { fontSize:'11px', color:'#555', display:'block', marginBottom:'5px' };
+  const short = (s: string, n = 6) => (s.length > n * 2 + 3 ? `${s.slice(0, n)}…${s.slice(-n)}` : s);
+  const alert = (m: string, t = 'success') => ctx.showAlert(m, t);
+  const ask = (title: string, message: string, action: () => void) =>
+    ctx.setConfirmData({ isOpen: true, title, message, action });
+  const txUrl   = (sig: string) => `${net.explorerUrl}/tx/${sig}${net.clusterParam}`;
+  const acctUrl = (a: string)   => `${net.explorerUrl}/account/${a}${net.clusterParam}`;
+
+  const [sub, setSub] = React.useState<'history' | 'stake' | 'swap' | 'close'>('history');
+  const [rpcInput, setRpcInput] = React.useState(() => getCustomSolRpc(net.id));
+  React.useEffect(() => { setRpcInput(getCustomSolRpc(net.id)); }, [net.id]);
+  const saveRpc = () => {
+    try {
+      setCustomSolRpc(net.id, rpcInput);
+      alert(rpcInput.trim() ? 'RPC kustom disimpan & dijadikan prioritas.' : 'RPC kustom dihapus.');
+      if (sub === 'close') ctx.solFetchCloseAccounts?.();
+      if (sub === 'swap') loadHeld();
+    } catch (e: any) { alert(e?.message || 'RPC tidak valid.', 'error'); }
+  };
+  const [busy, setBusy] = React.useState('');
+
+  // Riwayat
+  const [hist, setHist] = React.useState<SolTxHistoryItem[]>([]);
+  const [histLoading, setHistLoading] = React.useState(false);
+  const [histDone, setHistDone] = React.useState(false);
+  const loadHistory = async (more = false) => {
+    setHistLoading(true);
+    try {
+      const before = more && hist.length ? hist[hist.length - 1].signature : undefined;
+      const items = await fetchSolTxHistory(net, address, { limit: 20, before });
+      setHist(prev => more ? [...prev, ...items] : items);
+      setHistDone(items.length < 20);
+    } catch (e: any) { alert(e?.message || 'Gagal memuat riwayat.', 'error'); }
+    setHistLoading(false);
+  };
+
+  // Stake
+  const [validators, setValidators] = React.useState<SolValidator[]>([]);
+  const [vote, setVote] = React.useState('');
+  const [stakeAmt, setStakeAmt] = React.useState('');
+  const [stakeAccs, setStakeAccs] = React.useState<SolStakeAccount[]>([]);
+  const [stakeLoading, setStakeLoading] = React.useState(false);
+  const loadStake = async () => {
+    setStakeLoading(true);
+    try {
+      const [accs, vals] = await Promise.all([
+        fetchStakeAccounts(net, address),
+        validators.length ? Promise.resolve(validators) : fetchTopValidators(net, 30),
+      ]);
+      setStakeAccs(accs); setValidators(vals);
+      if (!vote && vals[0]) setVote(vals[0].votePubkey);
+    } catch (e: any) { alert(e?.message || 'Gagal memuat data staking.', 'error'); }
+    setStakeLoading(false);
+  };
+  const doStake = () => {
+    const amt = parseFloat(stakeAmt);
+    if (!(amt > 0) || !vote) return alert('Isi jumlah & pilih validator.', 'error');
+    ask('STAKE SOL?', `Stake ${amt} SOL ke validator ${short(vote)} di ${net.name}. Unstake butuh ±1 epoch (2–3 hari) sebelum bisa ditarik.`, async () => {
+      setBusy('stake');
+      try {
+        const r = await stakeSol(net, privateKey, vote, amt);
+        alert(`Stake berhasil! Account: ${short(r.stakeAccount)}`);
+        setStakeAmt(''); await loadStake();
+      } catch (e: any) { alert(e?.message || 'Stake gagal.', 'error'); }
+      setBusy('');
+    });
+  };
+  const doStakeAction = (kind: 'deactivate' | 'withdraw', acc: SolStakeAccount) => {
+    ask(kind === 'deactivate' ? 'UNSTAKE (DEACTIVATE)?' : 'TARIK STAKE?',
+      kind === 'deactivate' ? `Nonaktifkan stake ${acc.balanceSol.toFixed(4)} SOL. Bisa ditarik setelah epoch berganti.` : `Tarik ${acc.balanceSol.toFixed(4)} SOL ke wallet kamu.`,
+      async () => {
+        setBusy(acc.pubkey);
+        try {
+          if (kind === 'deactivate') await deactivateStake(net, privateKey, acc.pubkey);
+          else await withdrawStake(net, privateKey, acc.pubkey);
+          alert(kind === 'deactivate' ? 'Stake dinonaktifkan.' : 'Stake ditarik ke wallet.');
+          await loadStake();
+        } catch (e: any) { alert(e?.message || 'Gagal.', 'error'); }
+        setBusy('');
+      });
+  };
+
+  // Swap
+  const [fromTok, setFromTok] = React.useState<SwapToken>(SWAP_PRESET_TOKENS[0]);
+  const [toTok, setToTok]     = React.useState<SwapToken>(SWAP_PRESET_TOKENS[1]);
+  const [swapAmt, setSwapAmt] = React.useState('');
+  const [slip, setSlip]       = React.useState('0.5');
+  const [quote, setQuote]     = React.useState<JupQuote | null>(null);
+  const [quoting, setQuoting] = React.useState(false);
+  const [quoteError, setQuoteError] = React.useState('');
+  const [quoteNonce, setQuoteNonce] = React.useState(0);
+  const quoteSeq = React.useRef(0);
+  const [priority, setPriority] = React.useState<SolPriorityLevel>('medium');
+  const [feePrev, setFeePrev] = React.useState<JupSwapFeePreview | null>(null);
+  const [feeLoading, setFeeLoading] = React.useState(false);
+  const [feeError, setFeeError] = React.useState('');
+  const [feeOpen, setFeeOpen] = React.useState(true);
+  const feeSeq = React.useRef(0);
+  const [fiat, setFiat] = React.useState<SolFiatRate | null>(null);
+  React.useEffect(() => {
+    if (sub !== 'swap' || net.id !== 'mainnet') return;
+    let off = false;
+    const load = () => fetchSolFiatRate().then(r => { if (!off) setFiat(r); }).catch(() => {});
+    load();
+    const t = setInterval(load, 60_000);
+    return () => { off = true; clearInterval(t); };
+  }, [sub, net.id]);
+  const [receipt, setReceipt] = React.useState<{ loading: boolean; sig: string; from: SwapToken; to: SwapToken; data: JupSwapReceipt | null; quotedOut?: string } | null>(null);
+  const [pickerOpen, setPickerOpen] = React.useState<'from' | 'to' | null>(null);
+  const [flipSpin, setFlipSpin] = React.useState(false);
+  const [rateInverted, setRateInverted] = React.useState(false);
+  const [routeOpen, setRouteOpen] = React.useState(false);
+  const [quoteAt, setQuoteAt] = React.useState(0);
+  const [nowTick, setNowTick] = React.useState(Date.now());
+  const [copiedMint, setCopiedMint] = React.useState('');
+  const QUOTE_TTL = 30; // detik sebelum quote dianggap basi & diperbarui otomatis
+  const ctxRef = React.useRef(ctx);
+  ctxRef.current = ctx;
+  type SwapLogItem = { sig: string; from: string; to: string; sent: string; recv: string; at: number; actual?: boolean };
+  const swapLogKey = `solSwapLog:${address}`;
+  const readSwapLog = (): SwapLogItem[] => { try { return JSON.parse(localStorage.getItem(swapLogKey) || '[]'); } catch { return []; } };
+  const [swapLog, setSwapLog] = React.useState<SwapLogItem[]>(readSwapLog);
+  const [logOpen, setLogOpen] = React.useState(false);
+  React.useEffect(() => { setSwapLog(readSwapLog()); }, [address]);
+  const saveSwapLog = (list: SwapLogItem[]) => {
+    setSwapLog(list);
+    try { localStorage.setItem(swapLogKey, JSON.stringify(list.slice(0, 30))); } catch { /* abaikan */ }
+  };
+  const [heldTokens, setHeldTokens] = React.useState<SwapToken[]>([]);
+  const [heldLoading, setHeldLoading] = React.useState(false);
+  const [popTokens, setPopTokens] = React.useState<SwapToken[]>([]);
+  const loadHeld = async () => {
+    if (!address) return;
+    setHeldLoading(true);
+    try { setHeldTokens(await fetchHeldSwapTokens(net, address)); }
+    catch (e: any) { alert(e?.message || 'Gagal mendeteksi token di wallet.', 'error'); }
+    setHeldLoading(false);
+  };
+  // Auto-deteksi token yang di-hold + muat token populer saat tab Swap dibuka.
+  React.useEffect(() => {
+    if (sub !== 'swap' || !address || net.id !== 'mainnet') return;
+    loadHeld();
+    if (popTokens.length === 0) fetchPopularSwapTokens().then(setPopTokens).catch(() => {});
+  }, [sub, address, net.id]);
+  // Auto-quote (debounce) tiap token / jumlah / slippage berubah — tidak perlu klik tombol quote lagi.
+  React.useEffect(() => {
+    setQuote(null); setQuoteError('');
+    if (sub !== 'swap' || net.id !== 'mainnet' || !(parseFloat(swapAmt) > 0) || fromTok.mint === toTok.mint) { setQuoting(false); return; }
+    const seq = ++quoteSeq.current;
+    setQuoting(true);
+    const h = setTimeout(async () => {
+      try {
+        const q = await getJupiterQuote({
+          inputMint: fromTok.mint, outputMint: toTok.mint,
+          amountRaw: toRawAmount(swapAmt, fromTok.decimals),
+          slippageBps: Math.max(1, Math.round(parseFloat(slip || '0.5') * 100)),
+        });
+        if (seq === quoteSeq.current) { setQuote(q); setQuoteAt(Date.now()); setNowTick(Date.now()); }
+      } catch (e: any) { if (seq === quoteSeq.current) setQuoteError(e?.message || 'Quote gagal.'); }
+      if (seq === quoteSeq.current) setQuoting(false);
+    }, 600);
+    return () => clearTimeout(h);
+  }, [sub, fromTok.mint, toTok.mint, swapAmt, slip, net.id, quoteNonce]);
+
+  // Hitung mundur umur quote; saat basi diperbarui otomatis (kecuali sedang swap / dialog konfirmasi terbuka).
+  React.useEffect(() => {
+    if (!quote || sub !== 'swap') return;
+    const t = setInterval(() => {
+      const now = Date.now();
+      setNowTick(now);
+      if (now - quoteAt >= QUOTE_TTL * 1000 && busy !== 'swap' && !ctxRef.current?.confirmData?.isOpen) setQuoteNonce(n => n + 1);
+    }, 1000);
+    return () => clearInterval(t);
+  }, [quote, quoteAt, sub, busy]);
+
+  // Rincian fee (base + priority + rent akun token) dihitung ulang tiap quote / level prioritas berubah.
+  React.useEffect(() => {
+    setFeePrev(null); setFeeError('');
+    if (!quote || sub !== 'swap' || net.id !== 'mainnet' || !address) { setFeeLoading(false); return; }
+    const seq = ++feeSeq.current;
+    setFeeLoading(true);
+    const h = setTimeout(async () => {
+      try {
+        const f = await previewJupiterSwapFee(net, address, quote, priority);
+        if (seq === feeSeq.current) setFeePrev(f);
+      } catch (e: any) { if (seq === feeSeq.current) setFeeError(e?.message || 'Gagal menghitung fee.'); }
+      if (seq === feeSeq.current) setFeeLoading(false);
+    }, 250);
+    return () => clearTimeout(h);
+  }, [quote, priority, sub, net.id, address]);
+
+  const fmtLamports = (l: number) => {
+    const sol = l / 1e9;
+    return sol === 0 ? '0' : sol < 0.000001 ? sol.toExponential(2) : sol.toFixed(9).replace(/0+$/, '').replace(/\.$/, '');
+  };
+
+  // Padanan USD / IDR untuk nominal lamport, mis. " ($0.35 · Rp5.700)"; kosong bila harga belum termuat.
+  const [fiatCur] = useFiatCur();
+  const fiatOf = (l: number): string => {
+    const t = fmtSolFiat(l / 1e9, fiat, fiatCur);
+    return t ? ` (${t})` : '';
+  };
+
+  const addSwapLog = (it: SwapLogItem) => saveSwapLog([it, ...readSwapLog()]);
+  const updateSwapLog = (sig: string, recvRaw: string | null, dec: number) => {
+    if (!recvRaw) return;
+    saveSwapLog(readSwapLog().map(x => x.sig === sig ? { ...x, recv: fromRawAmount(recvRaw, dec), actual: true } : x));
+  };
+
+  const doSwap = () => {
+    if (!quote) return;
+    const out = fromRawAmount(quote.outAmount, toTok.decimals);
+    const min = fromRawAmount(quote.otherAmountThreshold, toTok.decimals);
+    const feeTxt = feePrev ? ` Estimasi fee jaringan: ${fmtLamports(feePrev.totalLamports)} SOL${fiatOf(feePrev.totalLamports)}${feePrev.rentLamports ? ` (termasuk rent akun token ${fmtLamports(feePrev.rentLamports)} SOL)` : ''}.` : '';
+    ask('SWAP TOKEN?', `${swapAmt} ${fromTok.symbol} → ≈ ${out} ${toTok.symbol}. Minimum diterima: ${min}. Price impact: ${(parseFloat(quote.priceImpactPct) * 100).toFixed(3)}%.${feeTxt}`, async () => {
+      setBusy('swap');
+      const fT = fromTok, tT = toTok;
+      try {
+        const sig = await executeJupiterSwap(net, privateKey, quote, priority);
+        alert(`Swap berhasil! ${short(sig, 8)}`);
+        setQuote(null); setSwapAmt('');
+        setReceipt({ loading: true, sig, from: fT, to: tT, data: null, quotedOut: out });
+        addSwapLog({ sig, from: fT.symbol, to: tT.symbol, sent: swapAmt, recv: out, at: Date.now() });
+        fetchJupiterSwapReceipt(net, sig, address, fT.mint, tT.mint)
+          .then(d => { updateSwapLog(sig, d?.receivedRaw ?? null, tT.decimals); setReceipt(r => r && r.sig === sig ? { ...r, loading: false, data: d } : r); })
+          .catch(() => setReceipt(r => r && r.sig === sig ? { ...r, loading: false } : r));
+        loadHeld();
+      } catch (e: any) { alert(e?.message || 'Swap gagal.', 'error'); }
+      setBusy('');
+    });
+  };
+  const fmtBal = (v: number | undefined, d = 6) => v === undefined ? '' : v.toLocaleString('en-US', { maximumFractionDigits: d });
+  const iconOf = (tk: SwapToken) => tk.icon || heldTokens.find(x => x.mint === tk.mint)?.icon || popTokens.find(x => x.mint === tk.mint)?.icon;
+  const popularForPicker = (): SwapToken[] => {
+    const heldSet = new Set(heldTokens.map(x => x.mint));
+    return [...SWAP_PRESET_TOKENS, ...popTokens].filter((x, k, arr) => !heldSet.has(x.mint) && arr.findIndex(y => y.mint === x.mint) === k)
+      .map(x => ({ ...x, icon: x.icon || popTokens.find(p => p.mint === x.mint)?.icon }));
+  };
+  const flipTokens = () => {
+    setFlipSpin(true); setTimeout(() => setFlipSpin(false), 300);
+    setFromTok(toTok); setToTok(fromTok); setSwapAmt('');
+  };
+  const pickToken = (tk: SwapToken) => {
+    if (pickerOpen === 'from') { if (tk.mint === toTok.mint) setToTok(fromTok); setFromTok(tk); }
+    else if (pickerOpen === 'to') { if (tk.mint === fromTok.mint) setFromTok(toTok); setToTok(tk); }
+    setPickerOpen(null);
+  };
+  const fromBal = heldTokens.find(t => t.mint === fromTok.mint)?.balance;
+  const setMaxAmount = () => {
+    if (fromBal === undefined) return;
+    setPctAmount(100);
+  };
+  const setPctAmount = (pct: number) => {
+    if (fromBal === undefined) return;
+    const isSol = fromTok.mint === SWAP_PRESET_TOKENS[0].mint;
+    const reserve = isSol ? Math.max(0.01, feePrev ? feePrev.totalLamports / 1e9 + 0.005 : 0) : 0; // sisakan SOL untuk fee & rent
+    const usable = Math.max(0, (isSol ? fromBal - reserve : fromBal) * (pct / 100));
+    const str = usable.toFixed(fromTok.decimals);
+    setSwapAmt(str.includes('.') ? str.replace(/\.?0+$/, '') : str);
+  };
+
+  // Deep-link dari Explorer (#swapsol=<mint>): buka sub-tab Swap, SOL → token tsb, lalu bersihkan permintaan.
+  const pendingMint: string = ctx.pendingSwapMint || '';
+  React.useEffect(() => {
+    if (!pendingMint || !address) return;
+    setSub('swap');
+    let off = false;
+    (async () => {
+      let tok: SwapToken | undefined = SWAP_PRESET_TOKENS.find(t => t.mint === pendingMint);
+      if (!tok) {
+        try { const r = await searchSwapTokens(pendingMint); tok = r.find(t => t.mint === pendingMint) || r[0]; } catch { /* ditangani di bawah */ }
+      }
+      if (off) return;
+      if (tok && tok.mint !== SWAP_PRESET_TOKENS[0].mint) { setFromTok(SWAP_PRESET_TOKENS[0]); setToTok(tok); setSwapAmt(''); }
+      else if (!tok) alert('Token tidak ditemukan di Jupiter — pilih manual lewat tombol token.', 'error');
+      ctx.setPendingSwapMint?.('');
+    })();
+    return () => { off = true; };
+  }, [pendingMint, address]);
+
+  // Tutup Akun: muat otomatis saat sub-tab dibuka (dan saat address/jaringan berubah).
+  React.useEffect(() => {
+    if (sub === 'close' && address) ctx.solFetchCloseAccounts?.();
+  }, [sub, address, net.id]);
+
+  if (!privateKey || !address) {
+    return <div style={{ ...card, color:'#666', fontSize:'12px', textAlign:'center' }}>Connect wallet Solana dulu untuk memakai fitur ini.</div>;
+  }
+
+  return (
+    <div style={{ display:'flex', flexDirection:'column', gap:'12px' }}>
+      <details style={{ ...card, padding:'8px 12px' }}>
+        <summary style={{ cursor:'pointer', fontSize:'11px', color:'#888' }}>⚙ RPC kustom ({net.name}) — opsional, bikin lebih lancar</summary>
+        <div style={{ display:'flex', gap:'6px', marginTop:'8px' }}>
+          <input placeholder="https://mainnet.helius-rpc.com/?api-key=..." value={rpcInput} onChange={e => setRpcInput(e.target.value)}
+            style={{ flex:1, fontFamily:'monospace', fontSize:'11px' }}/>
+          <button onClick={saveRpc} style={{ background:color, border:'none', color:'#000', padding:'0 14px', cursor:'pointer', fontWeight:'bold', fontSize:'11px' }}>Simpan</button>
+        </div>
+        <div style={{ fontSize:'10px', color:'#555', marginTop:'6px' }}>Kosongkan lalu Simpan untuk menghapus. Endpoint pribadi gratis (Helius / QuickNode / Alchemy) jauh lebih stabil dibanding RPC publik. Tersimpan di browser ini saja.</div>
+      </details>
+
+      <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', padding:'2px' }}>
+        {([['history','Riwayat'],['stake','Stake'],['swap','Swap'],['close','Tutup Akun']] as const).map(([k, l]) => (
+          <button key={k} onClick={() => setSub(k)} style={{ flex:1, padding:'8px', border:'none', cursor:'pointer', fontSize:'12px', fontWeight:'bold',
+            background: sub === k ? color : 'transparent', color: sub === k ? '#000' : '#666' }}>{l}</button>
+        ))}
+      </div>
+
+      {sub === 'history' && (<>
+        <button onClick={() => loadHistory(false)} disabled={histLoading}
+          style={{ background:'none', border:`1px solid ${color}`, color, padding:'8px', cursor:'pointer', fontSize:'12px', fontWeight:'bold' }}>
+          {histLoading ? 'Memuat…' : hist.length ? '⟳ Muat Ulang' : 'Muat Riwayat Transaksi'}
+        </button>
+        {hist.map(t => (
+          <div key={t.signature} style={{ ...card, borderLeft:`3px solid ${t.ok ? '#4caf50' : '#f44336'}`, display:'flex', justifyContent:'space-between', gap:'10px', flexWrap:'wrap' }}>
+            <div style={{ minWidth:0 }}>
+              <a href={txUrl(t.signature)} target="_blank" rel="noreferrer" style={{ color, fontFamily:'monospace', fontSize:'12px' }}>{short(t.signature, 8)}</a>
+              <div style={{ fontSize:'10px', color:'#555', marginTop:'3px' }}>
+                {t.blockTime ? new Date(t.blockTime * 1000).toLocaleString() : `slot ${t.slot}`} · {t.ok ? 'Sukses' : 'Gagal'}
+                {t.feeSol !== null && ` · fee ${t.feeSol.toFixed(6)} SOL`}
+              </div>
+              {t.memo && <div style={{ fontSize:'10px', color:'#888', marginTop:'2px' }}>Memo: {t.memo}</div>}
+            </div>
+            {t.deltaSol !== null && (
+              <div style={{ fontWeight:'bold', fontSize:'13px', color: t.deltaSol >= 0 ? '#4caf50' : '#ff7043', whiteSpace:'nowrap' }}>
+                {t.deltaSol >= 0 ? '+' : ''}{t.deltaSol.toFixed(6)} SOL
+              </div>
+            )}
+          </div>
+        ))}
+        {hist.length > 0 && !histDone && (
+          <button onClick={() => loadHistory(true)} disabled={histLoading}
+            style={{ background:'none', border:'1px solid #333', color:'#888', padding:'8px', cursor:'pointer', fontSize:'12px' }}>
+            {histLoading ? 'Memuat…' : 'Muat lebih banyak'}
+          </button>
+        )}
+      </>)}
+
+      {sub === 'stake' && (<>
+        <div style={card}>
+          <div style={{ fontSize:'12px', fontWeight:'bold', color, marginBottom:'10px' }}>Stake SOL (Native)</div>
+          <label style={lbl}>Validator (komisi ≤ 10%, urut total stake)</label>
+          <select value={vote} onChange={e => setVote(e.target.value)} style={{ width:'100%', marginBottom:'10px', fontFamily:'monospace', fontSize:'12px' }}>
+            {validators.length === 0 && <option value="">Klik “Muat Data” dulu…</option>}
+            {validators.map(v => (
+              <option key={v.votePubkey} value={v.votePubkey}>{short(v.votePubkey)} · komisi {v.commission}% · {Math.round(v.activatedStakeSol).toLocaleString()} SOL</option>
+            ))}
+          </select>
+          <label style={lbl}>Atau tempel Vote Account sendiri</label>
+          <input placeholder="Vote account address" value={vote} onChange={e => setVote(e.target.value)} style={{ width:'100%', boxSizing:'border-box', marginBottom:'10px', fontFamily:'monospace', fontSize:'12px' }}/>
+          <label style={lbl}>Jumlah SOL</label>
+          <input type="number" min={0} placeholder="1.0" value={stakeAmt} onChange={e => setStakeAmt(e.target.value)} style={{ width:'100%', boxSizing:'border-box', marginBottom:'10px' }}/>
+          <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:'8px' }}>
+            <button onClick={loadStake} disabled={stakeLoading} style={{ background:'none', border:`1px solid ${color}`, color, padding:'9px', cursor:'pointer', fontSize:'12px', fontWeight:'bold' }}>
+              {stakeLoading ? 'Memuat…' : '⟳ Muat Data'}
+            </button>
+            <button onClick={doStake} disabled={busy === 'stake' || !vote || !stakeAmt} style={{ background:color, border:'none', color:'#000', padding:'9px', cursor:'pointer', fontSize:'12px', fontWeight:'bold', opacity: (!vote || !stakeAmt) ? 0.5 : 1 }}>
+              {busy === 'stake' ? 'Memproses…' : 'Stake'}
+            </button>
+          </div>
+          <div style={{ fontSize:'10px', color:'#555', marginTop:'8px' }}>Sebagian SOL (rent ±0.00228) tersimpan di stake account & kembali saat ditarik.</div>
+        </div>
+        {stakeAccs.map(a => (
+          <div key={a.pubkey} style={{ ...card, display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', flexWrap:'wrap' }}>
+            <div>
+              <a href={acctUrl(a.pubkey)} target="_blank" rel="noreferrer" style={{ color, fontFamily:'monospace', fontSize:'12px' }}>{short(a.pubkey, 8)}</a>
+              <div style={{ fontSize:'11px', color:'#888', marginTop:'3px' }}>
+                {a.balanceSol.toFixed(4)} SOL · <b style={{ color: a.state === 'active' ? '#4caf50' : a.state === 'inactive' ? '#ffaa00' : '#61dfff' }}>{a.state}</b>
+                {a.voter && ` · ${short(a.voter, 4)}`}
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:'6px' }}>
+              {(a.state === 'active' || a.state === 'activating') && (
+                <button onClick={() => doStakeAction('deactivate', a)} disabled={busy === a.pubkey} style={{ background:'none', border:'1px solid #ff7043', color:'#ff7043', padding:'6px 10px', cursor:'pointer', fontSize:'11px' }}>Unstake</button>
+              )}
+              {a.state === 'inactive' && (
+                <button onClick={() => doStakeAction('withdraw', a)} disabled={busy === a.pubkey} style={{ background:'none', border:'1px solid #4caf50', color:'#4caf50', padding:'6px 10px', cursor:'pointer', fontSize:'11px' }}>Tarik</button>
+              )}
+            </div>
+          </div>
+        ))}
+        {stakeAccs.length === 0 && !stakeLoading && <div style={{ textAlign:'center', color:'#333', fontSize:'12px' }}>Belum ada stake account.</div>}
+      </>)}
+
+      {sub === 'close' && (<>
+        {ctx.solCloseError && (
+          <div style={{ padding:'10px 12px', border:'1px solid #f4433644', borderLeft:'3px solid #f44336', color:'#ff8a80', fontSize:'12px', display:'flex', flexDirection:'column', gap:'8px' }}>
+            <span>{ctx.solCloseError}</span>
+            <button onClick={() => ctx.solFetchCloseAccounts?.()} style={{ alignSelf:'flex-start', background:'none', border:'1px solid #f44336', color:'#f44336', padding:'5px 12px', cursor:'pointer', fontSize:'11px' }}>Coba Lagi</button>
+          </div>
+        )}
+        {closeView}
+      </>)}
+
+      {sub === 'swap' && (() => {
+        const { FaChevronDown, FaCoins, FaWallet, FaExchangeAlt, FaSlidersH, FaSpinner, FaExclamationTriangle, FaBolt, FaCheckCircle, FaCopy, FaLink } = ctx;
+        const toBal = heldTokens.find(x => x.mint === toTok.mint)?.balance;
+        const impact = quote ? parseFloat(quote.priceImpactPct) * 100 : 0;
+        const highImpact = impact > 5;
+        const outNum = quote ? Number(fromRawAmount(quote.outAmount, toTok.decimals)) : 0;
+        const inNum  = quote ? Number(fromRawAmount(quote.inAmount, fromTok.decimals)) : 0;
+        const rate   = quote && inNum > 0 ? outNum / inNum : 0;
+        const venues = quote ? Array.from(new Set((quote.routePlan || []).map((r: any) => r?.swapInfo?.label).filter(Boolean))) as string[] : [];
+        const amtValid = parseFloat(swapAmt) > 0;
+
+        // ── Nilai fiat (USD) per token: SOL dari kurs, stablecoin = $1, token di wallet dari usdValue/balance ──
+        const fmtUsd = (v: number) => v > 0 && v < 0.01 ? `$${v.toFixed(4)}` : `$${v.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+        const stableMints = new Set(SWAP_PRESET_TOKENS.filter(t => t.symbol === 'USDC' || t.symbol === 'USDT').map(t => t.mint));
+        const unitUsd = (tk: SwapToken): number | null => {
+          if (stableMints.has(tk.mint)) return 1;
+          if (tk.mint === SWAP_PRESET_TOKENS[0].mint) return fiat?.usd || null;
+          const h = heldTokens.find(x => x.mint === tk.mint);
+          return h && h.usdValue != null && h.balance ? h.usdValue / h.balance : null;
+        };
+        const swapAmtNum = parseFloat(swapAmt) || 0;
+        const fromUnit = unitUsd(fromTok), toUnit = unitUsd(toTok);
+        const fromUsd = fromUnit !== null && swapAmtNum > 0 ? fromUnit * swapAmtNum : null;
+        const quoteUsd = quote && Number(quote.swapUsdValue) > 0 ? Number(quote.swapUsdValue) : null;
+        const toUsd = toUnit !== null && quote ? toUnit * outNum : (quote ? quoteUsd : null);
+        const valueDiff = fromUsd && toUsd && fromUsd > 0 ? ((toUsd - fromUsd) / fromUsd) * 100 : null;
+
+        // ── Validasi input ──
+        const insufficient = fromBal !== undefined && amtValid && swapAmtNum > fromBal;
+        const solMint = SWAP_PRESET_TOKENS[0].mint;
+        const leavesDust = fromTok.mint === solMint && fromBal !== undefined && amtValid && !insufficient && fromBal - swapAmtNum < 0.003;
+        const slipNum = parseFloat(slip);
+        const slipWarn = !(slipNum > 0) ? { lvl: 'err', text: 'Isi slippage lebih dari 0%.' }
+          : slipNum < 0.1 ? { lvl: 'warn', text: 'Slippage sangat rendah — swap mudah gagal saat harga bergerak.' }
+          : slipNum > 5 ? { lvl: 'warn', text: 'Slippage tinggi — rentan kena sandwich / front-running, kamu bisa menerima jauh lebih sedikit.' }
+          : null;
+        const canSwap = !!quote && !quoting && busy !== 'swap' && net.id === 'mainnet' && !insufficient && slipNum > 0;
+
+        // ── Umur quote ──
+        const ageSec = quote ? Math.max(0, Math.floor((nowTick - quoteAt) / 1000)) : 0;
+        const ttlLeft = Math.max(0, QUOTE_TTL - ageSec);
+
+        // ── Rute: tiap hop dengan DEX, porsi, dan jumlah ──
+        const knownToks: SwapToken[] = [fromTok, toTok, ...heldTokens, ...popTokens, ...SWAP_PRESET_TOKENS];
+        const symOf = (m: string) => knownToks.find(t => t.mint === m)?.symbol || short(m, 4);
+        const decOf = (m: string) => knownToks.find(t => t.mint === m)?.decimals;
+        const hops: any[] = quote ? (quote.routePlan || []) : [];
+        const hopAmt = (raw: any, m: string) => {
+          const d = decOf(m);
+          if (raw === undefined || d === undefined) return '';
+          return Number(fromRawAmount(String(raw), d)).toLocaleString('en-US', { maximumFractionDigits: 6 });
+        };
+
+        // ── Chip mint address (salin + buka di explorer) ──
+        const copyMint = (m: string) => {
+          try { navigator.clipboard?.writeText(m); } catch { /* abaikan */ }
+          setCopiedMint(m); setTimeout(() => setCopiedMint(c => (c === m ? '' : c)), 1500);
+        };
+        const mintChip = (tk: SwapToken) => tk.mint === solMint ? (
+          <span style={{ fontSize:'9px', color:'#444', marginLeft:'6px', border:'1px solid #222', borderRadius:'4px', padding:'1px 5px' }}>NATIVE</span>
+        ) : (
+          <span style={{ display:'inline-flex', alignItems:'center', gap:'4px', marginLeft:'6px', fontSize:'9px', color:'#555', fontFamily:'monospace', border:'1px solid #222', borderRadius:'4px', padding:'1px 5px' }}>
+            {tk.mint.slice(0, 4)}…{tk.mint.slice(-4)}
+            <button onClick={() => copyMint(tk.mint)} title="Salin mint address" style={{ background:'none', border:'none', padding:0, cursor:'pointer', color: copiedMint === tk.mint ? '#4caf50' : '#555', display:'inline-flex' }}>
+              {copiedMint === tk.mint ? <FaCheckCircle size={9}/> : <FaCopy size={9}/>}
+            </button>
+            <Link to={`/explorer/address/${tk.mint}`} target="_blank" rel="noreferrer" title="Lihat token di Explorer" style={{ color:'#555', display:'inline-flex' }}><FaLink size={9}/></Link>
+          </span>
+        );
+
+        const pill = (tk: SwapToken, which: 'from' | 'to') => (
+          <button onClick={() => setPickerOpen(which)}
+            style={{ display:'flex', alignItems:'center', gap:'8px', background:'#131313', border:'1px solid #292929', borderRadius:'999px', padding:'6px 12px 6px 6px', cursor:'pointer', flexShrink:0, maxWidth:'46%' }}>
+            <div style={{ position:'relative', width:24, height:24, borderRadius:'50%', background:'#1a1a1a', flexShrink:0, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'9px', color, fontWeight:'bold' }}>
+              {tk.symbol.slice(0, 2).toUpperCase()}
+              {iconOf(tk) && <img src={iconOf(tk)} alt="" width={24} height={24} style={{ position:'absolute', inset:0, borderRadius:'50%', background:'#1a1a1a' }} onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }}/>}
+            </div>
+            <span style={{ fontSize:'13px', fontWeight:'bold', color:'#eee', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{tk.symbol}</span>
+            <FaChevronDown size={10} color="#555" style={{ flexShrink:0 }}/>
+          </button>
+        );
+
+        return (
+          <div style={{ ...card, padding:'16px' }}>
+            <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'14px' }}>
+              <div style={{ display:'flex', alignItems:'center', gap:'8px' }}>
+                <span style={{ fontSize:'13px', fontWeight:'bold', color:'#eee' }}>Swap</span>
+                <span style={{ fontSize:'9px', color, border:`1px solid ${color}55`, borderRadius:'999px', padding:'2px 8px', letterSpacing:'0.5px' }}>JUPITER · {net.id === 'mainnet' ? 'MAINNET' : net.name.toUpperCase()}</span>
+                {fiat && net.id === 'mainnet' && <span style={{ fontSize:'10px', color:'#555', fontFamily:'monospace' }}>1 SOL ≈ {fmtUsd(fiat.usd)}</span>}
+              </div>
+              <button onClick={() => setQuoteNonce(n => n + 1)} disabled={!amtValid || quoting} title="Perbarui quote"
+                style={{ background:'none', border:'1px solid #262626', color:'#888', borderRadius:'6px', padding:'4px 9px', cursor: amtValid ? 'pointer' : 'not-allowed', fontSize:'11px', opacity: amtValid ? 1 : 0.4 }}>
+                {quoting ? <FaSpinner size={10} style={{ animation:'spin 1s linear infinite' }}/> : '↻'}
+              </button>
+            </div>
+            {net.id !== 'mainnet' && (
+              <div style={{ fontSize:'11px', color:'#ffaa00', border:'1px solid #ffaa0044', padding:'8px', marginBottom:'12px' }}>
+                ⚠ Jupiter hanya mendukung Mainnet. Ganti jaringan ke Solana Mainnet.
+              </div>
+            )}
+
+            {/* ── Pasangan cepat ── */}
+            <div style={{ display:'flex', gap:'6px', flexWrap:'wrap', marginBottom:'12px' }}>
+              {([['SOL','USDC'],['USDC','SOL'],['SOL','USDT'],['SOL','JUP'],['SOL','BONK']] as const).map(([a, b]) => {
+                const A = SWAP_PRESET_TOKENS.find(t => t.symbol === a), B = SWAP_PRESET_TOKENS.find(t => t.symbol === b);
+                if (!A || !B) return null;
+                const on = fromTok.mint === A.mint && toTok.mint === B.mint;
+                return (
+                  <button key={a + b} onClick={() => { setFromTok(A); setToTok(B); setSwapAmt(''); }}
+                    style={{ fontSize:'10px', fontWeight:'bold', padding:'4px 10px', cursor:'pointer', borderRadius:'999px', background: on ? `${color}22` : 'none', color: on ? color : '#777', border:`1px solid ${on ? color : '#262626'}` }}>{a} → {b}</button>
+                );
+              })}
+            </div>
+
+            {/* ── Dari ── */}
+            <div style={{ background:'#070707', border:`1px solid ${insufficient ? '#5a1e1e' : '#262626'}`, borderRadius:'14px 14px 4px 4px', padding:'12px 14px 16px', transition:'border-color 0.15s ease' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px' }}>
+                <span style={{ fontSize:'11px', color:'#555', display:'flex', alignItems:'center' }}>Dari{mintChip(fromTok)}</span>
+                {fromBal !== undefined && (
+                  <span style={{ fontSize:'10px', color:'#555', display:'flex', alignItems:'center', gap:'4px' }}>
+                    <FaWallet size={9}/> {fmtBal(fromBal, 6)} {fromTok.symbol}
+                    <button onClick={setMaxAmount} style={{ background:'none', border:`1px solid ${color}40`, color, fontSize:'9px', fontWeight:'bold', padding:'2px 6px', cursor:'pointer', borderRadius:'4px', marginLeft:'2px' }}>MAKS</button>
+                  </span>
+                )}
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+                {pill(fromTok, 'from')}
+                <input type="number" placeholder="0.0" value={swapAmt} onChange={e => setSwapAmt(e.target.value)}
+                  style={{ flex:1, minWidth:0, textAlign:'right', background:'none', border:'none', outline:'none', fontFamily:'monospace', fontSize:'20px', fontWeight:'bold', color:'#eee', padding:0 }}/>
+              </div>
+              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', marginTop:'8px', fontSize:'11px', minHeight:'14px' }}>
+                <span style={{ color:'#ff8a80' }}>{insufficient ? `Saldo tidak cukup (tersedia ${fmtBal(fromBal, 6)} ${fromTok.symbol})` : ''}</span>
+                <span style={{ fontFamily:'monospace', color:'#555', whiteSpace:'nowrap' }}>{fromUsd !== null ? `≈ ${fmtUsd(fromUsd)}` : ''}</span>
+              </div>
+              {fromBal !== undefined && (
+                <div style={{ display:'flex', justifyContent:'flex-end', gap:'6px', marginTop:'10px' }}>
+                  {[25, 50, 75].map(pc => (
+                    <button key={pc} onClick={() => setPctAmount(pc)}
+                      style={{ background:'#111', border:'1px solid #232323', color:'#777', fontSize:'10px', padding:'3px 9px', cursor:'pointer', borderRadius:'6px' }}>{pc}%</button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* ── Tombol tukar ── */}
+            <div style={{ textAlign:'center', height:0, position:'relative', zIndex:2 }}>
+              <button onClick={flipTokens} title="Tukar arah"
+                style={{ background:'#161616', border:'2px solid #0d0d0d', borderRadius:'50%', width:'32px', height:'32px', color, cursor:'pointer', display:'inline-flex', alignItems:'center', justifyContent:'center',
+                  transform:`translateY(-16px) rotate(${flipSpin ? 180 : 0}deg)`, transition:'transform 0.3s ease' }}>
+                <FaExchangeAlt size={13} style={{ transform:'rotate(90deg)' }}/>
+              </button>
+            </div>
+
+            {/* ── Ke ── */}
+            <div style={{ background:'#070707', border:'1px solid #262626', borderTop:'1px solid #1a1a1a', borderRadius:'4px 4px 14px 14px', padding:'16px 14px 12px', marginTop:'-4px' }}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'8px' }}>
+                <span style={{ fontSize:'11px', color:'#555', display:'flex', alignItems:'center' }}>Ke{mintChip(toTok)}</span>
+                {toBal !== undefined && <span style={{ fontSize:'10px', color:'#555', display:'flex', alignItems:'center', gap:'4px' }}><FaWallet size={9}/> {fmtBal(toBal, 6)} {toTok.symbol}</span>}
+              </div>
+              <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+                {pill(toTok, 'to')}
+                <div style={{ flex:1, minWidth:0, textAlign:'right', fontFamily:'monospace', fontSize:'20px', fontWeight:'bold', color: quote ? '#eee' : '#3a3a3a', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                  {quote ? outNum.toLocaleString('en-US', { maximumFractionDigits: 6 })
+                    : quoting ? <FaSpinner size={16} style={{ animation:'spin 1s linear infinite' }}/> : '0.0'}
+                </div>
+              </div>
+              <div style={{ display:'flex', justifyContent:'space-between', gap:'8px', marginTop:'8px', fontSize:'11px', minHeight:'14px' }}>
+                <span style={{ color: valueDiff === null ? '#444' : valueDiff >= -0.5 ? '#4caf50' : valueDiff >= -2 ? '#ffaa00' : '#ff5252' }}>
+                  {valueDiff !== null ? `${valueDiff >= 0 ? '+' : ''}${valueDiff.toFixed(2)}% vs nilai kirim` : ''}
+                </span>
+                <span style={{ fontFamily:'monospace', color:'#555', whiteSpace:'nowrap' }}>{quote && toUsd !== null ? `≈ ${fmtUsd(toUsd)}` : ''}</span>
+              </div>
+            </div>
+
+            {/* ── Slippage ── */}
+            <div style={{ display:'flex', alignItems:'center', gap:'8px', marginTop:'14px' }}>
+              <span style={{ fontSize:'11px', color:'#555', flexShrink:0, display:'flex', alignItems:'center', gap:'5px' }}><FaSlidersH size={10}/> Slippage</span>
+              <div style={{ display:'flex', gap:'6px', flex:1 }}>
+                {['0.5', '1', '3'].map(p => (
+                  <button key={p} onClick={() => setSlip(p)} style={{ padding:'6px 12px', fontSize:'11px', fontWeight:'bold', cursor:'pointer', borderRadius:'6px',
+                    background: slip === p ? color : 'none', color: slip === p ? '#000' : '#888', border:`1px solid ${slip === p ? color : '#333'}` }}>{p}%</button>
+                ))}
+                <input type="number" placeholder="Custom" value={slip} onChange={e => setSlip(e.target.value)}
+                  style={{ width:'70px', flexShrink:0, boxSizing:'border-box', fontFamily:'monospace', fontSize:'12px', borderRadius:'6px' }}/>
+              </div>
+            </div>
+            {slipWarn && (
+              <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', marginTop:'8px', fontSize:'10px', lineHeight:1.4, color: slipWarn.lvl === 'err' ? '#ff8a80' : '#ffaa00' }}>
+                <FaExclamationTriangle size={10} style={{ marginTop:'2px', flexShrink:0 }}/> {slipWarn.text}
+              </div>
+            )}
+            {leavesDust && (
+              <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', marginTop:'8px', fontSize:'10px', lineHeight:1.4, color:'#ffaa00' }}>
+                <FaExclamationTriangle size={10} style={{ marginTop:'2px', flexShrink:0 }}/> Sisa SOL sangat sedikit — sisakan ±0.003 SOL untuk fee & rent akun token, kalau tidak transaksi bisa gagal.
+              </div>
+            )}
+
+            {/* ── Prioritas transaksi (priority fee) ── */}
+            <div style={{ marginTop:'14px' }}>
+              <div style={{ fontSize:'11px', color:'#555', marginBottom:'6px', display:'flex', alignItems:'center', gap:'5px' }}>
+                <FaBolt size={10}/> Kecepatan transaksi
+              </div>
+              <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:'6px' }}>
+                {SOL_PRIORITY_OPTIONS.map(o => {
+                  const on = priority === o.id;
+                  return (
+                    <button key={o.id} onClick={() => setPriority(o.id)}
+                      style={{ textAlign:'left', padding:'8px 10px', cursor:'pointer', borderRadius:'8px', background: on ? `${color}18` : '#0a0a0a', border:`1px solid ${on ? color : '#262626'}` }}>
+                      <div style={{ fontSize:'12px', fontWeight:'bold', color: on ? color : '#aaa' }}>{o.label}</div>
+                      <div style={{ fontSize:'9px', color:'#555', marginTop:'2px', lineHeight:1.3 }}>{o.hint}</div>
+                      <div style={{ fontSize:'9px', color:'#444', marginTop:'3px', fontFamily:'monospace' }}>maks {fmtLamports(o.maxLamports)} SOL{fiatOf(o.maxLamports)}</div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {quoteError && (
+              <div style={{ background:'#2a0d0d', border:'1px solid #5a1e1e', color:'#ff8888', padding:'8px 10px', marginTop:'12px', fontSize:'11px' }}>{quoteError}</div>
+            )}
+            {fromTok.mint === toTok.mint && amtValid && (
+              <div style={{ background:'#2a0d0d', border:'1px solid #5a1e1e', color:'#ff8888', padding:'8px 10px', marginTop:'12px', fontSize:'11px' }}>Token asal dan tujuan tidak boleh sama.</div>
+            )}
+
+            {/* ── Ringkasan quote ── */}
+            {quote && (() => {
+              const shownRate = rateInverted ? (rate > 0 ? 1 / rate : 0) : rate;
+              const rateA = rateInverted ? toTok.symbol : fromTok.symbol;
+              const rateB = rateInverted ? fromTok.symbol : toTok.symbol;
+              const impactColor = highImpact ? '#ff5252' : impact > 1 ? '#ffaa00' : '#4caf50';
+              const rowS: React.CSSProperties = { display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'6px', gap:'10px' };
+              const minOut = Number(fromRawAmount(quote.otherAmountThreshold, toTok.decimals));
+              return (
+                <div style={{ background:'#070707', border:'1px solid #1e1e1e', borderRadius:'10px', padding:'12px 14px', marginTop:'12px', fontSize:'12px', color:'#ccc' }}>
+                  <div style={{ ...rowS, marginBottom:'8px', paddingBottom:'8px', borderBottom:'1px solid #1a1a1a' }}>
+                    <span style={{ color:'#666', display:'flex', alignItems:'center', gap:'6px' }}>
+                      <FaExchangeAlt size={9}/> Rate
+                      <button onClick={() => setRateInverted(v => !v)} title="Balik arah rate" style={{ background:'none', border:'1px solid #262626', borderRadius:'4px', color:'#777', cursor:'pointer', fontSize:'10px', padding:'0 5px', lineHeight:'16px' }}>⇄</button>
+                      <button onClick={() => setQuoteNonce(n => n + 1)} title="Perbarui quote" style={{ background:'none', border:'none', color:'#555', cursor:'pointer', fontSize:'11px', padding:0 }}>↻</button>
+                    </span>
+                    <span style={{ fontFamily:'monospace', textAlign:'right' }}>1 {rateA} ≈ {shownRate.toLocaleString('en-US', { maximumFractionDigits: 6 })} {rateB}</span>
+                  </div>
+                  <div style={rowS}>
+                    <span style={{ color:'#666' }}>Minimum diterima <span style={{ color:'#444' }}>(slippage {slip || '0'}%)</span></span>
+                    <span style={{ fontFamily:'monospace', textAlign:'right' }}>
+                      {minOut.toLocaleString('en-US', { maximumFractionDigits: 6 })} {toTok.symbol}
+                      {toUnit !== null && <span style={{ color:'#555' }}> · {fmtUsd(minOut * toUnit)}</span>}
+                    </span>
+                  </div>
+                  {fromBal !== undefined && (
+                    <div style={{ marginBottom:'8px', padding:'6px 8px', background:'#0a0a0a', border:'1px solid #141414', borderRadius:'6px', fontSize:'10px' }}>
+                      <div style={{ color:'#444', marginBottom:'3px', textTransform:'uppercase', letterSpacing:'1px', fontSize:'9px' }}>Saldo setelah swap</div>
+                      <div style={{ display:'flex', justifyContent:'space-between' }}>
+                        <span style={{ color:'#666' }}>{fromTok.symbol}</span>
+                        <span style={{ fontFamily:'monospace', color:'#999' }}>{fmtBal(fromBal, 6)} → <b style={{ color: insufficient ? '#ff8a80' : '#ddd' }}>{fmtBal(Math.max(0, fromBal - swapAmtNum), 6)}</b></span>
+                      </div>
+                      <div style={{ display:'flex', justifyContent:'space-between', marginTop:'2px' }}>
+                        <span style={{ color:'#666' }}>{toTok.symbol}</span>
+                        <span style={{ fontFamily:'monospace', color:'#999' }}>{fmtBal(toBal ?? 0, 6)} → <b style={{ color:'#4caf50' }}>{fmtBal((toBal ?? 0) + outNum, 6)}</b></span>
+                      </div>
+                    </div>
+                  )}
+                  <div style={{ marginBottom:'8px' }}>
+                    <div style={rowS}>
+                      <span style={{ color:'#666' }}>Price impact</span>
+                      <span style={{ fontFamily:'monospace', color: impactColor }}>{impact.toFixed(3)}%</span>
+                    </div>
+                    <div style={{ height:'3px', background:'#161616', borderRadius:'2px', overflow:'hidden' }}>
+                      <div style={{ height:'100%', width:`${Math.min(100, Math.max(2, (impact / 5) * 100))}%`, background: impactColor, transition:'width 0.25s ease' }}/>
+                    </div>
+                  </div>
+                  {valueDiff !== null && (
+                    <div style={rowS}>
+                      <span style={{ color:'#666' }}>Selisih nilai USD</span>
+                      <span style={{ fontFamily:'monospace', color: valueDiff >= -0.5 ? '#4caf50' : valueDiff >= -2 ? '#ffaa00' : '#ff5252' }}>
+                        {fmtUsd(fromUsd || 0)} → {fmtUsd(toUsd || 0)} ({valueDiff >= 0 ? '+' : ''}{valueDiff.toFixed(2)}%)
+                      </span>
+                    </div>
+                  )}
+                  <div style={rowS}>
+                    <span style={{ color:'#666' }}>Rute</span>
+                    <button onClick={() => setRouteOpen(o => !o)} style={{ background:'none', border:'none', color:'#ccc', cursor:'pointer', fontSize:'11px', padding:0, textAlign:'right', display:'flex', alignItems:'center', gap:'6px' }}>
+                      {venues.length ? venues.slice(0, 3).join(' → ') + (venues.length > 3 ? ` +${venues.length - 3}` : '') : `${hops.length} hop`}
+                      <span style={{ color:'#444', fontSize:'10px' }}>{routeOpen ? '▲' : '▼'}</span>
+                    </button>
+                  </div>
+                  {routeOpen && hops.length > 0 && (
+                    <div style={{ display:'flex', flexDirection:'column', gap:'6px', margin:'4px 0 8px', padding:'8px 10px', background:'#0a0a0a', border:'1px solid #161616', borderRadius:'8px' }}>
+                      {hops.map((h: any, i: number) => {
+                        const si = h?.swapInfo || {};
+                        const inA = hopAmt(si.inAmount, si.inputMint), outA = hopAmt(si.outAmount, si.outputMint);
+                        return (
+                          <div key={i} style={{ display:'flex', alignItems:'center', gap:'8px', fontSize:'10px' }}>
+                            <span style={{ flexShrink:0, minWidth:'34px', textAlign:'center', color, border:`1px solid ${color}44`, borderRadius:'999px', padding:'1px 6px', fontWeight:'bold' }}>{h?.percent ?? 100}%</span>
+                            <span style={{ flex:1, minWidth:0, color:'#aaa', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                              {inA && <span style={{ fontFamily:'monospace', color:'#666' }}>{inA} </span>}{symOf(si.inputMint)} → {outA && <span style={{ fontFamily:'monospace', color:'#666' }}>{outA} </span>}{symOf(si.outputMint)}
+                            </span>
+                            <span style={{ flexShrink:0, color:'#555' }}>via {si.label || 'DEX'}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {highImpact && (
+                    <div style={{ display:'flex', gap:'6px', alignItems:'center', marginTop:'6px', fontSize:'11px', color:'#ff8a80' }}>
+                      <FaExclamationTriangle size={11}/> Price impact tinggi — kamu bisa rugi besar. Kurangi jumlah swap.
+                    </div>
+                  )}
+                  <div style={{ marginTop:'10px' }}>
+                    <div style={{ height:'2px', background:'#161616', borderRadius:'2px', overflow:'hidden' }}>
+                      <div style={{ height:'100%', width:`${(ttlLeft / QUOTE_TTL) * 100}%`, background: ttlLeft <= 5 ? '#ffaa00' : color, transition:'width 1s linear' }}/>
+                    </div>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginTop:'4px', fontSize:'9px', color:'#444' }}>
+                      <span>Quote berusia {ageSec}d</span>
+                      <span>{busy === 'swap' ? 'Memproses swap…' : `Diperbarui otomatis dalam ${ttlLeft}d`}</span>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* ── Detail biaya jaringan (gas) ── */}
+            {quote && (
+              <div style={{ background:'#070707', border:'1px solid #1e1e1e', borderRadius:'10px', marginTop:'10px', fontSize:'12px', color:'#ccc', overflow:'hidden' }}>
+                <button onClick={() => setFeeOpen(o => !o)}
+                  style={{ width:'100%', display:'flex', justifyContent:'space-between', alignItems:'center', background:'none', border:'none', color:'#ccc', padding:'10px 14px', cursor:'pointer', fontSize:'12px' }}>
+                  <span style={{ color:'#666', display:'flex', alignItems:'center', gap:'6px' }}><FaCoins size={10}/> Biaya jaringan (gas)</span>
+                  <span style={{ fontFamily:'monospace', display:'flex', alignItems:'center', gap:'6px' }}>
+                    {feeLoading ? <FaSpinner size={11} style={{ animation:'spin 1s linear infinite' }}/>
+                      : feePrev ? `≈ ${fmtLamports(feePrev.totalLamports)} SOL${fiatOf(feePrev.totalLamports)}` : '—'}
+                    <span style={{ color:'#444', fontSize:'10px' }}>{feeOpen ? '▲' : '▼'}</span>
+                  </span>
+                </button>
+                {feeOpen && (
+                  <div style={{ padding:'0 14px 12px', borderTop:'1px solid #141414' }}>
+                    {feeError && <div style={{ color:'#ff8a80', fontSize:'11px', paddingTop:'10px' }}>{feeError}</div>}
+                    {!feePrev && !feeError && <div style={{ color:'#444', fontSize:'11px', paddingTop:'10px' }}>Menghitung rincian fee…</div>}
+                    {feePrev && (<>
+                      <div style={{ display:'flex', justifyContent:'space-between', paddingTop:'10px', marginBottom:'6px' }}>
+                        <span style={{ color:'#666' }}>Base fee <span style={{ color:'#444' }}>({feePrev.signatures} tanda tangan)</span></span>
+                        <span style={{ fontFamily:'monospace' }}>{fmtLamports(feePrev.baseFeeLamports)} SOL{fiatOf(feePrev.baseFeeLamports)}</span>
+                      </div>
+                      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'6px' }}>
+                        <span style={{ color:'#666' }}>Priority fee <span style={{ color:'#444' }}>({SOL_PRIORITY_OPTIONS.find(o => o.id === priority)?.label})</span></span>
+                        <span style={{ fontFamily:'monospace' }}>{fmtLamports(feePrev.priorityFeeLamports)} SOL{fiatOf(feePrev.priorityFeeLamports)}</span>
+                      </div>
+                      {feePrev.rentLamports > 0 && (
+                        <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'6px' }}>
+                          <span style={{ color:'#666' }}>Rent akun {toTok.symbol} <span style={{ color:'#444' }}>(dapat kembali)</span></span>
+                          <span style={{ fontFamily:'monospace', color:'#ffaa00' }}>{fmtLamports(feePrev.rentLamports)} SOL{fiatOf(feePrev.rentLamports)}</span>
+                        </div>
+                      )}
+                      <div style={{ display:'flex', justifyContent:'space-between', paddingTop:'8px', borderTop:'1px dashed #1e1e1e', fontWeight:'bold' }}>
+                        <span style={{ color:'#999' }}>Total estimasi</span>
+                        <span style={{ fontFamily:'monospace', color }}>{fmtLamports(feePrev.totalLamports)} SOL{fiatOf(feePrev.totalLamports)}</span>
+                      </div>
+                      {feePrev.computeUnitLimit !== null && (
+                        <div style={{ display:'flex', justifyContent:'space-between', marginTop:'8px', fontSize:'10px', color:'#555' }}>
+                          <span>Compute unit</span>
+                          <span style={{ fontFamily:'monospace' }}>
+                            {feePrev.computeUnitsEstimated !== null ? `${feePrev.computeUnitsEstimated.toLocaleString('en-US')} terpakai / ` : 'batas '}{feePrev.computeUnitLimit.toLocaleString('en-US')}
+                          </span>
+                        </div>
+                      )}
+                      {feePrev.rentNote && <div style={{ fontSize:'10px', color:'#777', marginTop:'8px', lineHeight:1.4 }}>{feePrev.rentNote}</div>}
+                      {feePrev.simulationError && (
+                        <div style={{ display:'flex', gap:'6px', alignItems:'flex-start', marginTop:'8px', fontSize:'10px', color:'#ffaa00', lineHeight:1.4 }}>
+                          <FaExclamationTriangle size={10} style={{ marginTop:'2px', flexShrink:0 }}/> Simulasi memberi peringatan: {feePrev.simulationError}. Swap tetap bisa dicoba, tapi bisa gagal on-chain.
+                        </div>
+                      )}
+                      <div style={{ fontSize:'10px', color:'#444', marginTop:'8px' }}>Base fee tetap 5.000 lamport per tanda tangan; priority fee mengikuti kepadatan jaringan, maks. {fmtLamports(SOL_PRIORITY_OPTIONS.find(o => o.id === priority)?.maxLamports || 0)} SOL.</div>
+                    </>)}
+                  </div>
+                )}
+              </div>
+            )}
+
+            <button onClick={doSwap} disabled={!canSwap}
+              style={{ width:'100%', marginTop:'14px', padding:'12px', background: canSwap ? (highImpact ? '#ff5252' : color) : '#1a1a1a', color: canSwap ? '#000' : '#555', border:'none', cursor: canSwap ? 'pointer' : 'not-allowed', fontSize:'14px', fontWeight:'bold', display:'flex', alignItems:'center', justifyContent:'center', gap:'8px' }}>
+              {busy === 'swap' ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Memproses…</>
+                : quoting ? <><FaSpinner style={{ animation:'spin 1s linear infinite' }}/> Mencari rute terbaik…</>
+                : !amtValid ? 'Masukkan jumlah'
+                : insufficient ? `Saldo ${fromTok.symbol} tidak cukup`
+                : !(slipNum > 0) ? 'Slippage tidak valid'
+                : quote ? <><FaExchangeAlt/> Swap {fromTok.symbol} → {toTok.symbol}</>
+                : 'Quote belum tersedia'}
+            </button>
+
+            {receipt && (() => {
+              const d = receipt.data;
+              const sentTxt = d?.sentRaw ? `${Number(fromRawAmount(d.sentRaw, receipt.from.decimals)).toLocaleString('en-US', { maximumFractionDigits: 6 })} ${receipt.from.symbol}` : '—';
+              const recvTxt = d?.receivedRaw ? `${Number(fromRawAmount(d.receivedRaw, receipt.to.decimals)).toLocaleString('en-US', { maximumFractionDigits: 6 })} ${receipt.to.symbol}` : '—';
+              const cuPct = d && d.computeUnitsUsed !== null && d.computeUnitLimit ? Math.round(d.computeUnitsUsed / d.computeUnitLimit * 100) : null;
+              const recvNum = d?.receivedRaw ? Number(fromRawAmount(d.receivedRaw, receipt.to.decimals)) : null;
+              const sentNum = d?.sentRaw ? Number(fromRawAmount(d.sentRaw, receipt.from.decimals)) : null;
+              const quotedNum = receipt.quotedOut ? Number(receipt.quotedOut) : null;
+              const execDiff = recvNum !== null && quotedNum && quotedNum > 0 ? ((recvNum - quotedNum) / quotedNum) * 100 : null;
+              const execRate = recvNum !== null && sentNum && sentNum > 0 ? recvNum / sentNum : null;
+              return (
+                <div style={{ background:'#07110a', border:'1px solid #1d3a25', borderLeft:'3px solid #4caf50', borderRadius:'10px', padding:'12px 14px', marginTop:'14px', fontSize:'12px', color:'#ccc' }}>
+                  <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'10px' }}>
+                    <span style={{ color:'#4caf50', fontWeight:'bold', display:'flex', alignItems:'center', gap:'6px' }}><FaCheckCircle size={12}/> Swap berhasil</span>
+                    <button onClick={() => setReceipt(null)} title="Tutup" style={{ background:'none', border:'none', color:'#555', cursor:'pointer', fontSize:'14px', padding:0 }}>×</button>
+                  </div>
+                  {receipt.loading && <div style={{ color:'#666', fontSize:'11px', display:'flex', alignItems:'center', gap:'6px' }}><FaSpinner size={10} style={{ animation:'spin 1s linear infinite' }}/> Mengambil rincian fee aktual…</div>}
+                  {!receipt.loading && !d && <div style={{ color:'#888', fontSize:'11px', marginBottom:'6px' }}>Rincian fee belum tersedia dari RPC — cek lewat explorer.</div>}
+                  {d && (<>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'5px' }}><span style={{ color:'#666' }}>Dikirim</span><span style={{ fontFamily:'monospace' }}>{sentTxt}</span></div>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'8px' }}><span style={{ color:'#666' }}>Diterima</span><span style={{ fontFamily:'monospace', color:'#4caf50' }}>{recvTxt}</span></div>
+                    {execRate !== null && (
+                      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'5px', fontSize:'11px' }}><span style={{ color:'#555' }}>· Rate aktual</span>
+                        <span style={{ fontFamily:'monospace', color:'#888' }}>1 {receipt.from.symbol} = {execRate.toLocaleString('en-US', { maximumFractionDigits: 6 })} {receipt.to.symbol}</span></div>
+                    )}
+                    {execDiff !== null && (
+                      <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'8px', fontSize:'11px' }}><span style={{ color:'#555' }}>· Vs estimasi quote</span>
+                        <span style={{ fontFamily:'monospace', color: execDiff >= 0 ? '#4caf50' : '#ffaa00' }}>{execDiff >= 0 ? '+' : ''}{execDiff.toFixed(3)}% ({quotedNum !== null ? quotedNum.toLocaleString('en-US', { maximumFractionDigits: 6 }) : '—'} {receipt.to.symbol})</span></div>
+                    )}
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'5px', paddingTop:'8px', borderTop:'1px dashed #1d3a25' }}><span style={{ color:'#666' }}>Fee dibayar</span><span style={{ fontFamily:'monospace', fontWeight:'bold' }}>{fmtLamports(d.feeLamports)} SOL{fiatOf(d.feeLamports)}</span></div>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'5px', fontSize:'11px' }}><span style={{ color:'#555' }}>· Base fee</span><span style={{ fontFamily:'monospace', color:'#888' }}>{fmtLamports(d.baseFeeLamports)} SOL{fiatOf(d.baseFeeLamports)}</span></div>
+                    <div style={{ display:'flex', justifyContent:'space-between', marginBottom:'5px', fontSize:'11px' }}><span style={{ color:'#555' }}>· Priority fee</span><span style={{ fontFamily:'monospace', color:'#888' }}>{fmtLamports(d.priorityFeeLamports)} SOL{fiatOf(d.priorityFeeLamports)}</span></div>
+                    {d.computeUnitsUsed !== null && (
+                      <div style={{ display:'flex', justifyContent:'space-between', fontSize:'11px' }}><span style={{ color:'#555' }}>· Compute unit</span>
+                        <span style={{ fontFamily:'monospace', color:'#888' }}>{d.computeUnitsUsed.toLocaleString('en-US')}{d.computeUnitLimit ? ` / ${d.computeUnitLimit.toLocaleString('en-US')}${cuPct !== null ? ` (${cuPct}%)` : ''}` : ''}</span></div>
+                    )}
+                  </>)}
+                  <a href={txUrl(receipt.sig)} target="_blank" rel="noreferrer" style={{ display:'inline-block', marginTop:'10px', color, fontSize:'11px', fontFamily:'monospace' }}>Lihat di explorer · {short(receipt.sig, 8)} ↗</a>
+                  <button onClick={() => { try { navigator.clipboard?.writeText(receipt.sig); } catch { /* abaikan */ } alert('Signature disalin!'); }}
+                    style={{ marginLeft:'10px', background:'none', border:'1px solid #1d3a25', color:'#4caf50', fontSize:'10px', padding:'2px 8px', cursor:'pointer', borderRadius:'4px' }}>Salin signature</button>
+                </div>
+              );
+            })()}
+
+            {swapLog.length > 0 && (
+              <div style={{ background:'#070707', border:'1px solid #1e1e1e', borderRadius:'10px', marginTop:'14px', overflow:'hidden' }}>
+                <button onClick={() => setLogOpen(o => !o)} style={{ width:'100%', display:'flex', justifyContent:'space-between', alignItems:'center', background:'none', border:'none', color:'#ccc', padding:'10px 14px', cursor:'pointer', fontSize:'12px' }}>
+                  <span style={{ color:'#666' }}>Riwayat swap ({swapLog.length})</span>
+                  <span style={{ color:'#444', fontSize:'10px' }}>{logOpen ? '▲' : '▼'}</span>
+                </button>
+                {logOpen && (
+                  <div style={{ padding:'0 14px 12px', borderTop:'1px solid #141414' }}>
+                    {swapLog.slice(0, 10).map(x => (
+                      <div key={x.sig} style={{ display:'flex', justifyContent:'space-between', alignItems:'center', gap:'10px', padding:'8px 0', borderBottom:'1px solid #111', fontSize:'11px' }}>
+                        <div style={{ minWidth:0 }}>
+                          <div style={{ fontFamily:'monospace', color:'#ddd', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
+                            {Number(x.sent).toLocaleString('en-US', { maximumFractionDigits: 6 })} {x.from} → {Number(x.recv).toLocaleString('en-US', { maximumFractionDigits: 6 })} {x.to}{!x.actual && <span style={{ color:'#555' }}> (est.)</span>}
+                          </div>
+                          <div style={{ fontSize:'9px', color:'#555', marginTop:'2px' }}>{new Date(x.at).toLocaleString()}</div>
+                        </div>
+                        <a href={txUrl(x.sig)} target="_blank" rel="noreferrer" style={{ color, fontFamily:'monospace', fontSize:'10px', flexShrink:0 }}>{short(x.sig, 4)} ↗</a>
+                      </div>
+                    ))}
+                    <button onClick={() => ask('HAPUS RIWAYAT SWAP?', 'Riwayat swap di browser ini akan dihapus (transaksi on-chain tidak terpengaruh).', () => saveSwapLog([]))}
+                      style={{ marginTop:'10px', background:'none', border:'1px solid #333', color:'#777', fontSize:'10px', padding:'4px 10px', cursor:'pointer', borderRadius:'4px' }}>Hapus riwayat</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {pickerOpen && (
+              <SolTokenPickerSheet ctx={ctx} color={color} held={heldTokens} popular={popularForPicker()}
+                activeMint={pickerOpen === 'from' ? fromTok.mint : toTok.mint}
+                heldLoading={heldLoading} onRefresh={loadHeld} onClose={() => setPickerOpen(null)} onSelect={pickToken}/>
+            )}
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
 export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
   const {
     AXIOME_NETWORK, AXIOME_NETWORKS, COSMOS_NETWORK, COSMOS_NETWORKS, GRAM_NETWORK, GRAM_NETWORKS,
@@ -2689,6 +4050,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         <div style={{ fontSize:'26px', fontWeight:'bold', fontFamily:'monospace', color:'#fff', lineHeight:1 }}>
                           {solLoadingBal ? '···' : solBalance}
                         </div>
+                        {!solLoadingBal && <SolBalanceFiat balance={solBalance} mainnet={solNetId === 'mainnet'}/>}
                       </div>
                       <div style={{ display:'flex', gap:'8px' }}>
                         {solNetId !== 'mainnet' && (
@@ -2738,7 +4100,7 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                         ['single', <FaPaperPlane key="i" size={11}/>, 'Kirim'],
                         ['multi',  <FaLayerGroup key="i" size={11}/>, 'Multi Send'],
                         ['sweep',  <FaExchangeAlt key="i" size={11}/>, 'Sweep'],
-                        ['close',  <FaTrash key="i" size={11}/>, 'Tutup Akun'],
+                        ['tools',  <FaRocket key="i" size={11}/>, 'Tools'],
                       ] as const).map(([m, icon, label]) => (
                         <button key={m} onClick={() => setSolMode(m)} style={{
                           flex:1, padding:'9px 8px', background: solMode===m ? SOLANA_NETWORK.color : 'transparent',
@@ -2751,7 +4113,10 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                       ))}
                     </div>
 
-                    {solMode !== 'close' && renderSolAssetSelector()}
+                    {solMode !== 'tools' && renderSolAssetSelector()}
+
+                    {/* ── Tools: Riwayat · Stake · Swap ── */}
+                    {solMode === 'tools' && <SolToolsPanel ctx={ctx} closeView={<SolCloseAccountsView ctx={ctx}/>}/>}
 
                     {/* ── Kirim (single) ── */}
                     {solMode === 'single' && (
@@ -3064,259 +4429,6 @@ export function TransferTab({ ctx }: { ctx: WalletGeneratorCtx }) {
                       </div>
                     )}
 
-                    {/* ── Tutup Akun Token (Close Token Account) ──
-                        Menutup token account (ATA / Token-2022) SPL untuk menarik kembali
-                        rent (± 0.002 SOL/akun) yang terkunci di dalamnya. Selalu mengikuti
-                        cluster aktif (SOLANA_NETWORK) — jadi otomatis berfungsi baik di
-                        Mainnet, Testnet, maupun Devnet tanpa perlu konfigurasi tambahan. */}
-                    {solMode === 'close' && (() => {
-                      const emptyAccs    = solCloseAccounts.filter(a => a.uiAmount === 0);
-                      const balanceAccs  = solCloseAccounts.filter(a => a.uiAmount > 0);
-                      const totalReclaim = solCloseAccounts.reduce((s, a) => s + a.lamports, 0) / LAMPORTS_PER_SOL;
-                      const selectedEmpty      = emptyAccs.filter(a => solCloseSelected.has(a.pubkey));
-                      const selectedReclaim    = selectedEmpty.reduce((s, a) => s + a.lamports, 0) / LAMPORTS_PER_SOL;
-                      const allEmptySelected   = emptyAccs.length > 0 && emptyAccs.every(a => solCloseSelected.has(a.pubkey));
-                      const q = solCloseSearch.trim().toLowerCase();
-                      const visibleAccs = solCloseAccounts
-                        .filter(a => solCloseFilter === 'all' ? true : solCloseFilter === 'empty' ? a.uiAmount === 0 : a.uiAmount > 0)
-                        .filter(a => !q || a.mint.toLowerCase().includes(q) || a.pubkey.toLowerCase().includes(q));
-
-                      return (
-                        <div style={{ display:'flex', flexDirection:'column', gap:'14px' }}>
-                          {/* Info banner */}
-                          <div style={{ display:'flex', gap:'9px', fontSize:'11px', color:'#777', lineHeight:1.6, background:'#0a0a0a', border:'1px solid #1e1e1e', padding:'10px 12px' }}>
-                            <FaInfoCircle size={12} style={{ color:'#555', flexShrink:0, marginTop:'2px' }}/>
-                            <div>
-                              Setiap token account SPL (baik <strong style={{ color:'#ccc' }}>SPL Token</strong> klasik maupun <strong style={{ color:'#ccc' }}>Token-2022</strong>)
-                              menahan rent ± <strong style={{ color:'#ccc' }}>0.00203928 SOL</strong>. Menutup akun kosong mengembalikan rent itu ke wallet ini.
-                              Akun yang masih bersaldo harus dikosongkan dulu — kirim ke wallet lain, atau bakar langsung dari sini.
-                            </div>
-                          </div>
-
-                          {/* Kartu ringkasan */}
-                          <div style={{ display:'grid', gridTemplateColumns:'repeat(3, 1fr)', gap:'8px' }}>
-                            {[
-                              { label: 'Total Akun',      value: solCloseAccounts.length,                 color: '#ccc' },
-                              { label: 'Siap Ditutup',    value: emptyAccs.length,                        color: '#4caf50' },
-                              { label: 'Reclaim Tersedia',value: `± ${totalReclaim.toFixed(5)} SOL`,       color: SOLANA_NETWORK.color },
-                            ].map(card => (
-                              <div key={card.label} style={{ background:'#0a0a0a', border:'1px solid #1e1e1e', padding:'10px 12px', textAlign:'center' }}>
-                                <div style={{ fontSize: typeof card.value === 'number' ? '18px' : '13px', fontWeight:'bold', color: card.color, fontFamily:'monospace' }}>
-                                  {card.value}
-                                </div>
-                                <div style={{ fontSize:'9px', color:'#555', textTransform:'uppercase', letterSpacing:'0.5px', marginTop:'3px' }}>
-                                  {card.label}
-                                </div>
-                              </div>
-                            ))}
-                          </div>
-
-                          {/* Toolbar: filter + search + refresh */}
-                          <div style={{ display:'flex', gap:'8px', flexWrap:'wrap', alignItems:'center' }}>
-                            <div style={{ display:'flex', gap:'2px', background:'#000', border:'1px solid #1e1e1e', padding:'2px', flexShrink:0 }}>
-                              {([
-                                ['all',     `Semua (${solCloseAccounts.length})`],
-                                ['empty',   `Kosong (${emptyAccs.length})`],
-                                ['balance', `Bersaldo (${balanceAccs.length})`],
-                              ] as const).map(([f, label]) => (
-                                <button key={f} onClick={() => setSolCloseFilter(f)} style={{
-                                  padding:'6px 10px', background: solCloseFilter===f ? '#1a1a1a' : 'transparent',
-                                  border:'none', color: solCloseFilter===f ? '#ccc' : '#555',
-                                  cursor:'pointer', fontSize:'10px', fontWeight:'bold', whiteSpace:'nowrap',
-                                }}>
-                                  {label}
-                                </button>
-                              ))}
-                            </div>
-                            <input type="text" placeholder="Cari mint / ATA address..." value={solCloseSearch}
-                              onChange={e => setSolCloseSearch(e.target.value)}
-                              style={{ flex:1, minWidth:'160px', fontFamily:'monospace', fontSize:'11px', padding:'7px 10px' }}/>
-                            <button onClick={() => solFetchCloseAccounts()} disabled={solCloseLoading}
-                              style={{ background:'none', border:'1px solid #333', color:'#888', padding:'7px 12px', cursor: solCloseLoading?'wait':'pointer', fontSize:'11px', display:'flex', alignItems:'center', gap:'5px', flexShrink:0 }}>
-                              <FaSync size={9} style={{ animation:solCloseLoading?'spin 1s linear infinite':undefined }}/> Refresh
-                            </button>
-                          </div>
-
-                          {/* Loading skeleton */}
-                          {solCloseLoading && solCloseAccounts.length === 0 && (
-                            <div style={{ display:'flex', flexDirection:'column', gap:'8px' }}>
-                              {[0,1,2].map(i => (
-                                <div key={i} style={{ height:'52px', background:'#0a0a0a', border:'1px solid #1e1e1e', opacity:0.5 - i*0.1,
-                                  animation:'pulse 1.4s ease-in-out infinite' }}/>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Empty state */}
-                          {!solCloseLoading && solCloseAccounts.length === 0 && (
-                            <div style={{ textAlign:'center', padding:'32px 0', color:'#333' }}>
-                              <FaCoins size={22} style={{ color:'#222', marginBottom:'8px' }}/>
-                              <p style={{ fontSize:'12px', margin:0 }}>
-                                Tidak ada token account SPL di wallet ini pada cluster {SOLANA_NETWORK.name}.
-                              </p>
-                            </div>
-                          )}
-
-                          {/* Tidak ada hasil filter/pencarian, tapi datanya ada */}
-                          {!solCloseLoading && solCloseAccounts.length > 0 && visibleAccs.length === 0 && (
-                            <p style={{ color:'#333', fontSize:'12px', textAlign:'center', padding:'16px 0', margin:0 }}>
-                              Tidak ada akun yang cocok dengan filter/pencarian saat ini.
-                            </p>
-                          )}
-
-                          {/* Pilih semua akun kosong */}
-                          {emptyAccs.length > 1 && solCloseFilter !== 'balance' && (
-                            <label style={{ display:'flex', alignItems:'center', gap:'7px', fontSize:'11px', color:'#888', cursor:'pointer', userSelect:'none' }}>
-                              <input type="checkbox" checked={allEmptySelected}
-                                onChange={() => solCloseToggleSelectAll(emptyAccs.map(a => a.pubkey))}/>
-                              Pilih semua akun kosong ({emptyAccs.length})
-                            </label>
-                          )}
-
-                          {/* Daftar akun */}
-                          {visibleAccs.length > 0 && (
-                            <div style={{ display:'flex', flexDirection:'column', gap:'8px', maxHeight:'420px', overflowY:'auto', paddingRight:'2px' }}>
-                              {visibleAccs.map(acc => {
-                                const isClosing  = solClosingId === acc.pubkey;
-                                const hasBalance = acc.uiAmount > 0;
-                                const burnFirst  = !!solCloseBurnFirst[acc.pubkey];
-                                const isSelected = solCloseSelected.has(acc.pubkey);
-                                const reclaimSol = (acc.lamports / LAMPORTS_PER_SOL).toFixed(6);
-                                const isToken22  = acc.programId === TOKEN_2022_PROGRAM_ID.toBase58();
-                                const accentColor= hasBalance ? '#f4a300' : '#4caf50';
-                                const displayName  = acc.name || acc.symbol || (acc.metaLoaded ? 'Token Tidak Dikenal' : '');
-                                const avatarLetter = (acc.name || acc.symbol || acc.mint).trim().charAt(0).toUpperCase() || '?';
-                                const createdLabel = acc.createdAtLoaded
-                                  ? (acc.createdAt
-                                      ? new Date(acc.createdAt).toLocaleDateString('id-ID', { day:'2-digit', month:'short', year:'numeric' })
-                                      : 'tidak diketahui')
-                                  : null;
-                                return (
-                                  <div key={acc.pubkey} style={{
-                                    padding:'11px 12px', background:'#0a0a0a', borderTop:'1px solid #1e1e1e', borderRight:'1px solid #1e1e1e', borderBottom:'1px solid #1e1e1e',
-                                    borderLeft:`3px solid ${accentColor}55`,
-                                    display:'flex', flexDirection:'column', gap:'9px',
-                                  }}>
-                                    <div style={{ display:'flex', alignItems:'flex-start', gap:'10px' }}>
-                                      {!hasBalance && (
-                                        <input type="checkbox" checked={isSelected} onChange={() => solCloseToggleSelect(acc.pubkey)}
-                                          style={{ marginTop:'3px', flexShrink:0, cursor:'pointer' }}/>
-                                      )}
-                                      {/* Avatar: logo token kalau ada, kalau nggak avatar inisial berwarna —
-                                          supaya kartu akun kosong nggak nampak blank hitam polos. */}
-                                      <div style={{
-                                        width:'30px', height:'30px', borderRadius:'50%', flexShrink:0, marginTop:'1px',
-                                        overflow:'hidden', display:'flex', alignItems:'center', justifyContent:'center',
-                                        background: acc.image ? '#111' : `${accentColor}22`,
-                                        border:`1px solid ${accentColor}55`,
-                                      }}>
-                                        {acc.image
-                                          ? <img src={acc.image} alt="" style={{ width:'100%', height:'100%', objectFit:'cover' }}
-                                              onError={e => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}/>
-                                          : <span style={{ fontSize:'12px', fontWeight:'bold', color: accentColor }}>{avatarLetter}</span>}
-                                      </div>
-                                      <div style={{ minWidth:0, flex:1 }}>
-                                        <div style={{ display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap' }}>
-                                          <span style={{ fontSize:'12px', color:'#eee', fontWeight:'bold' }}>
-                                            {displayName || <span style={{ display:'inline-block', width:'70px', height:'10px', background:'#1a1a1a', borderRadius:'2px' }}/>}
-                                          </span>
-                                          {acc.symbol && acc.name && (
-                                            <span style={{ fontSize:'10px', color:'#777' }}>{acc.symbol}</span>
-                                          )}
-                                          <span style={{
-                                            fontSize:'9px', fontWeight:'bold', padding:'1px 6px',
-                                            color: isToken22 ? '#c792ea' : '#569cd6',
-                                            background: isToken22 ? '#c792ea1a' : '#569cd61a',
-                                            border:`1px solid ${isToken22 ? '#c792ea33' : '#569cd633'}`,
-                                          }}>
-                                            {isToken22 ? 'Token-2022' : 'SPL Token'}
-                                          </span>
-                                        </div>
-                                        <div style={{ display:'flex', alignItems:'center', gap:'6px', flexWrap:'wrap', marginTop:'3px' }}>
-                                          <span style={{ fontSize:'11px', color:'#ccc', fontFamily:'monospace' }}>Mint {shortAddr(acc.mint)}</span>
-                                          <button onClick={() => copyText(acc.mint, `close_mint_${acc.pubkey}`)}
-                                            style={{ background:'none', border:'none', color: copiedKey===`close_mint_${acc.pubkey}` ? '#4caf50' : '#444', cursor:'pointer', padding:'2px', display:'flex' }}>
-                                            {copiedKey===`close_mint_${acc.pubkey}` ? <FaCheckCircle size={9}/> : <FaCopy size={9}/>}
-                                          </button>
-                                        </div>
-                                        <div style={{ display:'flex', alignItems:'center', gap:'6px', marginTop:'3px' }}>
-                                          <span style={{ fontSize:'10px', color:'#555', fontFamily:'monospace' }}>ATA {shortAddr(acc.pubkey)}</span>
-                                          <button onClick={() => copyText(acc.pubkey, `close_ata_${acc.pubkey}`)}
-                                            style={{ background:'none', border:'none', color: copiedKey===`close_ata_${acc.pubkey}` ? '#4caf50' : '#333', cursor:'pointer', padding:'2px', display:'flex' }}>
-                                            {copiedKey===`close_ata_${acc.pubkey}` ? <FaCheckCircle size={9}/> : <FaCopy size={9}/>}
-                                          </button>
-                                        </div>
-                                        <div style={{ fontSize:'10px', color:'#555', marginTop:'3px' }}>
-                                          Dibuat: {createdLabel ?? <span style={{ display:'inline-block', width:'60px', height:'8px', background:'#1a1a1a', borderRadius:'2px', verticalAlign:'middle' }}/>}
-                                        </div>
-                                      </div>
-                                      <div style={{ textAlign:'right', flexShrink:0 }}>
-                                        <div style={{ fontSize:'11px', color: hasBalance ? '#ffb300' : '#4caf50', fontWeight:'bold' }}>
-                                          saldo {acc.uiAmount}
-                                        </div>
-                                        <div style={{ fontSize:'10px', color:'#666' }}>reclaim ± {reclaimSol} SOL</div>
-                                      </div>
-                                    </div>
-
-                                    {hasBalance && (
-                                      <label style={{ display:'flex', alignItems:'center', gap:'6px', fontSize:'10px', color:'#f4a300', cursor:'pointer' }}>
-                                        <input type="checkbox" checked={burnFirst}
-                                          onChange={e => setSolCloseBurnFirst(prev => ({ ...prev, [acc.pubkey]: e.target.checked }))}/>
-                                        Bakar sisa saldo dulu, lalu tutup akun (tindakan permanen — token akan hilang)
-                                      </label>
-                                    )}
-
-                                    <button onClick={() => solCloseTokenAccount(acc)}
-                                      disabled={isClosing || solCloseAllRunning || (hasBalance && !burnFirst)}
-                                      style={{
-                                        padding:'9px', fontSize:'11px', fontWeight:'bold',
-                                        background: isClosing ? '#1a0000' : (hasBalance && !burnFirst) ? 'transparent' : '#f44336',
-                                        color: isClosing ? '#f44336' : '#fff',
-                                        border: `1px solid ${(hasBalance && !burnFirst) ? '#333' : '#f44336'}`,
-                                        cursor: isClosing ? 'wait' : (hasBalance && !burnFirst) ? 'not-allowed' : 'pointer',
-                                        opacity: (hasBalance && !burnFirst) ? 0.4 : 1,
-                                        display:'flex', alignItems:'center', justifyContent:'center', gap:'6px',
-                                      }}>
-                                      {isClosing
-                                        ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Menutup...</>
-                                        : <><FaTrash size={10}/> {hasBalance ? 'Bakar & Tutup Akun' : 'Tutup Akun'}</>}
-                                    </button>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          )}
-
-                          {/* Bar aksi batch — nempel di bawah daftar, aktif kalau ada akun kosong yang dicentang */}
-                          {emptyAccs.length > 0 && (
-                            <div style={{
-                              display:'flex', alignItems:'center', justifyContent:'space-between', gap:'12px', flexWrap:'wrap',
-                              background:'#0a0a0a', border:'1px solid #1e1e1e', padding:'10px 12px',
-                            }}>
-                              <div style={{ fontSize:'11px', color:'#888' }}>
-                                {selectedEmpty.length > 0
-                                  ? <>{selectedEmpty.length} akun dipilih · reclaim ± <strong style={{ color:'#4caf50' }}>{selectedReclaim.toFixed(6)} SOL</strong></>
-                                  : 'Belum ada akun kosong yang dipilih.'}
-                              </div>
-                              <button onClick={solCloseSelectedAccounts} disabled={solCloseAllRunning || !!solClosingId || selectedEmpty.length === 0}
-                                style={{
-                                  padding:'10px 16px', fontWeight:'bold', fontSize:'12px',
-                                  cursor: (solCloseAllRunning || selectedEmpty.length===0) ? (solCloseAllRunning?'wait':'not-allowed') : 'pointer',
-                                  background: solCloseAllRunning ? '#001a00' : selectedEmpty.length===0 ? 'transparent' : '#00e676',
-                                  color: solCloseAllRunning ? '#00e676' : selectedEmpty.length===0 ? '#555' : '#000',
-                                  border: `1px solid ${solCloseAllRunning ? '#00e67644' : selectedEmpty.length===0 ? '#333' : '#00e676'}`,
-                                  display:'flex', alignItems:'center', justifyContent:'center', gap:'8px',
-                                  opacity: !!solClosingId ? 0.5 : 1, flexShrink:0,
-                                }}>
-                                {solCloseAllRunning
-                                  ? <><span style={{ animation:'spin 1s linear infinite', display:'inline-block' }}>⟳</span> Menutup...</>
-                                  : <><FaTrash/> Tutup {selectedEmpty.length || ''} Akun Terpilih</>}
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
                   </div>
 
                   {/* ── Riwayat Transaksi Solana ── */}
