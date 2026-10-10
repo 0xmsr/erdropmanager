@@ -151,7 +151,6 @@ function AseArc20PickerSheet({ ctx, net, tokens, activeAddress, loading, search,
             );
           })}
         </div>
-
         <div style={{ padding:'10px 14px 16px', borderTop:'1px solid #1e1e1e', flexShrink:0 }}>
           <div style={{ fontSize:'10px', color:'#555', marginBottom:'6px' }}>Gak ketemu? Tambah manual:</div>
           <div style={{ display:'flex', gap:'6px' }}>
