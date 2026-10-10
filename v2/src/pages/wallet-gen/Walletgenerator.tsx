@@ -33,10 +33,12 @@ import { CustomAlert, CustomConfirm, TxConfirmModal, type TxConfirmDetails } fro
 import { KNOWN_4BYTE, KNOWN_TOPICS, KNOWN_SELECTORS } from './know'
 import { TxDecoder } from './Txdecoder';
 import { UI_STYLE_STORAGE_KEY, loadUiStyle } from './wallet-themes/UiThemes';
+import { VaultGate, WalletGenSettings, type VaultSession } from './security/VWgen';
 import {
   deriveSolanaAddress, getMetadataPda, SPL_META_MAX,
   SOLANA_NETWORKS, getSolanaConnection, getSolBalanceWithFallback,
-  fetchSolTokenPortfolio, sendAndConfirmTransactionSafe,
+  fetchSolTokenPortfolio, fetchAllSolTokenAccounts, sendAndConfirmTransactionSafe,
+  diagnoseSolTokenAccount, isSolBatchClosable, buildSolCloseInstructions, explainSolCloseError,
 } from './network/Solnet';
 import {
   type TronNetworkCfg, TRON_NETWORKS, sunToTrx, trxToSun,
@@ -94,7 +96,7 @@ import {
   FaSpinner, FaChartBar,
   FaMagic, FaLayerGroup, FaInfoCircle, FaTerminal, FaFileCode, FaList,
   FaCheck, FaRegCopy, FaCoins, FaRocket, FaHashtag, FaFaucet, FaUpload,
-  FaCompass, FaSlidersH, FaArrowRight, FaTimes, FaCloudDownloadAlt,
+  FaCompass, FaCog, FaSlidersH, FaArrowRight, FaTimes, FaCloudDownloadAlt,
 } from 'react-icons/fa';
 
 // Wallet-Gen Dipecah jadi beberapa file mulai 20 agustus 2026 ~0xmsr
@@ -515,11 +517,22 @@ const QRModal: React.FC<{ address: string; copied: boolean; onCopy: () => void; 
   );
 };
 
-export const WalletGenerator: React.FC = () => {
+interface WalletGeneratorInnerProps {
+  /** Wallet hasil dekripsi vault (secret hanya ada di memori). */
+  initialWallets: BIP39Wallet[];
+  /** Simpan terenkripsi ke vault. JANGAN tulis mnemonic/privateKey ke localStorage langsung. */
+  persistWallets: (w: BIP39Wallet[]) => void;
+  onLock: () => void;
+  onBusyChange: (busy: boolean) => void;
+  /** Sesi vault (auto-lock, ubah password) untuk panel Pengaturan WalletGen. */
+  vault: VaultSession;
+}
+
+const WalletGeneratorInner: React.FC<WalletGeneratorInnerProps> = ({ initialWallets, persistWallets, onLock, onBusyChange, vault }) => {
 
   const [wallets,  setWallets]  = useState<BIP39Wallet[]>(() => {
     try {
-      const saved: BIP39Wallet[] = JSON.parse(localStorage.getItem('bip39Wallets') || '[]');
+      const saved: BIP39Wallet[] = initialWallets;
 
       const axmCoinTypeFixed = localStorage.getItem('axmCoinTypeFixV5') === 'done';
       if (!axmCoinTypeFixed) localStorage.setItem('axmCoinTypeFixV5', 'done');
@@ -583,7 +596,7 @@ export const WalletGenerator: React.FC = () => {
         }
         return next;
       });
-    } catch { return []; }
+    } catch { return initialWallets; }
   });
   const [chainView, setChainView] = useState<Record<string, ChainKind>>({});
   const [networks, setNetworks] = useState<RPCNetwork[]>(() => {
@@ -618,6 +631,22 @@ export const WalletGenerator: React.FC = () => {
 
   const [devMode, setDevMode] = useState<boolean>(() => localStorage.getItem('devModeSkipTxConfirm') === 'true');
   useEffect(() => { localStorage.setItem('devModeSkipTxConfirm', String(devMode)); }, [devMode]);
+
+  // Panel Pengaturan WalletGen (dev mode + keamanan vault), dibuka dari tombol di samping Explorer.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const toggleDevMode = () => {
+    if (!devMode) {
+      setSettingsOpen(false);
+      setConfirmData({
+        isOpen: true,
+        title: 'Aktifkan Dev Mode?',
+        message: 'Semua transaksi (single, multi-send, sweep, batch garap, agent queue) akan langsung dikirim TANPA konfirmasi. Gunakan hanya kalau kamu yakin dengan apa yang sedang dilakukan.',
+        action: () => setDevMode(true),
+      });
+    } else {
+      setDevMode(false);
+    }
+  };
 
   // Gaya tampilan tab Send / Receive: 'default' (asli) atau 'pixel' (Pixel Block).
   // Daftar tema ada di uiThemes.ts (tinggal tambah entri di sana untuk tema baru).
@@ -740,7 +769,7 @@ export const WalletGenerator: React.FC = () => {
   const [solStatus,     setSolStatus]     = useState<{type:'idle'|'pending'|'success'|'error';msg:string;hash?:string}>({type:'idle',msg:''});
   const solConnRef      = useRef<Connection | null>(null);
   const solKeypairRef   = useRef<SolKeypair | null>(null);
-  const [solMode, setSolMode] = useState<'single'|'multi'|'sweep'|'close'>('single');
+  const [solMode, setSolMode] = useState<'single'|'multi'|'sweep'|'tools'>('single');
   const [solAsset,          setSolAsset]          = useState<string>('native');
   const [solTokens,         setSolTokens]         = useState<{mint:string; decimals:number; uiAmount:number}[]>([]);
   const [solTokensLoading,  setSolTokensLoading]  = useState(false);
@@ -751,6 +780,8 @@ export const WalletGenerator: React.FC = () => {
 
   const [solCloseAccounts,   setSolCloseAccounts]   = useState<{
     pubkey:string; mint:string; decimals:number; uiAmount:number; programId:string; lamports:number;
+    rawAmount?: string; state?: string; isNative?: boolean; closeAuthority?: string | null;
+    withheldAmount?: string; nonTransferable?: boolean; confidential?: boolean;
 
     name?: string; symbol?: string; image?: string; metaLoaded?: boolean;
     createdAt?: number | null; createdAtLoaded?: boolean;
@@ -762,8 +793,10 @@ export const WalletGenerator: React.FC = () => {
   const [solCloseBurnFirst,  setSolCloseBurnFirst]  = useState<Record<string, boolean>>({});
   const [solCloseAllRunning, setSolCloseAllRunning] = useState(false);
   const [solCloseSelected,   setSolCloseSelected]   = useState<Set<string>>(new Set());
-  const [solCloseFilter,     setSolCloseFilter]     = useState<'all'|'empty'|'balance'>('all');
+  const [solCloseFilter,     setSolCloseFilter]     = useState<'all'|'empty'|'balance'|'issue'>('all');
   const [solCloseSearch,     setSolCloseSearch]     = useState('');
+  const [solCloseError,      setSolCloseError]      = useState('');
+  const [solCloseErrors,     setSolCloseErrors]     = useState<Record<string, string>>({});
 
 
   const [solMultiRows, setSolMultiRows] = useState<{id:string;to:string;amount:string;status:'idle'|'pending'|'success'|'failed';hash?:string;error?:string}[]>([
@@ -1123,7 +1156,7 @@ export const WalletGenerator: React.FC = () => {
   const [atSearch,     setAtSearch]     = useState('');
   const [atShowForm,   setAtShowForm]   = useState(false);
 
-  useEffect(() => { localStorage.setItem('bip39Wallets',        JSON.stringify(wallets));      }, [wallets]);
+  useEffect(() => { persistWallets(wallets); }, [wallets, persistWallets]);
 
 
   useEffect(() => {
@@ -1219,6 +1252,19 @@ export const WalletGenerator: React.FC = () => {
     }, 150);
     return () => clearTimeout(t);
   }, [activeTab]);
+
+  // Deep-link dari Explorer: /wallet-gen#swapsol=<mint> → buka Transfer › Solana › Tools › Swap dengan token ini terpilih.
+  const [pendingSwapMint, setPendingSwapMint] = useState<string>(() => {
+    const m = window.location.hash.match(/^#swapsol=([1-9A-HJ-NP-Za-km-z]{32,44})/);
+    return m ? m[1] : '';
+  });
+  useEffect(() => {
+    if (!pendingSwapMint) return;
+    setActiveTab('transfer');
+    setTxChain('sol');
+    setSolMode('tools');
+    setSolNetId('mainnet');
+  }, []);
 
   const [tosAgreed,       setTosAgreed]       = useState<boolean>(() => localStorage.getItem('tosAgreed') === 'true');
   const [tosChecked,      setTosChecked]      = useState<boolean[]>([false, false, false, false]);
@@ -5352,38 +5398,29 @@ export const WalletGenerator: React.FC = () => {
   //    klasik + Token-2022), termasuk yang saldonya 0 — beda dari solFetchTokens yang
   //    cuma nampilin saldo > 0 untuk keperluan kirim. Tiap akun nyimpen rent ± 0.00203928
   //    SOL (dibaca langsung dari lamports akunnya) yang bisa ditarik balik saat ditutup. ──
-  const solFetchCloseAccounts = async (conn?: Connection | null, addr?: string) => {
-    const connection = conn ?? solConnRef.current;
-    const address    = addr ?? solAddress;
-    if (!connection || !address) return;
+  const solFetchCloseAccounts = async (conn?: Connection | null, addr?: string, netOverride?: typeof SOLANA_NETWORK) => {
+    const address = addr ?? solAddress;
+    if (!address) return;
+    const net = netOverride ?? SOLANA_NETWORK;
     setSolCloseLoading(true);
+    setSolCloseError('');
     try {
-      const owner = new PublicKey(address);
-      const [legacy, t22] = await Promise.all([
-        connection.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID }),
-        connection.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_2022_PROGRAM_ID }),
-      ]);
-      const mapAccounts = (resp: typeof legacy, programId: PublicKey) => resp.value.map(({ pubkey, account }) => {
-        const info = account.data.parsed.info;
-        return {
-          pubkey:    pubkey.toBase58(),
-          mint:      info.mint as string,
-          decimals:  info.tokenAmount.decimals as number,
-          uiAmount:  (info.tokenAmount.uiAmount ?? 0) as number,
-          programId: programId.toBase58(),
-          lamports:  account.lamports as number,
-        };
-      });
-      const all = [...mapAccounts(legacy, TOKEN_PROGRAM_ID), ...mapAccounts(t22, TOKEN_2022_PROGRAM_ID)];
+      const { accounts: all, warnings } = await fetchAllSolTokenAccounts(net, address);
       // Urutkan: akun saldo 0 (paling gampang ditutup) di atas, akun bersaldo di bawah.
-      all.sort((a, b) => (a.uiAmount > 0 ? 1 : 0) - (b.uiAmount > 0 ? 1 : 0));
+      const rank = (a: typeof all[number]) => { const v = diagnoseSolTokenAccount(a, address).verdict; return v === 'ready' ? 0 : v === 'fix' ? 1 : v === 'burn' ? 2 : 3; };
+      all.sort((a, b) => rank(a) - rank(b));
       setSolCloseAccounts(all);
       // Default: semua akun kosong langsung tercentang, siap ditutup massal.
-      setSolCloseSelected(new Set(all.filter(a => a.uiAmount === 0).map(a => a.pubkey)));
-      // Lengkapi detail (nama, simbol, gambar, tanggal dibuat) di belakang layar — tiap akun
-      // langsung tampil dengan alamatnya dulu, detailnya nyusul satu per satu saat siap.
+      setSolCloseSelected(new Set(all.filter(a => isSolBatchClosable(a, address)).map(a => a.pubkey)));
+      setSolCloseErrors({});
+      if (warnings.length) setSolCloseError(warnings.join(' '));
+      // Lengkapi detail (nama, simbol, gambar, tanggal dibuat) di belakang layar.
+      const connection = conn ?? solConnRef.current ?? await getSolanaConnection(net);
       void solEnrichCloseAccounts(connection, all);
-    } catch { setSolCloseAccounts([]); }
+    } catch (e: any) {
+      setSolCloseAccounts([]);
+      setSolCloseError(e?.message || 'Gagal memuat token account.');
+    }
     setSolCloseLoading(false);
   };
 
@@ -5475,36 +5512,32 @@ export const WalletGenerator: React.FC = () => {
     const connection = solConnRef.current;
     if (!keypair || !connection) { showAlert('Connect wallet Solana dulu.', 'error'); return; }
 
+    const diag = diagnoseSolTokenAccount(item, keypair.publicKey.toBase58());
+    if (diag.verdict === 'blocked') {
+      const why = diag.notes.find(n => n.level === 'block')?.text || 'Akun ini tidak bisa ditutup oleh wallet ini.';
+      setSolCloseErrors(prev => ({ ...prev, [item.pubkey]: why }));
+      showAlert('Akun tidak bisa ditutup: ' + why, 'error');
+      return;
+    }
     const burnFirst = !!solCloseBurnFirst[item.pubkey];
-    if (item.uiAmount > 0 && !burnFirst) {
+    if (diag.needsBurn && !burnFirst) {
       showAlert('Akun token ini masih ada saldo. Centang "Bakar sisa saldo dulu" untuk menutupnya, atau kosongkan saldonya lewat Kirim/Sweep terlebih dahulu.', 'error');
       return;
     }
 
-    const programId = new PublicKey(item.programId);
-    const ataPk      = new PublicKey(item.pubkey);
     const reclaimSol = (item.lamports / LAMPORTS_PER_SOL).toFixed(6);
-
+    const steps = [diag.needsHarvest ? 'harvest fee tertahan' : '', diag.needsBurn ? `bakar ${item.uiAmount} token` : '', diag.native ? 'unwrap WSOL' : '', 'tutup akun'].filter(Boolean).join(' → ');
     const okClose = await requestTxConfirm({
       title: 'Tutup Akun Token',
       network: SOLANA_NETWORK.name,
       to: item.pubkey,
-      value: item.uiAmount > 0
-        ? `Bakar ${item.uiAmount} token (mint ${shortAddr(item.mint)}) lalu tutup akun — reclaim ± ${reclaimSol} SOL rent`
-        : `Tutup akun token kosong (mint ${shortAddr(item.mint)}) — reclaim ± ${reclaimSol} SOL rent`,
+      value: `${steps} (mint ${shortAddr(item.mint)}) — reclaim ± ${reclaimSol} SOL rent`,
     });
     if (!okClose) return;
 
     setSolClosingId(item.pubkey);
     try {
-      const tx = new SolTransaction();
-      if (item.uiAmount > 0) {
-        const mintPk     = new PublicKey(item.mint);
-        const rawAmount  = BigInt(Math.round(item.uiAmount * 10 ** item.decimals));
-        tx.add(createBurnInstruction(ataPk, mintPk, keypair.publicKey, rawAmount, [], programId));
-      }
-      tx.add(createCloseAccountInstruction(ataPk, keypair.publicKey, keypair.publicKey, [], programId));
-
+      const tx = new SolTransaction().add(...buildSolCloseInstructions(item, keypair.publicKey, burnFirst));
       const sig = await sendAndConfirmTransactionSafe(connection, tx, [keypair]);
       showAlert(`Akun token ditutup. ± ${reclaimSol} SOL rent sudah kembali ke wallet.`, 'success');
       saveTxHistory({
@@ -5515,11 +5548,14 @@ export const WalletGenerator: React.FC = () => {
       });
       setSolCloseBurnFirst(prev => { const n = { ...prev }; delete n[item.pubkey]; return n; });
       setSolCloseSelected(prev => { const n = new Set(prev); n.delete(item.pubkey); return n; });
+      setSolCloseErrors(prev => { const n = { ...prev }; delete n[item.pubkey]; return n; });
       await solFetchCloseAccounts();
       await solFetchTokens();
       await solRefreshBalance();
     } catch (e: any) {
-      showAlert('Gagal menutup akun: ' + e.message, 'error');
+      const why = explainSolCloseError(e);
+      setSolCloseErrors(prev => ({ ...prev, [item.pubkey]: why }));
+      showAlert('Gagal menutup akun: ' + why, 'error');
     }
     setSolClosingId('');
   };
@@ -5552,7 +5588,8 @@ export const WalletGenerator: React.FC = () => {
     const connection = solConnRef.current;
     if (!keypair || !connection) { showAlert('Connect wallet Solana dulu.', 'error'); return; }
 
-    const targetAccs = solCloseAccounts.filter(a => a.uiAmount === 0 && solCloseSelected.has(a.pubkey));
+    const me = keypair.publicKey.toBase58();
+    const targetAccs = solCloseAccounts.filter(a => solCloseSelected.has(a.pubkey) && isSolBatchClosable(a, me));
     if (targetAccs.length === 0) { showAlert('Belum ada akun kosong yang dicentang untuk ditutup.', 'error'); return; }
 
     const totalLamports = targetAccs.reduce((s, a) => s + a.lamports, 0);
@@ -5566,16 +5603,16 @@ export const WalletGenerator: React.FC = () => {
 
     setSolCloseAllRunning(true);
     let closedCount = 0, closedLamports = 0;
+    const failed: Record<string, string> = {};
     for (const acc of targetAccs) {
       try {
-        const tx = new SolTransaction().add(
-          createCloseAccountInstruction(new PublicKey(acc.pubkey), keypair.publicKey, keypair.publicKey, [], new PublicKey(acc.programId))
-        );
+        const tx = new SolTransaction().add(...buildSolCloseInstructions(acc, keypair.publicKey, false));
         await sendAndConfirmTransactionSafe(connection, tx, [keypair]);
         closedCount++; closedLamports += acc.lamports;
         setSolCloseSelected(prev => { const n = new Set(prev); n.delete(acc.pubkey); return n; });
-      } catch {}
+      } catch (e: any) { failed[acc.pubkey] = explainSolCloseError(e); }
     }
+    setSolCloseErrors(prev => ({ ...prev, ...failed }));
     saveTxHistory({
       taskName: 'Close Token Account',
       description: `Tutup ${closedCount}/${targetAccs.length} akun token terpilih di ${SOLANA_NETWORK.name}, reclaim ${(closedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL`,
@@ -5584,8 +5621,8 @@ export const WalletGenerator: React.FC = () => {
     });
     showAlert(
       closedCount > 0
-        ? `${closedCount}/${targetAccs.length} akun berhasil ditutup, ± ${(closedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL rent kembali.`
-        : 'Tidak ada akun yang berhasil ditutup.',
+        ? `${closedCount}/${targetAccs.length} akun berhasil ditutup, ± ${(closedLamports / LAMPORTS_PER_SOL).toFixed(6)} SOL rent kembali.${Object.keys(failed).length ? ` ${Object.keys(failed).length} akun gagal — alasannya tampil di kartu akun masing-masing.` : ''}`
+        : `Tidak ada akun yang berhasil ditutup.${Object.values(failed)[0] ? ' Contoh penyebab: ' + Object.values(failed)[0] : ''}`,
       closedCount > 0 ? 'success' : 'error'
     );
     await solFetchCloseAccounts();
@@ -5617,7 +5654,7 @@ export const WalletGenerator: React.FC = () => {
       solConnRef.current = conn;
       await solRefreshBalance(conn, solAddress);
       await solFetchTokens(conn, solAddress);
-      await solFetchCloseAccounts(conn, solAddress);
+      await solFetchCloseAccounts(conn, solAddress, newNet);
     } catch (e: any) {
       showAlert(`Gagal pindah ke ${newNet.name}: ` + e.message, 'error');
     }
@@ -8102,6 +8139,7 @@ export const WalletGenerator: React.FC = () => {
   // ctx dikumpulkan sekali di sini lalu diteruskan ke setiap komponen Tab
   // (lihat WalletGeneratorCtx di ./types.ts untuk penjelasan pendekatannya).
   const ctx: WalletGeneratorCtx = {
+    pendingSwapMint, setPendingSwapMint,
     AXIOME_NETWORK, AXIOME_NETWORKS, COSMOS_NETWORK, COSMOS_NETWORKS, GRAM_NETWORK, GRAM_NETWORKS, FaBolt, FaCalendarAlt, FaChartBar, 
     FaCheckCircle, FaChevronDown, FaChevronUp, FaCode, FaCoins, FaCopy, FaEdit, FaExchangeAlt, 
     FaExclamationTriangle, FaEye, FaEyeSlash, FaFaucet, FaFileCode, FaFileExport, FaFileImport, FaGasPump, 
@@ -8174,8 +8212,8 @@ export const WalletGenerator: React.FC = () => {
     setTxMultiEqualAmt, setTxNetworkId, setTxPrivKey, setTxSendAmt, setTxSendTo, setTxWalletSel, setWalletName, 
     showAlert, showNetForm, solAddress, solAsset, solBalance, solCloseAccounts, solCloseAllRunning, 
     solCloseBurnFirst, solCloseFilter, solCloseLoading, solCloseSearch, solCloseSelected, 
-    solCloseSelectedAccounts, solCloseToggleSelect, solCloseToggleSelectAll, solCloseTokenAccount, solClosingId, 
-    solConnect, solConnected, solConnecting, solDisconnect, solFaucetLoading, solFetchCloseAccounts, solIsToken, 
+    solCloseSelectedAccounts, solCloseToggleSelect, solCloseToggleSelectAll, solCloseTokenAccount, solClosingId, solCloseErrors, 
+    solConnect, solConnected, solConnecting, solDisconnect, solFaucetLoading, solFetchCloseAccounts, solCloseError, solIsToken, 
     solIsValidAddr, solLoadingBal, solMaxLoading, solMode, solMultiAddRow, solMultiApplyEqual, solMultiEqualAmt, 
     solDestAtaExists, solDestAtaChecking, SOL_TOKEN_ACCOUNT_RENT_LAMPORTS, 
     solMultiRemoveRow, solMultiRows, solMultiRunning, solMultiSend, solMultiUpdateRow, solNetId, solPrivKey, 
@@ -8245,6 +8283,11 @@ export const WalletGenerator: React.FC = () => {
     aseSweepDelayMs, setAseSweepDelayMs, aseSweepFetchingBal,
     aseSweepAddFromBIP39, aseSweepAddManualPK, aseSweepRemoveSource, aseSweepFetchBalances, aseSweepRun,
   };
+
+  // Beri tahu vault bila ada operasi panjang agar auto-lock tidak memutus queue/sweep di tengah jalan.
+  const anyBusy = agRunning || batchRunning || execRunning || sweepRunning || solSweepRunning || tronSweepRunning || aseSweepRunning ||
+    txMultiRunning || solMultiRunning || tronMultiRunning || aseMultiRunning || solCloseAllRunning;
+  useEffect(() => { onBusyChange(anyBusy); }, [anyBusy, onBusyChange]);
 
   return (
     <div className="app-container">
@@ -8774,7 +8817,13 @@ export const WalletGenerator: React.FC = () => {
             <FaCompass size={12}/> Explorer
           </button>
         </Link>
+        <button onClick={() => setSettingsOpen(true)} aria-haspopup="dialog" title="Pengaturan WalletGen"
+          style={{ display:'flex', alignItems:'center', gap:'6px', background:'none', border:`1px solid ${devMode ? '#ff333399' : '#333'}`, color: devMode ? '#ff8888' : '#888', padding:'8px 14px', cursor:'pointer', fontSize:'12px', fontWeight:'bold' }}>
+          <FaCog size={12}/> Pengaturan
+        </button>
       </header>
+      <WalletGenSettings open={settingsOpen} onClose={() => setSettingsOpen(false)}
+        devMode={devMode} onToggleDevMode={toggleDevMode} vault={vault} />
       <Navbar />
 
       <div style={{ background:'rgba(255,170,0,0.06)', border:'1px solid #ffaa0030', borderLeft:'3px solid #ffaa00', padding:'12px 16px', marginBottom:'20px', display:'flex', alignItems:'flex-start', gap:'10px' }}>
@@ -8785,49 +8834,21 @@ export const WalletGenerator: React.FC = () => {
         </span>
       </div>
 
-      <div style={{
-        display:'flex', alignItems:'center', justifyContent:'space-between', gap:'10px', flexWrap:'wrap',
-        background: devMode ? 'rgba(255,51,51,0.07)' : '#0d0d0d',
-        border: `1px solid ${devMode ? '#ff333344' : '#1e1e1e'}`,
-        borderLeft: `3px solid ${devMode ? '#ff3333' : '#4caf50'}`,
-        padding: '10px 16px', marginBottom: '20px',
-      }}>
-        <div style={{ fontSize: '12px', color: devMode ? '#ff8888' : '#888', display:'flex', alignItems:'center', gap:'8px' }}>
-          {devMode ? <FaExclamationTriangle color="#ff3333" size={13} /> : <FaShieldAlt color="#4caf50" size={13} />}
-          <span>
-            {devMode
-              ? <><strong style={{ color:'#ff5555' }}>MODE DEVELOPER AKTIF</strong> — semua TX dikirim langsung tanpa konfirmasi.</>
-              : <>Mode konfirmasi TX aktif — setiap transaksi akan minta konfirmasi sebelum dikirim.</>}
-          </span>
+      {devMode && (
+        <div role="alert" style={{
+          display:'flex', alignItems:'center', justifyContent:'space-between', gap:'10px', flexWrap:'wrap',
+          background:'rgba(255,51,51,0.07)', border:'1px solid #ff333344', borderLeft:'3px solid #ff3333',
+          padding:'10px 16px', marginBottom:'20px',
+        }}>
+          <div style={{ fontSize:'12px', color:'#ff8888', display:'flex', alignItems:'center', gap:'8px' }}>
+            <FaExclamationTriangle color="#ff3333" size={13} />
+            <span><strong style={{ color:'#ff5555' }}>MODE DEVELOPER AKTIF</strong> — semua TX dikirim langsung tanpa konfirmasi.</span>
+          </div>
+          <button onClick={() => setDevMode(false)} style={{ background:'none', border:'1px solid #ff333399', color:'#ff8888', padding:'6px 12px', cursor:'pointer', fontSize:'11px', fontWeight:'bold' }}>
+            Nonaktifkan
+          </button>
         </div>
-        <label style={{ display:'flex', alignItems:'center', gap:'8px', cursor:'pointer', userSelect:'none', flexShrink:0 }}>
-          <span style={{ fontSize:'11px', color: devMode ? '#ff5555' : '#555', fontWeight:'bold' }}>DEV MODE (skip konfirmasi)</span>
-          <span
-            onClick={() => {
-              if (!devMode) {
-                setConfirmData({
-                  isOpen: true,
-                  title: 'Aktifkan Dev Mode?',
-                  message: 'Semua transaksi (single, multi-send, sweep, batch garap, agent queue) akan langsung dikirim TANPA konfirmasi. Gunakan hanya kalau kamu yakin dengan apa yang sedang dilakukan.',
-                  action: () => setDevMode(true),
-                });
-              } else {
-                setDevMode(false);
-              }
-            }}
-            style={{
-              width: '38px', height: '20px', borderRadius: '10px', position: 'relative',
-              background: devMode ? '#ff3333' : '#2a2a2a', transition: 'background 0.2s', flexShrink: 0,
-            }}
-          >
-            <span style={{
-              position: 'absolute', top: '2px', left: devMode ? '20px' : '2px',
-              width: '16px', height: '16px', borderRadius: '50%', background: '#fff',
-              transition: 'left 0.2s',
-            }} />
-          </span>
-        </label>
-      </div>
+      )}
 
       <div style={{ display:'flex', gap:'2px', marginBottom:'20px', borderBottom:'1px solid #1e1e1e', overflowX:'auto' }}>
         {([
@@ -8885,7 +8906,20 @@ export const WalletGenerator: React.FC = () => {
           title="Lihat persetujuan ToS">
           Lihat ToS
         </span>
+        <span style={{ margin: '0 10px', color: '#333' }}>·</span>
+        <span style={{ fontSize: '11px', color: '#01a2ff', cursor: 'pointer' }} onClick={onLock} title="Kunci vault & buang kunci dari memori">
+          🔒 Kunci WalletGen
+        </span>
       </footer>
     </div>
   );
 };
+
+/** Gerbang vault: wallet baru bisa dirender setelah password benar. */
+export const WalletGenerator: React.FC = () => (
+  <VaultGate>
+    {(session) => (
+      <WalletGeneratorInner initialWallets={session.initialWallets} persistWallets={session.persist} onLock={session.lock} onBusyChange={session.setBusy} vault={session} />
+    )}
+  </VaultGate>
+);
