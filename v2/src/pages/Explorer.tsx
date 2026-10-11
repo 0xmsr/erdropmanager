@@ -2066,7 +2066,8 @@ const SolExplorer: React.FC<SolExplorerProps> = ({ active, refreshEnabled, refre
         </div>
       )}
 
-      {/* ── Status jaringan ── */}
+      {/* ── Status jaringan — disembunyikan saat ada hasil pencarian (address/CA/tx/slot); muncul lagi setelah klik "Tutup & Kembali" ── */}
+      {!hasResult && (
       <div className="fade-in-up" style={{
         display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '1px',
         background: COLORS.border, border: `1px solid ${COLORS.border}`, borderTop: `2px solid ${net.color}`, marginBottom: '14px', overflow: 'hidden',
@@ -2083,7 +2084,8 @@ const SolExplorer: React.FC<SolExplorerProps> = ({ active, refreshEnabled, refre
           </div>
         ))}
       </div>
-      {statusError && !status && <p style={{ color: '#ff6666', fontSize: '11px', margin: '0 0 14px' }}>{statusError}</p>}
+      )}
+      {!hasResult && statusError && !status && <p style={{ color: '#ff6666', fontSize: '11px', margin: '0 0 14px' }}>{statusError}</p>}
 
       {/* ── Search ── */}
       <form onSubmit={handleSearch} style={{ marginBottom: '24px' }}>
