@@ -95,7 +95,7 @@ const FEATURES = [
   },
 ];
 
-const EVM_ADDRESS = '0xf0B47853c621cAbA9Fd0Ed490C75856a2dFD43EF';
+const EVM_ADDRESS = '0x90fdb4ad5E8f457692CB233D09ce85ADCA8b51f7';
 
 const DonationSection: React.FC = () => {
   const [copied, setCopied] = useState(false);
